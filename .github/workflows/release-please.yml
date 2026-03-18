@@ -1,0 +1,43 @@
+---
+name: Release Please
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions: {}
+
+jobs:
+  release-please:
+    name: Release Please
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    outputs:
+      docker_release_created: ${{ steps.release.outputs.release_created }}
+      docker_tag_name: ${{ steps.release.outputs.tag_name }}
+      helm_release_created: ${{ steps.release.outputs['charts/github-sts--release_created'] }}
+      helm_tag_name: ${{ steps.release.outputs['charts/github-sts--tag_name'] }}
+    steps:
+      - name: Run Release Please
+        id: release
+        uses: googleapis/release-please-action@16a9c90856f42705d54a6fda1823352bdc62cf38 # v4.4.0
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  release:
+    name: Release
+    needs: [release-please]
+    if: needs.release-please.outputs.docker_release_created == 'true'
+    uses: ./.github/workflows/release.yml
+    with:
+      tag_name: ${{ needs.release-please.outputs.docker_tag_name }}
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write

@@ -1,0 +1,72 @@
+# github-sts configuration
+# ========================
+# This file can be mounted as a Kubernetes ConfigMap.
+# Set PYGITHUBSTS_CONFIG_PATH to point to this file.
+#
+# All values can be overridden by environment variables with the
+# PYGITHUBSTS_ prefix (e.g., PYGITHUBSTS_SERVER_LOG_LEVEL=DEBUG).
+
+server:
+  host: "0.0.0.0"
+  port: 8080
+  log_level: "INFO"        # DEBUG | INFO | WARNING | ERROR (backward compat)
+  logging:
+    level: "INFO"            # App channel log level
+    access_level: "INFO"     # Access channel level (DEBUG shows health probes)
+    suppress_health_logs: true  # Filter /health, /ready, /metrics at INFO
+    audit_file_enabled: true
+    audit_file_path: "/var/log/github-sts/audit.json"
+    audit_file_max_bytes: 10485760    # 10 MB
+    audit_file_backup_count: 5
+
+# Policy resolution
+policy:
+  backend: "github"         # github | database
+  base_path: ".github/sts"  # Base path in repos for trust policies
+  cache_ttl_seconds: 60     # 0 = disable caching
+
+# GitHub Apps — define one or more apps
+# Each app has its own credentials and maps to a policy subdirectory:
+#   {base_path}/{app_name}/{identity}.sts.yaml
+apps:
+  default:
+    app_id: 123456
+    # Provide the private key inline …
+    private_key: |
+      -----BEGIN RSA PRIVATE KEY-----
+      ...
+      -----END RSA PRIVATE KEY-----
+    # … or as a file path (private_key takes precedence)
+    # private_key_path: "/etc/github-sts/keys/default.pem"
+
+  # Example: add more apps
+  # deploy-bot:
+  #   app_id: 654321
+  #   private_key_path: "/etc/github-sts/keys/deploy-bot.pem"
+
+# OIDC token validation
+oidc:
+  allowed_issuers:           # Empty list = allow any issuer (logs warning)
+    - "https://token.actions.githubusercontent.com"       # GitHub Actions
+    # - "https://sts.windows.net/{tenant}/"              # Azure AD
+    
+# JTI replay prevention
+jti:
+  backend: "memory"          # memory | redis
+  redis_url: ""              # Required when backend = redis
+  ttl_seconds: 3600          # How long to remember consumed JTIs
+
+# Audit logging
+audit:
+  file_path: "./audit.log"
+  rotation_policy: "daily"   # daily | size
+  rotation_size_bytes: 104857600  # 100 MB (used when rotation_policy = size)
+
+# Prometheus metrics
+metrics:
+  enabled: true
+  prefix: "pygithubsts"
+  rate_limit_poll_enabled: true            # Poll GET /rate_limit periodically
+  rate_limit_poll_interval_seconds: 60     # How often to poll (seconds)
+  reachability_probe_enabled: true         # Probe GitHub API reachability
+  reachability_probe_interval_seconds: 30  # How often to probe (seconds)

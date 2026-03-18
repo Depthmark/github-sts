@@ -1,0 +1,21 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "separate-pull-requests": true,
+  "packages": {
+    ".": {
+      "release-type": "python",
+      "package-name": "github-sts",
+      "component": "github-sts",
+      "include-component-in-tag": false,
+      "changelog-type": "default",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "draft": false,
+      "prerelease": false,
+      "extra-files": [
+        "src/github_sts/__init__.py",
+        "Dockerfile"
+      ]
+    }
+  }
+}

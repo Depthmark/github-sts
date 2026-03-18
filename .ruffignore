@@ -1,0 +1,11 @@
+# Ruff ignore patterns
+.venv/
+venv/
+ENV/
+.env/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+*.egg-info/

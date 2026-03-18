@@ -1,0 +1,59 @@
+# Git
+.git
+.gitignore
+.github
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+
+# IDEs
+.vscode
+.idea
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Ruff
+.ruff_cache
+
+# Development
+*.lock
+Makefile
+DEVELOPMENT.md
+ORGANIZATION_SUMMARY.md
+docker-compose.override.yml
+.env.local
+.env.*.local
+
+# Docker
+Dockerfile.dev
+.dockerignore
+
+# Tests (optional - can remove if you want tests in image)
+tests/
+
+# Node, Ruby, etc (not used in this project)
+node_modules/
+.bundle/
