@@ -10,14 +10,13 @@ Validates that:
 Run with: pytest tests/test_health.py
 """
 
+# Build a minimal FastAPI app with just the health router for isolated testing.
+from fastapi import FastAPI
 from starlette.datastructures import State
 from starlette.testclient import TestClient
 
 from github_sts import metrics
 from github_sts.routes.health import router
-
-# Build a minimal FastAPI app with just the health router for isolated testing.
-from fastapi import FastAPI
 
 _test_app = FastAPI()
 _test_app.include_router(router)

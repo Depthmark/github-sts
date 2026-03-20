@@ -139,7 +139,9 @@ def _resolve_app_name(app_param: str | None) -> str:
 )
 async def exchange_token(
     scope: str = Query(
-        ..., description="Target repo (org/repo) or org", examples=["octocat/Hello-World"]
+        ...,
+        description="Target repo (org/repo) or org",
+        examples=["octocat/Hello-World"],
     ),
     identity: str = Query(
         ..., description="Trust policy identity to evaluate", examples=["ci"]
