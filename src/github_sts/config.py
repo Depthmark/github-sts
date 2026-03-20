@@ -1,50 +1,5 @@
 """
-Configuration for github-sts.
-
-Supports YAML-based configuration (ideal for Kubernetes ConfigMaps)
-and environment variable overrides with PYGITHUBSTS_ prefix.
-
-Configuration can be loaded from:
-  1. A YAML file (path set via PYGITHUBSTS_CONFIG_PATH env var)
-  2. Environment variables with PYGITHUBSTS_ prefix
-  3. A .env file in the working directory
-
-Example YAML (mountable as a Kubernetes ConfigMap):
-
-  server:
-    host: "0.0.0.0"
-    port: 8080
-    log_level: "INFO"
-
-  policy:
-    backend: "github"
-    base_path: ".github/sts"
-    cache_ttl_seconds: 60
-
-  apps:
-    my-app:
-      app_id: 12345
-      private_key_path: "/etc/github-sts/keys/my-app.pem"
-
-  oidc:
-    allowed_issuers:
-      - "https://token.actions.githubusercontent.com"
-      # - "https://accounts.google.com"
-      # - "https://login.microsoftonline.com/{tenant}/v2.0"
-
-  jti:
-    backend: "memory"
-    redis_url: ""
-    ttl_seconds: 3600
-
-  audit:
-    file_path: "./audit.log"
-    rotation_policy: "daily"
-    rotation_size_bytes: 104857600
-
-  metrics:
-    enabled: true
-    prefix: "pygithubsts"
+See a configuration example at `config/github-sts.example.yaml`
 """
 
 import logging
