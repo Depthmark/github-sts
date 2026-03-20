@@ -170,6 +170,12 @@ GITHUB_REACHABILITY_FAILURES_TOTAL = Counter(
     ["app", "reason"],  # reason: timeout | connection_error | http_error | auth_error
 )
 
+# ── Instance readiness ─────────────────────────────────────────────────────────
+READY = Gauge(
+    "pygithubsts_ready",
+    "Whether the instance is ready to serve traffic (1 = ready, 0 = not ready)",
+)
+
 # ── Event loop health ─────────────────────────────────────────────────────────
 EVENT_LOOP_LAG = Gauge(
     "pygithubsts_event_loop_lag_seconds",
