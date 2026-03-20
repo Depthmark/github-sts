@@ -141,9 +141,16 @@ async def lifespan(app: FastAPI):
         await prober.start()
         app.state.reachability_prober = prober
 
+    # Mark instance as ready
+    app.state.ready = True
+    metrics.READY.set(1)
+    logger.info("github-sts ready")
+
     yield
 
     # ── Shutdown ──────────────────────────────────────────────────────────────
+    app.state.ready = False
+    metrics.READY.set(0)
     logger.info("github-sts shutting down")
 
     # Cancel event loop lag monitor
@@ -194,14 +201,6 @@ app = FastAPI(
     openapi_url="/openapi.json",
     docs_url="/docs",
     redoc_url=None,
-    contact={
-        "name": "GitHub STS",
-        "url": "https://github.com/AlexandreODelisle/github-sts",
-    },
-    license_info={
-        "name": "MIT",
-        "url": "https://opensource.org/licenses/MIT",
-    },
 )
 
 
