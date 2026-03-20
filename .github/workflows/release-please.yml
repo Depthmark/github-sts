@@ -17,10 +17,8 @@ jobs:
       issues: write
       pull-requests: write
     outputs:
-      docker_release_created: ${{ steps.release.outputs.release_created }}
-      docker_tag_name: ${{ steps.release.outputs.tag_name }}
-      helm_release_created: ${{ steps.release.outputs['charts/github-sts--release_created'] }}
-      helm_tag_name: ${{ steps.release.outputs['charts/github-sts--tag_name'] }}
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
       - name: Run Release Please
         id: release
@@ -32,10 +30,10 @@ jobs:
   release:
     name: Release
     needs: [release-please]
-    if: needs.release-please.outputs.docker_release_created == 'true'
+    if: needs.release-please.outputs.release_created == 'true'
     uses: ./.github/workflows/release.yml
     with:
-      tag_name: ${{ needs.release-please.outputs.docker_tag_name }}
+      tag_name: ${{ needs.release-please.outputs.tag_name }}
     permissions:
       contents: read
       packages: write
