@@ -39,7 +39,7 @@ class ServerConfig(BaseModel):
 class PolicyConfig(BaseModel):
     """Policy resolution settings."""
 
-    backend: str = "github"  # "github" (more backends later)
+    backend: str = "github"
     base_path: str = ".github/sts"  # Base path in repo for policy files
     cache_ttl_seconds: int = 60  # 0 = disable cache
 

@@ -66,14 +66,14 @@ AUDIT_EVENTS_LOGGED = Counter(
 AUDIT_LOG_ERRORS = Counter(
     "pygithubsts_audit_log_errors_total",
     "Audit log write errors",
-    ["backend"],  # backend: file | database
+    ["backend"],  # backend: file
 )
 
 # ── Policy metrics ────────────────────────────────────────────────────────────
 POLICY_LOADS_TOTAL = Counter(
     "pygithubsts_policy_loads_total",
     "Total policy file load attempts",
-    ["app", "backend", "result"],  # backend: github | database
+    ["app", "backend", "result"],  # backend: github
 )
 
 POLICY_CACHE_HITS = Counter(
