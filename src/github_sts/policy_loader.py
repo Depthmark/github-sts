@@ -171,94 +171,10 @@ class GitHubPolicyLoader(PolicyLoader):
             return None
 
 
-# ── Database backend ──────────────────────────────────────────────────────────
-
-
-class DatabasePolicyLoader(PolicyLoader):
-    """
-    Loads policies from a relational database.
-
-    Schema (SQL):
-        CREATE TABLE trust_policies (
-            scope     TEXT NOT NULL,       -- e.g. "org/repo"
-            app_name  TEXT NOT NULL,       -- e.g. "my-app"
-            identity  TEXT NOT NULL,       -- e.g. "ci"
-            policy    TEXT NOT NULL,       -- YAML content
-            enabled   BOOLEAN DEFAULT TRUE,
-            updated_at TIMESTAMP DEFAULT now(),
-            PRIMARY KEY (scope, app_name, identity)
-        );
-    """
-
-    def __init__(self, db_pool=None):
-        self._pool = db_pool  # asyncpg or aiosqlite pool, injected at startup
-
-    async def load(
-        self, scope: str, app_name: str, identity: str
-    ) -> TrustPolicy | None:
-        settings = get_settings()
-        cache_key = f"db:{scope}:{app_name}:{identity}"
-        ttl = settings.policy.cache_ttl_seconds
-
-        if ttl > 0:
-            cached = await _get_cached(cache_key)
-            if cached is not None:
-                metrics.POLICY_CACHE_HITS.labels(app=app_name).inc()
-                _, policy = cached
-                return policy
-            metrics.POLICY_CACHE_MISSES.labels(app=app_name).inc()
-
-        policy = await self._query(scope, app_name, identity)
-
-        if ttl > 0:
-            await _set_cached(cache_key, policy, ttl)
-
-        return policy
-
-    async def _query(
-        self, scope: str, app_name: str, identity: str
-    ) -> TrustPolicy | None:
-        if self._pool is None:
-            logger.error("DatabasePolicyLoader: no db pool configured")
-            metrics.POLICY_LOADS_TOTAL.labels(
-                app=app_name, backend="database", result="no_pool"
-            ).inc()
-            return None
-
-        try:
-            row = await self._pool.fetchrow(
-                "SELECT policy FROM trust_policies "
-                "WHERE scope = $1 AND app_name = $2 AND identity = $3 AND enabled = TRUE",
-                scope,
-                app_name,
-                identity,
-            )
-            if row is None:
-                metrics.POLICY_LOADS_TOTAL.labels(
-                    app=app_name, backend="database", result="not_found"
-                ).inc()
-                return None
-            return self._parse(
-                row["policy"], f"db:{scope}/{app_name}/{identity}", "database", app_name
-            )
-        except Exception as exc:
-            logger.error(
-                "DB error loading policy %s/%s/%s: %s",
-                scope,
-                app_name,
-                identity,
-                exc,
-            )
-            metrics.POLICY_LOADS_TOTAL.labels(
-                app=app_name, backend="database", result="db_error"
-            ).inc()
-            return None
-
-
 # ── Factory ───────────────────────────────────────────────────────────────────
 
 
-def get_policy_loader(app_token_provider=None, db_pool=None) -> PolicyLoader:
+def get_policy_loader(app_token_provider=None) -> PolicyLoader:
     """Return the configured policy loader."""
     settings = get_settings()
     backend = settings.policy.backend
@@ -267,8 +183,5 @@ def get_policy_loader(app_token_provider=None, db_pool=None) -> PolicyLoader:
         if app_token_provider is None:
             raise ValueError("GitHubPolicyLoader requires app_token_provider")
         return GitHubPolicyLoader(app_token_provider)
-
-    if backend == "database":
-        return DatabasePolicyLoader(db_pool)
 
     raise ValueError(f"Unknown policy backend: {backend!r}")
