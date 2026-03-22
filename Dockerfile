@@ -31,7 +31,7 @@ FROM python:3.14-alpine AS runtime
 LABEL maintainer="Alexandre Delisle <oss@adelisle.com>"
 LABEL description="GitHub Security Token Service (STS) - OIDC to GitHub token exchange"
 # x-release-please-start-version
-LABEL version="0.1.0"
+LABEL version="0.1.1"
 # x-release-please-end
 
 # Harden Python runtime

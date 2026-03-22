@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/Depthmark/github-sts/compare/v0.1.0...v0.1.1) (2026-03-22)
+
+
+### Bug Fixes
+
+* missing health and ready endpoints ([97c2f7d](https://github.com/Depthmark/github-sts/commit/97c2f7dd7f755875885d2b96a72b3f35046cc60b))
+
 ## 0.1.0 (2026-03-18)
 
 
