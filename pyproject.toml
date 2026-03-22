@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "github-sts"
-version = "0.1.0"
+version = "0.1.1"
 description = "A Python Security Token Service (STS) for the GitHub API"
 readme = "README.md"
 requires-python = ">=3.14"
