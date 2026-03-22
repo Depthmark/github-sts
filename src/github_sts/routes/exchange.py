@@ -12,11 +12,10 @@ Policy is resolved from:
 import hashlib
 import logging
 import time
-from typing import ClassVar
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .. import metrics
 from ..audit import AuditEvent, ExchangeResult
@@ -43,19 +42,22 @@ class TokenExchangeResponse(BaseModel):
         ..., description="Permissions granted in the token"
     )
 
-    class Config:
-        json_schema_extra: ClassVar[dict] = {
-            "example": {
-                "token": "ghu_16C7e42F292c6912E7710c838347Ae178B4a",
-                "scope": "octocat/Hello-World",
-                "app": "default",
-                "identity": "ci",
-                "permissions": {
-                    "contents": "read",
-                    "pull_requests": "write",
-                },
-            }
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "token": "ghu_16C7e42F292c6912E7710c838347Ae178B4a",
+                    "scope": "octocat/Hello-World",
+                    "app": "default",
+                    "identity": "ci",
+                    "permissions": {
+                        "contents": "read",
+                        "pull_requests": "write",
+                    },
+                }
+            ]
         }
+    )
 
 
 class ErrorResponse(BaseModel):
@@ -137,15 +139,17 @@ def _resolve_app_name(app_param: str | None) -> str:
 )
 async def exchange_token(
     scope: str = Query(
-        ..., description="Target repo (org/repo) or org", example="octocat/Hello-World"
+        ...,
+        description="Target repo (org/repo) or org",
+        examples=["octocat/Hello-World"],
     ),
     identity: str = Query(
-        ..., description="Trust policy identity to evaluate", example="ci"
+        ..., description="Trust policy identity to evaluate", examples=["ci"]
     ),
     app: str | None = Query(
         None,
         description="GitHub App name (optional if only one app is configured)",
-        example="default",
+        examples=["default"],
     ),
     credentials: HTTPAuthorizationCredentials = Depends(security),  # noqa: B008
     request: Request = None,

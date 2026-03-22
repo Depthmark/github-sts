@@ -66,14 +66,14 @@ AUDIT_EVENTS_LOGGED = Counter(
 AUDIT_LOG_ERRORS = Counter(
     "pygithubsts_audit_log_errors_total",
     "Audit log write errors",
-    ["backend"],  # backend: file | database
+    ["backend"],  # backend: file
 )
 
 # ── Policy metrics ────────────────────────────────────────────────────────────
 POLICY_LOADS_TOTAL = Counter(
     "pygithubsts_policy_loads_total",
     "Total policy file load attempts",
-    ["app", "backend", "result"],  # backend: github | database
+    ["app", "backend", "result"],  # backend: github
 )
 
 POLICY_CACHE_HITS = Counter(
@@ -168,6 +168,12 @@ GITHUB_REACHABILITY_FAILURES_TOTAL = Counter(
     "pygithubsts_github_reachability_failures_total",
     "Total GitHub reachability probe failures",
     ["app", "reason"],  # reason: timeout | connection_error | http_error | auth_error
+)
+
+# ── Instance readiness ─────────────────────────────────────────────────────────
+READY = Gauge(
+    "pygithubsts_ready",
+    "Whether the instance is ready to serve traffic (1 = ready, 0 = not ready)",
 )
 
 # ── Event loop health ─────────────────────────────────────────────────────────

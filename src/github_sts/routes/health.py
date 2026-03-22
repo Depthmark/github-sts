@@ -1,10 +1,10 @@
 """Health check routes."""
 
 import logging
-from typing import ClassVar
 
-from fastapi import APIRouter
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, Field
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -16,8 +16,7 @@ class HealthResponse(BaseModel):
 
     status: str = Field(..., description="Health status")
 
-    class Config:
-        json_schema_extra: ClassVar[dict] = {"example": {"status": "ok"}}
+    model_config = ConfigDict(json_schema_extra={"examples": [{"status": "ok"}]})
 
 
 class ReadinessResponse(BaseModel):
@@ -25,8 +24,7 @@ class ReadinessResponse(BaseModel):
 
     ready: bool = Field(..., description="Whether the API is ready to accept requests")
 
-    class Config:
-        json_schema_extra: ClassVar[dict] = {"example": {"ready": True}}
+    model_config = ConfigDict(json_schema_extra={"examples": [{"ready": True}]})
 
 
 @router.get(
@@ -55,9 +53,11 @@ async def health_check():
     response_model=ReadinessResponse,
     summary="Readiness Check",
     description="Check if the API is ready to accept requests. "
-    "Used by container orchestration for readiness probes.",
+    "Used by container orchestration for readiness probes. "
+    "Returns 503 until all startup tasks (JTI cache, audit logger, pollers) complete.",
+    responses={503: {"description": "Service not yet ready"}},
 )
-async def readiness_check():
+async def readiness_check(request: Request):
     """
     Perform a readiness check.
 
@@ -65,7 +65,13 @@ async def readiness_check():
     container orchestration systems (Kubernetes, Docker, etc.) for readiness probes
     to determine when traffic can be routed to this instance.
 
+    Returns 503 with ready=false during startup and shutdown.
+
     Returns:
-        - ready == true if ready to handle requests
+        - ready == true (200) if ready to handle requests
+        - ready == false (503) if not yet ready
     """
+    ready = getattr(request.app.state, "ready", False)
+    if not ready:
+        return JSONResponse(status_code=503, content={"ready": False})
     return {"ready": True}

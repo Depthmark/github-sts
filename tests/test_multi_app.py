@@ -14,7 +14,6 @@ import pytest
 
 from github_sts import metrics
 from github_sts.policy_loader import (
-    DatabasePolicyLoader,
     GitHubPolicyLoader,
     _policy_cache,
 )
@@ -185,56 +184,6 @@ class TestPolicyLoaderMetricsAppLabel:
 
         assert result is None
         assert after == before + 1, "Expected one not_found for app=missing-app"
-
-    async def test_database_loader_cache_miss_includes_app_label(self):
-        """Intention: verify DatabasePolicyLoader cache miss includes app label.
-
-        What is being tested:
-        - `DatabasePolicyLoader.load()` records cache misses with app=<app_name>.
-
-        Expected output:
-        - POLICY_CACHE_MISSES metric incremented with app="db-app".
-        """
-        _policy_cache.clear()
-
-        mock_pool = AsyncMock()
-        mock_pool.fetchrow = AsyncMock(return_value=None)
-
-        loader = DatabasePolicyLoader(db_pool=mock_pool)
-
-        before = metrics.POLICY_CACHE_MISSES.labels(app="db-app")._value.get()
-        await loader.load("org/repo", "db-app", "ci")
-        after = metrics.POLICY_CACHE_MISSES.labels(app="db-app")._value.get()
-
-        assert after == before + 1, "Expected one cache miss for db-app"
-
-    async def test_database_loader_not_found_includes_app_label(self):
-        """Intention: verify DatabasePolicyLoader not_found metric includes app label.
-
-        What is being tested:
-        - `DatabasePolicyLoader.load()` records not_found with app=<app_name>
-          when the database returns no matching row.
-
-        Expected output:
-        - POLICY_LOADS_TOTAL metric incremented with app="db-not-found", result="not_found".
-        """
-        _policy_cache.clear()
-
-        mock_pool = AsyncMock()
-        mock_pool.fetchrow = AsyncMock(return_value=None)
-
-        loader = DatabasePolicyLoader(db_pool=mock_pool)
-
-        before = metrics.POLICY_LOADS_TOTAL.labels(
-            app="db-not-found", backend="database", result="not_found"
-        )._value.get()
-        result = await loader.load("org/repo", "db-not-found", "ci")
-        after = metrics.POLICY_LOADS_TOTAL.labels(
-            app="db-not-found", backend="database", result="not_found"
-        )._value.get()
-
-        assert result is None
-        assert after == before + 1, "Expected one not_found for db-not-found app"
 
     async def test_different_apps_have_separate_metric_counts(self):
         """Intention: verify that metrics for different apps are independently tracked.
