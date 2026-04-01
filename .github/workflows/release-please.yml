@@ -1,0 +1,37 @@
+---
+name: Release Please
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions: {}
+
+jobs:
+  release-please:
+    name: Release Please
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      id-token: write
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - uses: Depthmark/github-sts-action@main
+        id: sts
+        with:
+          sts-url: https://github-sts-dev.adelisle.com
+          scope: Depthmark/github-sts
+          identity: release
+          app: depthmark-release-bot
+      - name: Run Release Please
+        id: release
+        uses: googleapis/release-please-action@16a9c90856f42705d54a6fda1823352bdc62cf38 # v4.4.0
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          token: ${{ steps.sts.outputs.token }}

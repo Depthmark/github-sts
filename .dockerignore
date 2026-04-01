@@ -1,0 +1,36 @@
+# Git
+.git
+.gitignore
+.github
+
+# Documentation
+*.md
+LICENSE
+aidlc-docs/
+dashboards/
+docs/
+
+# IDEs
+.vscode
+.idea
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Development
+.env*
+docker-compose*.yml
+Makefile
+scripts/
+
+# Docker
+Dockerfile.dev
+.dockerignore
+
+# AI/AIDLC
+.aidlc-rule-details/
+
+# Build artifacts
+github-sts
+*.out
