@@ -96,15 +96,21 @@ func New(cfg *config.Settings, slogger *slog.Logger) (*Server, error) {
 		slogger.Info("github app initialized", "app", name, "app_id", app.AppID)
 	}
 
-	// Initialize policy loader (uses the first app's token provider for API access).
-	var policyTP policy.TokenProvider
-	for _, provider := range appProviders {
-		policyTP = provider
-		break
+	// Initialize policy loader with per-app token providers and org policy repos.
+	policyTPs := make(map[string]policy.TokenProvider, len(appProviders))
+	orgPolicyRepos := make(map[string]string, len(cfg.Apps))
+	for name, provider := range appProviders {
+		policyTPs[name] = provider
+	}
+	for name, app := range cfg.Apps {
+		if app.OrgPolicyRepo != "" {
+			orgPolicyRepos[name] = app.OrgPolicyRepo
+		}
 	}
 	policyLoader := policy.NewGitHubLoader(
-		policyTP, apiURL,
-		firstOrgPolicyRepo(cfg.Apps),
+		policyTPs,
+		orgPolicyRepos,
+		apiURL,
 		cfg.Policy.BasePath,
 		cfg.Policy.CacheTTL,
 		slogger,
@@ -418,12 +424,3 @@ func routePattern(r *http.Request) string {
 	}
 }
 
-// firstOrgPolicyRepo returns the org_policy_repo from the first app that has one.
-func firstOrgPolicyRepo(apps map[string]config.AppConfig) string {
-	for _, app := range apps {
-		if app.OrgPolicyRepo != "" {
-			return app.OrgPolicyRepo
-		}
-	}
-	return ""
-}

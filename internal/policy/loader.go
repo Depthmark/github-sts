@@ -32,20 +32,30 @@ type cacheEntry struct {
 const maxPolicyResponseBytes = 1 << 20
 
 // GitHubPolicyLoader loads trust policies from GitHub repositories.
+// Each configured app has its own token provider and optional org policy repo,
+// so policy fetches use the correct app's credentials.
 type GitHubPolicyLoader struct {
-	tokenProvider TokenProvider
-	apiURL        string
-	orgPolicyRepo string
-	basePath      string
-	cacheTTL      time.Duration
-	cache         map[string]*cacheEntry
-	mu            sync.RWMutex
-	httpClient    *http.Client
-	slogger       *slog.Logger
+	tokenProviders map[string]TokenProvider // app name → provider
+	orgPolicyRepos map[string]string        // app name → org_policy_repo
+	apiURL         string
+	basePath       string
+	cacheTTL       time.Duration
+	cache          map[string]*cacheEntry
+	mu             sync.RWMutex
+	httpClient     *http.Client
+	slogger        *slog.Logger
 }
 
 // NewGitHubLoader creates a GitHubPolicyLoader.
-func NewGitHubLoader(tp TokenProvider, apiURL, orgPolicyRepo, basePath string, cacheTTL time.Duration, slogger *slog.Logger) *GitHubPolicyLoader {
+// tokenProviders maps app names to their token providers.
+// orgPolicyRepos maps app names to their org_policy_repo setting.
+func NewGitHubLoader(
+	tokenProviders map[string]TokenProvider,
+	orgPolicyRepos map[string]string,
+	apiURL, basePath string,
+	cacheTTL time.Duration,
+	slogger *slog.Logger,
+) *GitHubPolicyLoader {
 	if basePath == "" {
 		basePath = ".github/sts"
 	}
@@ -53,14 +63,14 @@ func NewGitHubLoader(tp TokenProvider, apiURL, orgPolicyRepo, basePath string, c
 		slogger = slog.Default()
 	}
 	return &GitHubPolicyLoader{
-		tokenProvider: tp,
-		apiURL:        apiURL,
-		orgPolicyRepo: orgPolicyRepo,
-		basePath:      basePath,
-		cacheTTL:      cacheTTL,
-		cache:         make(map[string]*cacheEntry),
-		httpClient:    &http.Client{Timeout: 15 * time.Second},
-		slogger:       slogger,
+		tokenProviders: tokenProviders,
+		orgPolicyRepos: orgPolicyRepos,
+		apiURL:         apiURL,
+		basePath:       basePath,
+		cacheTTL:       cacheTTL,
+		cache:          make(map[string]*cacheEntry),
+		httpClient:     &http.Client{Timeout: 15 * time.Second},
+		slogger:        slogger,
 	}
 }
 
@@ -80,6 +90,12 @@ func (l *GitHubPolicyLoader) Load(ctx context.Context, scope, appName, identity 
 
 	metrics.PolicyCacheMisses.WithLabelValues(appName).Inc()
 
+	// Resolve the token provider for this app.
+	tp, ok := l.tokenProviders[appName]
+	if !ok {
+		return nil, fmt.Errorf("no token provider configured for app %q", appName)
+	}
+
 	// Determine repo and file path.
 	filePath := fmt.Sprintf("%s/%s/%s.sts.yaml", l.basePath, appName, identity)
 
@@ -91,15 +107,16 @@ func (l *GitHubPolicyLoader) Load(ctx context.Context, scope, appName, identity 
 		tokenScope = scope
 	} else {
 		// Org-level: load from centralized org policy repo.
-		if l.orgPolicyRepo == "" {
-			return nil, fmt.Errorf("org_policy_repo required for org-level scope %q", scope)
+		orgPolicyRepo := l.orgPolicyRepos[appName]
+		if orgPolicyRepo == "" {
+			return nil, fmt.Errorf("org_policy_repo required for app %q with org-level scope %q", appName, scope)
 		}
-		repo = scope + "/" + l.orgPolicyRepo
+		repo = scope + "/" + orgPolicyRepo
 		tokenScope = repo
 	}
 
 	// Get installation token with contents:read to fetch the policy file.
-	token, err := l.tokenProvider.GetInstallationToken(ctx, tokenScope,
+	token, err := tp.GetInstallationToken(ctx, tokenScope,
 		map[string]string{"contents": "read"}, nil, "policy_loader")
 	if err != nil {
 		metrics.PolicyLoadsTotal.WithLabelValues(appName, "github", "token_error").Inc()

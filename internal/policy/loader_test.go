@@ -19,6 +19,16 @@ func (m *mockTokenProvider) GetInstallationToken(_ context.Context, _ string, _ 
 	return m.token, m.err
 }
 
+// testLoader creates a loader with a single app "default" for convenience.
+func testLoader(tp TokenProvider, apiURL, orgPolicyRepo string, cacheTTL time.Duration) *GitHubPolicyLoader {
+	tps := map[string]TokenProvider{"default": tp}
+	repos := map[string]string{}
+	if orgPolicyRepo != "" {
+		repos["default"] = orgPolicyRepo
+	}
+	return NewGitHubLoader(tps, repos, apiURL, "", cacheTTL, nil)
+}
+
 func TestGitHubLoader_RepoLevel(t *testing.T) {
 	policyYAML := `
 issuer: https://token.actions.githubusercontent.com
@@ -40,7 +50,7 @@ permissions:
 	defer srv.Close()
 
 	tp := &mockTokenProvider{token: "ghs_test"}
-	loader := NewGitHubLoader(tp, srv.URL, "sts-policies", "", 5*time.Minute, nil)
+	loader := testLoader(tp, srv.URL, "sts-policies", 5*time.Minute)
 
 	policy, err := loader.Load(context.Background(), "myorg/myrepo", "default", "ci")
 	if err != nil {
@@ -71,7 +81,7 @@ permissions:
 	defer srv.Close()
 
 	tp := &mockTokenProvider{token: "ghs_test"}
-	loader := NewGitHubLoader(tp, srv.URL, "sts-policies", "", 5*time.Minute, nil)
+	loader := testLoader(tp, srv.URL, "sts-policies", 5*time.Minute)
 
 	policy, err := loader.Load(context.Background(), "myorg", "default", "ci")
 	if err != nil {
@@ -84,7 +94,7 @@ permissions:
 
 func TestGitHubLoader_OrgLevel_MissingPolicyRepo(t *testing.T) {
 	tp := &mockTokenProvider{token: "ghs_test"}
-	loader := NewGitHubLoader(tp, "http://localhost", "", "", 5*time.Minute, nil)
+	loader := testLoader(tp, "http://localhost", "", 5*time.Minute)
 
 	_, err := loader.Load(context.Background(), "myorg", "default", "ci")
 	if err == nil {
@@ -102,7 +112,7 @@ func TestGitHubLoader_NotFound(t *testing.T) {
 	defer srv.Close()
 
 	tp := &mockTokenProvider{token: "ghs_test"}
-	loader := NewGitHubLoader(tp, srv.URL, "sts-policies", "", 5*time.Minute, nil)
+	loader := testLoader(tp, srv.URL, "sts-policies", 5*time.Minute)
 
 	policy, err := loader.Load(context.Background(), "myorg/myrepo", "default", "ci")
 	if err != nil {
@@ -128,7 +138,7 @@ permissions:
 	defer srv.Close()
 
 	tp := &mockTokenProvider{token: "ghs_test"}
-	loader := NewGitHubLoader(tp, srv.URL, "sts-policies", "", 5*time.Minute, nil)
+	loader := testLoader(tp, srv.URL, "sts-policies", 5*time.Minute)
 
 	// First call — cache miss.
 	_, _ = loader.Load(context.Background(), "myorg/myrepo", "default", "ci")
@@ -149,7 +159,7 @@ func TestGitHubLoader_ParseError(t *testing.T) {
 	defer srv.Close()
 
 	tp := &mockTokenProvider{token: "ghs_test"}
-	loader := NewGitHubLoader(tp, srv.URL, "sts-policies", "", 5*time.Minute, nil)
+	loader := testLoader(tp, srv.URL, "sts-policies", 5*time.Minute)
 
 	policy, err := loader.Load(context.Background(), "myorg/myrepo", "default", "ci")
 	if err == nil {
@@ -159,3 +169,50 @@ func TestGitHubLoader_ParseError(t *testing.T) {
 		t.Fatal("expected nil policy for parse error")
 	}
 }
+
+func TestGitHubLoader_MultiApp_UsesCorrectProvider(t *testing.T) {
+	policyYAML := `
+issuer: https://iss.example.com
+permissions:
+  contents: read
+`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(policyYAML))
+	}))
+	defer srv.Close()
+
+	// Create two providers — only app-b has a valid token.
+	tpA := &mockTokenProvider{token: "", err: errForTest("app-a should not be called")}
+	tpB := &mockTokenProvider{token: "ghs_correct"}
+	tps := map[string]TokenProvider{"app-a": tpA, "app-b": tpB}
+
+	loader := NewGitHubLoader(tps, nil, srv.URL, "", 5*time.Minute, nil)
+
+	// Load for app-b should use tpB, not tpA.
+	policy, err := loader.Load(context.Background(), "myorg/myrepo", "app-b", "ci")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if policy == nil {
+		t.Fatal("expected non-nil policy")
+	}
+}
+
+func TestGitHubLoader_UnknownApp(t *testing.T) {
+	tps := map[string]TokenProvider{"app-a": &mockTokenProvider{token: "ghs_test"}}
+	loader := NewGitHubLoader(tps, nil, "http://localhost", "", 5*time.Minute, nil)
+
+	_, err := loader.Load(context.Background(), "myorg/myrepo", "nonexistent", "ci")
+	if err == nil {
+		t.Fatal("expected error for unknown app")
+	}
+	if !strings.Contains(err.Error(), "no token provider configured for app") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+type testErr string
+
+func errForTest(msg string) error { return testErr(msg) }
+func (e testErr) Error() string   { return string(e) }
