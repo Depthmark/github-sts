@@ -1,0 +1,86 @@
+# github-sts configuration
+# ========================
+# This file can be mounted as a Kubernetes ConfigMap.
+# Set GITHUBSTS_CONFIG_PATH to point to this file.
+#
+# All values can be overridden by environment variables with the
+# GITHUBSTS_ prefix (e.g., GITHUBSTS_SERVER_LOG_LEVEL=debug).
+
+server:
+  host: "0.0.0.0"
+  port: 8080
+  log_level: "info"                 # debug | info | warn | error
+  suppress_health_logs: true        # Filter /health, /ready, /metrics from access logs at INFO level
+  shutdown_timeout: 10s             # Graceful shutdown grace period
+  trust_forwarded_headers: false    # Trust X-Forwarded-For for client IP (enable behind a reverse proxy)
+
+# GitHub Apps — define one or more apps
+# Each app has its own credentials and maps to a policy subdirectory:
+#   {base_path}/{app_name}/{identity}.sts.yaml
+apps:
+  default:
+    app_id: 123456
+    # Provide the private key inline …
+    private_key: |
+      -----BEGIN RSA PRIVATE KEY-----
+      ...
+      -----END RSA PRIVATE KEY-----
+    # … or as a file path (mutually exclusive with private_key)
+    # private_key_path: "/etc/github-sts/keys/default.pem"
+
+    # For org-level scopes (scope="myorg"), set org_policy_repo to the
+    # repository name where org-level trust policies live.
+    # E.g. ".github" means policies are loaded from myorg/.github/{base_path}/…
+    # Omit or set to null to disable org-level scope for this app.
+    # org_policy_repo: ".github"
+
+  # Example: add more apps
+  # deploy-bot:
+  #   app_id: 654321
+  #   private_key_path: "/etc/github-sts/keys/deploy-bot.pem"
+  #   org_policy_repo: ".github"
+
+# OIDC token validation
+oidc:
+  allowed_issuers:                   # At least one issuer is required
+    - "https://token.actions.githubusercontent.com"       # GitHub Actions
+    # - "https://sts.windows.net/{tenant}/"              # Azure AD
+    # - "https://accounts.google.com"                    # Google Cloud
+
+# JTI replay prevention
+jti:
+  backend: "memory"                 # memory | redis (use redis for multi-instance deployments)
+  redis_url: ""                     # Required when backend = redis
+  ttl: 1h                          # How long to remember consumed JTIs
+
+# Policy resolution
+policy:
+  base_path: ".github/sts"          # Base path in repos for trust policies
+  cache_ttl: 60s                    # 0 = disable caching
+
+# Audit logging
+audit:
+  file_enabled: true
+  file_path: "/var/log/github-sts/audit.json"
+  buffer_size: 1024                 # Channel buffer size for async writes
+
+# Prometheus metrics
+metrics:
+  enabled: true
+  auth_token: ""                    # Bearer token for /metrics endpoint (empty = unauthenticated)
+  rate_limit_poll_enabled: true
+  rate_limit_poll_interval: 60s     # Poll GET /rate_limit periodically
+  reachability_probe_enabled: true
+  reachability_probe_interval: 30s  # Probe GitHub API reachability
+
+# Per-IP rate limiting on the /sts/exchange endpoint
+rate_limit:
+  enabled: false                    # Enable per-IP rate limiting
+  rate: 10                          # Requests per second per IP
+  burst: 20                         # Maximum burst size per IP
+  exempt_cidrs: []                  # CIDR ranges exempt from rate limiting
+  # exempt_cidrs:
+  #   - "10.0.0.0/8"               # Internal network
+  #   - "172.16.0.0/12"            # Private range
+  #   - "192.168.0.0/16"           # Private range
+  #   - "fd00::/8"                 # IPv6 private range

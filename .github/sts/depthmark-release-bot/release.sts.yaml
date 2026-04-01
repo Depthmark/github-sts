@@ -1,0 +1,10 @@
+issuer: https://token.actions.githubusercontent.com
+subject: "repo:Depthmark/github-sts:ref:refs/heads/main"
+
+claim_pattern:
+  workflow_ref: "Depthmark/github-sts/.github/workflows/release-please.yml@refs/heads/main"
+  
+permissions:
+  contents: write
+  checks: write
+  pull_requests: write
