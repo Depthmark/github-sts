@@ -20,6 +20,7 @@ import (
 
 	"github.com/depthmark/github-sts/internal/metrics"
 	"github.com/golang-jwt/jwt/v5"
+	"golang.org/x/sync/singleflight"
 )
 
 const (
@@ -51,6 +52,7 @@ type jwksEntry struct {
 var (
 	jwksCache = make(map[string]*jwksEntry)
 	jwksMu    sync.RWMutex
+	jwksSF    singleflight.Group
 )
 
 // Validate verifies an OIDC bearer token's signature and standard claims
@@ -154,6 +156,9 @@ func classifyError(err error) string {
 }
 
 // getJWKS returns cached JWKS keys for the given issuer, fetching if needed.
+// Concurrent requests for the same issuer are deduplicated via singleflight,
+// so the write lock is only held for the brief cache update — not during the
+// HTTP fetch.
 func getJWKS(ctx context.Context, issuer string) (map[string]*rsa.PublicKey, error) {
 	jwksMu.RLock()
 	if entry, ok := jwksCache[issuer]; ok && time.Since(entry.fetchedAt) < jwksCacheTTL {
@@ -162,40 +167,50 @@ func getJWKS(ctx context.Context, issuer string) (map[string]*rsa.PublicKey, err
 	}
 	jwksMu.RUnlock()
 
-	jwksMu.Lock()
-	defer jwksMu.Unlock()
+	// Singleflight: only one goroutine fetches; others wait and share the result.
+	v, err, _ := jwksSF.Do(issuer, func() (any, error) {
+		// Double-check cache after winning the singleflight race.
+		jwksMu.RLock()
+		if entry, ok := jwksCache[issuer]; ok && time.Since(entry.fetchedAt) < jwksCacheTTL {
+			jwksMu.RUnlock()
+			return entry.keys, nil
+		}
+		jwksMu.RUnlock()
 
-	// Double-check after acquiring write lock.
-	if entry, ok := jwksCache[issuer]; ok && time.Since(entry.fetchedAt) < jwksCacheTTL {
-		return entry.keys, nil
-	}
+		keys, err := fetchJWKS(ctx, issuer)
+		if err != nil {
+			return nil, err
+		}
 
-	keys, err := fetchJWKS(ctx, issuer)
+		// Brief write lock for cache update only.
+		jwksMu.Lock()
+		jwksCache[issuer] = &jwksEntry{
+			keys:      keys,
+			fetchedAt: time.Now(),
+		}
+
+		// Evict oldest entry if cache is full to prevent unbounded growth.
+		if len(jwksCache) > maxJWKSCacheEntries {
+			var oldestKey string
+			oldest := time.Now()
+			for k, v := range jwksCache {
+				if k != issuer && v.fetchedAt.Before(oldest) {
+					oldest = v.fetchedAt
+					oldestKey = k
+				}
+			}
+			if oldestKey != "" {
+				delete(jwksCache, oldestKey)
+			}
+		}
+		jwksMu.Unlock()
+
+		return keys, nil
+	})
 	if err != nil {
 		return nil, err
 	}
-
-	jwksCache[issuer] = &jwksEntry{
-		keys:      keys,
-		fetchedAt: time.Now(),
-	}
-
-	// Evict oldest entry if cache is full to prevent unbounded growth.
-	if len(jwksCache) > maxJWKSCacheEntries {
-		var oldestKey string
-		oldest := time.Now()
-		for k, v := range jwksCache {
-			if k != issuer && v.fetchedAt.Before(oldest) {
-				oldest = v.fetchedAt
-				oldestKey = k
-			}
-		}
-		if oldestKey != "" {
-			delete(jwksCache, oldestKey)
-		}
-	}
-
-	return keys, nil
+	return v.(map[string]*rsa.PublicKey), nil
 }
 
 // fetchJWKS discovers and fetches JWKS from the issuer's OIDC discovery endpoint.

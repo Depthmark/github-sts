@@ -18,6 +18,7 @@ import (
 
 	"github.com/depthmark/github-sts/internal/metrics"
 	"github.com/golang-jwt/jwt/v5"
+	"golang.org/x/sync/singleflight"
 )
 
 // installationCacheTTL controls how long resolved installation IDs are
@@ -25,9 +26,21 @@ import (
 // stale; this TTL ensures the service self-heals without a restart.
 const installationCacheTTL = 15 * time.Minute
 
+// appJWTCacheTTL controls how long the signed App JWT is reused. The JWT
+// itself is valid for 10 minutes; we cache for 9 minutes to leave a
+// 1-minute safety margin. This eliminates redundant RSA signings on the
+// hot path (~1-2ms each) without any security impact — the JWT is an
+// internal server credential that never leaves the service.
+const appJWTCacheTTL = 9 * time.Minute
+
 type cachedInstallation struct {
 	id        int64
 	fetchedAt time.Time
+}
+
+type cachedJWT struct {
+	token     string
+	expiresAt time.Time
 }
 
 // AppTokenProvider creates permission-scoped GitHub installation tokens
@@ -40,6 +53,9 @@ type AppTokenProvider struct {
 	httpClient        *http.Client
 	installationCache map[string]*cachedInstallation // org → entry
 	mu                sync.RWMutex
+	jwtCache          cachedJWT
+	jwtMu             sync.Mutex
+	installSF         singleflight.Group
 }
 
 // NewAppTokenProvider creates a server-side AppTokenProvider.
@@ -57,8 +73,17 @@ func NewAppTokenProvider(appName string, appID int64, privateKey *rsa.PrivateKey
 	}
 }
 
-// GenerateAppJWT creates a short-lived JWT for authenticating as the GitHub App.
+// GenerateAppJWT returns a short-lived JWT for authenticating as the GitHub
+// App. The signed token is cached for 9 minutes (valid for 10) to avoid
+// redundant RSA signing operations under load.
 func (p *AppTokenProvider) GenerateAppJWT() (string, error) {
+	p.jwtMu.Lock()
+	defer p.jwtMu.Unlock()
+
+	if p.jwtCache.token != "" && time.Now().Before(p.jwtCache.expiresAt) {
+		return p.jwtCache.token, nil
+	}
+
 	now := time.Now()
 	claims := jwt.MapClaims{
 		"iat": now.Add(-60 * time.Second).Unix(),
@@ -66,11 +91,21 @@ func (p *AppTokenProvider) GenerateAppJWT() (string, error) {
 		"iss": fmt.Sprintf("%d", p.appID),
 	}
 	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
-	return tok.SignedString(p.privateKey)
+	signed, err := tok.SignedString(p.privateKey)
+	if err != nil {
+		return "", err
+	}
+
+	p.jwtCache = cachedJWT{
+		token:     signed,
+		expiresAt: now.Add(appJWTCacheTTL),
+	}
+	return signed, nil
 }
 
 // GetInstallationID resolves the GitHub App installation ID for the given scope.
 // Only org-level resolution is supported (no repo-level fallback).
+// Concurrent requests for the same org are deduplicated via singleflight.
 func (p *AppTokenProvider) GetInstallationID(ctx context.Context, scope string) (int64, error) {
 	org := extractOrg(scope)
 
@@ -82,7 +117,27 @@ func (p *AppTokenProvider) GetInstallationID(ctx context.Context, scope string) 
 	}
 	p.mu.RUnlock()
 
-	// Resolve from GitHub.
+	// Singleflight: deduplicate concurrent fetches for the same org.
+	v, err, _ := p.installSF.Do(org, func() (any, error) {
+		// Double-check cache after winning the singleflight race.
+		p.mu.RLock()
+		if entry, ok := p.installationCache[org]; ok && time.Since(entry.fetchedAt) < installationCacheTTL {
+			p.mu.RUnlock()
+			return entry.id, nil
+		}
+		p.mu.RUnlock()
+
+		return p.fetchInstallationID(ctx, org)
+	})
+	if err != nil {
+		return 0, err
+	}
+	return v.(int64), nil
+}
+
+// fetchInstallationID performs the actual GitHub API call to resolve the
+// installation ID for the given org, and caches the result.
+func (p *AppTokenProvider) fetchInstallationID(ctx context.Context, org string) (int64, error) {
 	appJWT, err := p.GenerateAppJWT()
 	if err != nil {
 		return 0, fmt.Errorf("generating app JWT: %w", err)

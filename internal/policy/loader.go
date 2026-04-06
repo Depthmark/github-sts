@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/depthmark/github-sts/internal/metrics"
+	"golang.org/x/sync/singleflight"
 )
 
 // Loader loads trust policies for a given scope/app/identity combination.
@@ -33,7 +34,8 @@ const maxPolicyResponseBytes = 1 << 20
 
 // GitHubPolicyLoader loads trust policies from GitHub repositories.
 // Each configured app has its own token provider and optional org policy repo,
-// so policy fetches use the correct app's credentials.
+// so policy fetches use the correct app's credentials. Concurrent loads for
+// the same cache key are deduplicated via singleflight.
 type GitHubPolicyLoader struct {
 	tokenProviders map[string]TokenProvider // app name → provider
 	orgPolicyRepos map[string]string        // app name → org_policy_repo
@@ -44,23 +46,29 @@ type GitHubPolicyLoader struct {
 	mu             sync.RWMutex
 	httpClient     *http.Client
 	slogger        *slog.Logger
+	sf             singleflight.Group
 }
 
 // NewGitHubLoader creates a GitHubPolicyLoader.
 // tokenProviders maps app names to their token providers.
 // orgPolicyRepos maps app names to their org_policy_repo setting.
+// If httpClient is nil, a default client with 15s timeout is used.
 func NewGitHubLoader(
 	tokenProviders map[string]TokenProvider,
 	orgPolicyRepos map[string]string,
 	apiURL, basePath string,
 	cacheTTL time.Duration,
 	slogger *slog.Logger,
+	httpClient *http.Client,
 ) *GitHubPolicyLoader {
 	if basePath == "" {
 		basePath = ".github/sts"
 	}
 	if slogger == nil {
 		slogger = slog.Default()
+	}
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 15 * time.Second}
 	}
 	return &GitHubPolicyLoader{
 		tokenProviders: tokenProviders,
@@ -69,13 +77,14 @@ func NewGitHubLoader(
 		basePath:       basePath,
 		cacheTTL:       cacheTTL,
 		cache:          make(map[string]*cacheEntry),
-		httpClient:     &http.Client{Timeout: 15 * time.Second},
+		httpClient:     httpClient,
 		slogger:        slogger,
 	}
 }
 
 // Load fetches a trust policy for the given scope/app/identity. Results are
 // cached for cacheTTL duration. Returns nil if the policy file is not found.
+// Concurrent loads for the same key are deduplicated via singleflight.
 func (l *GitHubPolicyLoader) Load(ctx context.Context, scope, appName, identity string) (*TrustPolicy, error) {
 	cacheKey := fmt.Sprintf("github:%s:%s:%s", scope, appName, identity)
 
@@ -90,6 +99,30 @@ func (l *GitHubPolicyLoader) Load(ctx context.Context, scope, appName, identity 
 
 	metrics.PolicyCacheMisses.WithLabelValues(appName).Inc()
 
+	// Singleflight: deduplicate concurrent cache-miss fetches for the same key.
+	v, err, _ := l.sf.Do(cacheKey, func() (any, error) {
+		// Double-check cache after winning the singleflight race.
+		l.mu.RLock()
+		if entry, ok := l.cache[cacheKey]; ok && time.Now().Before(entry.expiresAt) {
+			l.mu.RUnlock()
+			return entry.policy, nil
+		}
+		l.mu.RUnlock()
+
+		return l.fetchAndCache(ctx, cacheKey, scope, appName, identity)
+	})
+	if err != nil {
+		return nil, err
+	}
+	// singleflight returns nil interface when the policy is nil (not found).
+	if v == nil {
+		return nil, nil
+	}
+	return v.(*TrustPolicy), nil
+}
+
+// fetchAndCache performs the actual policy fetch from GitHub and caches the result.
+func (l *GitHubPolicyLoader) fetchAndCache(ctx context.Context, cacheKey, scope, appName, identity string) (*TrustPolicy, error) {
 	// Resolve the token provider for this app.
 	tp, ok := l.tokenProviders[appName]
 	if !ok {
