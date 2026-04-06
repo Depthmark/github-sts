@@ -80,13 +80,27 @@ func New(cfg *config.Settings, slogger *slog.Logger) (*Server, error) {
 	}
 	s.auditLogger = al
 
+	// Shared HTTP transport tuned for high-throughput GitHub API calls.
+	// Default Go transport uses MaxIdleConnsPerHost=2, which causes
+	// excessive TCP+TLS handshakes at scale. Most connections target
+	// api.github.com, so a higher per-host pool avoids this bottleneck.
+	githubTransport := &http.Transport{
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 20,
+		IdleConnTimeout:     90 * time.Second,
+	}
+	githubHTTPClient := &http.Client{
+		Timeout:   15 * time.Second,
+		Transport: githubTransport,
+	}
+
 	// Initialize GitHub App token providers.
 	appProviders := make(map[string]*github.AppTokenProvider, len(cfg.Apps))
 	appConfigs := make(map[string]github.AppConfig, len(cfg.Apps))
 	apiURL := "https://api.github.com"
 
 	for name, app := range cfg.Apps {
-		provider := github.NewAppTokenProvider(name, app.AppID, app.ParsedKey, apiURL, nil)
+		provider := github.NewAppTokenProvider(name, app.AppID, app.ParsedKey, apiURL, githubHTTPClient)
 		appProviders[name] = provider
 		appConfigs[name] = github.AppConfig{
 			AppID:         app.AppID,
@@ -114,6 +128,7 @@ func New(cfg *config.Settings, slogger *slog.Logger) (*Server, error) {
 		cfg.Policy.BasePath,
 		cfg.Policy.CacheTTL,
 		slogger,
+		githubHTTPClient,
 	)
 
 	// Initialize rate limit poller.

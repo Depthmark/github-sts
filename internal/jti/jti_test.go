@@ -10,6 +10,7 @@ import (
 
 func TestInMemoryCache_NewJTI(t *testing.T) {
 	c := NewInMemoryCache(5 * time.Minute)
+	defer c.Stop()
 	ctx := context.Background()
 	exp := time.Now().Add(10 * time.Minute)
 
@@ -24,6 +25,7 @@ func TestInMemoryCache_NewJTI(t *testing.T) {
 
 func TestInMemoryCache_ReplayDetection(t *testing.T) {
 	c := NewInMemoryCache(5 * time.Minute)
+	defer c.Stop()
 	ctx := context.Background()
 	exp := time.Now().Add(10 * time.Minute)
 
@@ -43,30 +45,55 @@ func TestInMemoryCache_ReplayDetection(t *testing.T) {
 	}
 }
 
-func TestInMemoryCache_OpportunisticCleanup(t *testing.T) {
+func TestInMemoryCache_ExpiredJTIAllowsReReserve(t *testing.T) {
 	c := NewInMemoryCache(1 * time.Millisecond)
+	defer c.Stop()
 	ctx := context.Background()
 
 	// Reserve a JTI with very short TTL.
-	_, _ = c.Reserve(ctx, "old-jti", time.Now().Add(-1*time.Second))
+	ok, _ := c.Reserve(ctx, "old-jti", time.Now().Add(-1*time.Second))
+	if !ok {
+		t.Fatal("first reserve should report new")
+	}
 
 	// Wait for it to expire.
 	time.Sleep(5 * time.Millisecond)
 
-	// Next call should clean up expired entry.
-	_, _ = c.Reserve(ctx, "new-jti", time.Now().Add(10*time.Minute))
+	// Reserve should treat expired entry as new (O(1) check on the entry itself).
+	ok, _ = c.Reserve(ctx, "old-jti", time.Now().Add(10*time.Minute))
+	if !ok {
+		t.Fatal("expired JTI should be treated as new")
+	}
+}
 
+func TestInMemoryCache_BackgroundCleanup(t *testing.T) {
+	c := &InMemoryCache{
+		ttl:         1 * time.Millisecond,
+		entries:     make(map[string]time.Time),
+		stopCleanup: make(chan struct{}),
+	}
+	defer c.Stop()
+
+	// Directly insert an already-expired entry (bypassing Reserve's TTL computation).
 	c.mu.Lock()
-	_, oldExists := c.entries["old-jti"]
+	c.entries["old-jti"] = time.Now().Add(-1 * time.Second)
 	c.mu.Unlock()
 
-	if oldExists {
-		t.Fatal("expired entry should have been cleaned up")
+	// Directly call evictExpired (testing the cleanup logic without waiting for the ticker).
+	c.evictExpired()
+
+	c.mu.Lock()
+	_, exists := c.entries["old-jti"]
+	c.mu.Unlock()
+
+	if exists {
+		t.Fatal("evictExpired should have removed the expired entry")
 	}
 }
 
 func TestInMemoryCache_TTLComputation(t *testing.T) {
 	c := NewInMemoryCache(1 * time.Minute)
+	defer c.Stop()
 	ctx := context.Background()
 
 	// Token expires in 10 minutes — cache entry should use token expiry + 1s.
@@ -87,6 +114,7 @@ func TestInMemoryCache_TTLComputation(t *testing.T) {
 
 func TestInMemoryCache_ReserveAndRelease(t *testing.T) {
 	c := NewInMemoryCache(5 * time.Minute)
+	defer c.Stop()
 	ctx := context.Background()
 	exp := time.Now().Add(10 * time.Minute)
 
@@ -116,6 +144,7 @@ func TestInMemoryCache_ReserveAndRelease(t *testing.T) {
 
 func TestInMemoryCache_ConcurrentAccess(t *testing.T) {
 	c := NewInMemoryCache(5 * time.Minute)
+	defer c.Stop()
 	ctx := context.Background()
 	exp := time.Now().Add(10 * time.Minute)
 

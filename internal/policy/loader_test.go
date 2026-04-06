@@ -26,7 +26,7 @@ func testLoader(tp TokenProvider, apiURL, orgPolicyRepo string, cacheTTL time.Du
 	if orgPolicyRepo != "" {
 		repos["default"] = orgPolicyRepo
 	}
-	return NewGitHubLoader(tps, repos, apiURL, "", cacheTTL, nil)
+	return NewGitHubLoader(tps, repos, apiURL, "", cacheTTL, nil, nil)
 }
 
 func TestGitHubLoader_RepoLevel(t *testing.T) {
@@ -187,7 +187,7 @@ permissions:
 	tpB := &mockTokenProvider{token: "ghs_correct"}
 	tps := map[string]TokenProvider{"app-a": tpA, "app-b": tpB}
 
-	loader := NewGitHubLoader(tps, nil, srv.URL, "", 5*time.Minute, nil)
+	loader := NewGitHubLoader(tps, nil, srv.URL, "", 5*time.Minute, nil, nil)
 
 	// Load for app-b should use tpB, not tpA.
 	policy, err := loader.Load(context.Background(), "myorg/myrepo", "app-b", "ci")
@@ -201,7 +201,7 @@ permissions:
 
 func TestGitHubLoader_UnknownApp(t *testing.T) {
 	tps := map[string]TokenProvider{"app-a": &mockTokenProvider{token: "ghs_test"}}
-	loader := NewGitHubLoader(tps, nil, "http://localhost", "", 5*time.Minute, nil)
+	loader := NewGitHubLoader(tps, nil, "http://localhost", "", 5*time.Minute, nil, nil)
 
 	_, err := loader.Load(context.Background(), "myorg/myrepo", "nonexistent", "ci")
 	if err == nil {
