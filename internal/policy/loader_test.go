@@ -341,9 +341,8 @@ func (e testErr) Error() string   { return string(e) }
 // returns 404, mimicking GitHub's "file not found" response. Records the
 // path of every request for call-order assertions.
 type fakeRepoMux struct {
-	files        map[string]string // repo path fragment ("myorg/myrepo/") → policy YAML body
-	requested    []string
-	policyByRepo func(repo string) string // optional: dynamic per-repo body
+	files     map[string]string // repo path fragment ("myorg/myrepo/") → policy YAML body
+	requested []string
 }
 
 func (f *fakeRepoMux) handler(t *testing.T) http.Handler {
