@@ -11,11 +11,13 @@ import (
 
 // mockTokenProvider implements TokenProvider for tests.
 type mockTokenProvider struct {
-	token string
-	err   error
+	token  string
+	err    error
+	scopes []string // captures the scope passed to each call, in order
 }
 
-func (m *mockTokenProvider) GetInstallationToken(_ context.Context, _ string, _ map[string]string, _ []string, _ string) (string, error) {
+func (m *mockTokenProvider) GetInstallationToken(_ context.Context, scope string, _ map[string]string, _ []string, _ string) (string, error) {
+	m.scopes = append(m.scopes, scope)
 	return m.token, m.err
 }
 
@@ -89,6 +91,106 @@ permissions:
 	}
 	if policy == nil {
 		t.Fatal("expected non-nil policy")
+	}
+}
+
+func TestGitHubLoader_RepoLevel_FallsBackToOrgPolicyRepo(t *testing.T) {
+	policyYAML := `
+issuer: https://token.actions.githubusercontent.com
+subject_pattern: "repo:myorg/.*"
+permissions:
+  contents: read
+`
+	var pathsRequested []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pathsRequested = append(pathsRequested, r.URL.Path)
+		// First request (repo-local) → 404. Subsequent (org repo) → 200.
+		if strings.Contains(r.URL.Path, "myorg/myrepo/") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if !strings.Contains(r.URL.Path, "myorg/sts-policies/") {
+			t.Errorf("fallback should hit org policy repo, got %s", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(policyYAML))
+	}))
+	defer srv.Close()
+
+	tp := &mockTokenProvider{token: "ghs_test"}
+	loader := testLoader(tp, srv.URL, "sts-policies", 5*time.Minute)
+
+	pol, err := loader.Load(context.Background(), "myorg/myrepo", "default", "ci")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if pol == nil {
+		t.Fatal("expected policy from org repo fallback, got nil")
+	}
+	if !pol.Centralized() {
+		t.Error("policy from org repo fallback must be marked Centralized()")
+	}
+	if len(pathsRequested) != 2 {
+		t.Fatalf("expected 2 fetches (repo + org repo), got %d: %v", len(pathsRequested), pathsRequested)
+	}
+
+	// Two install tokens were minted: first scoped to the requesting repo,
+	// second scoped to the org policy repo. Neither should ever be scoped
+	// org-wide for the policy fetch step.
+	if len(tp.scopes) != 2 {
+		t.Fatalf("expected 2 token requests, got %d: %v", len(tp.scopes), tp.scopes)
+	}
+	if tp.scopes[0] != "myorg/myrepo" {
+		t.Errorf("first policy-fetch token scope = %q, want %q", tp.scopes[0], "myorg/myrepo")
+	}
+	if tp.scopes[1] != "myorg/sts-policies" {
+		t.Errorf("fallback policy-fetch token scope = %q, want %q", tp.scopes[1], "myorg/sts-policies")
+	}
+}
+
+func TestGitHubLoader_RepoLevel_NoFallbackWhenOrgPolicyRepoUnset(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	tp := &mockTokenProvider{token: "ghs_test"}
+	// No org policy repo configured → no fallback, returns nil.
+	loader := testLoader(tp, srv.URL, "", 5*time.Minute)
+
+	pol, err := loader.Load(context.Background(), "myorg/myrepo", "default", "ci")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if pol != nil {
+		t.Errorf("expected nil policy, got %+v", pol)
+	}
+	if len(tp.scopes) != 1 {
+		t.Errorf("expected single fetch attempt, got %d: %v", len(tp.scopes), tp.scopes)
+	}
+}
+
+func TestGitHubLoader_OrgLevel_MarksCentralized(t *testing.T) {
+	policyYAML := `
+issuer: https://token.actions.githubusercontent.com
+permissions:
+  contents: read
+`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(policyYAML))
+	}))
+	defer srv.Close()
+
+	tp := &mockTokenProvider{token: "ghs_test"}
+	loader := testLoader(tp, srv.URL, "sts-policies", 5*time.Minute)
+
+	pol, err := loader.Load(context.Background(), "myorg", "default", "ci")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if pol == nil || !pol.Centralized() {
+		t.Fatal("org-level policy must be marked Centralized()")
 	}
 }
 

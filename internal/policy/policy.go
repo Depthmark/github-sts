@@ -24,7 +24,20 @@ type TrustPolicy struct {
 	// Pre-compiled regexes (populated by Validate, not serialized).
 	subjectRegex *regexp.Regexp
 	claimRegexes map[string]*regexp.Regexp
+
+	// centralized is true when the policy was loaded from the org policy repo
+	// rather than the requesting repo. Set by the loader, never serialized.
+	centralized bool
 }
+
+// Centralized reports whether this policy was resolved from the centralized
+// org policy repo. The token issuer must force per-request repo scoping in
+// that case so a centralized identity cannot mint a cross-repo token.
+func (p *TrustPolicy) Centralized() bool { return p.centralized }
+
+// SetCentralized marks the policy as having been loaded from the org policy
+// repo. Intended for use by the loader.
+func (p *TrustPolicy) SetCentralized(v bool) { p.centralized = v }
 
 // ParsePolicy parses a YAML trust policy from raw bytes.
 func ParsePolicy(data []byte) (*TrustPolicy, error) {

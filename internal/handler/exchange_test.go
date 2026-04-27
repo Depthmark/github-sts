@@ -273,16 +273,50 @@ func TestBuildRepositories(t *testing.T) {
 		Repositories: []string{"repo1", "repo2"},
 	}
 
-	// Repo-level scope.
-	repos := buildRepositories("org/myrepo", pol)
+	// Repo-level scope: always restricted to the requesting repo.
+	repos := buildRepositories("org/myrepo", pol, "repo:org/myrepo:ref:refs/heads/main")
 	if len(repos) != 1 || repos[0] != "myrepo" {
 		t.Errorf("repo-level: got %v, want [myrepo]", repos)
 	}
 
-	// Org-level scope.
-	repos = buildRepositories("org", pol)
+	// Org-level scope, non-centralized: honors policy repositories.
+	repos = buildRepositories("org", pol, "repo:org/anything:ref:refs/heads/main")
 	if len(repos) != 2 {
-		t.Errorf("org-level: got %v, want [repo1 repo2]", repos)
+		t.Errorf("org-level non-centralized: got %v, want [repo1 repo2]", repos)
+	}
+}
+
+func TestBuildRepositories_CentralizedForcesPerRepoScope(t *testing.T) {
+	// A centralized policy that, naively, would grant org-wide access
+	// (Repositories nil). The handler must instead derive the requesting repo
+	// from the OIDC subject and scope the token to that repo only.
+	pol := &policy.TrustPolicy{}
+	pol.SetCentralized(true)
+
+	repos := buildRepositories("org", pol, "repo:org/myrepo:environment:prod")
+	if len(repos) != 1 || repos[0] != "myrepo" {
+		t.Errorf("centralized org-level: got %v, want [myrepo]", repos)
+	}
+
+	// Even if the policy lists repositories, the centralized path ignores it
+	// and sticks to the subject's repo.
+	pol.Repositories = []string{"other-repo"}
+	repos = buildRepositories("org", pol, "repo:org/myrepo:ref:refs/heads/main")
+	if len(repos) != 1 || repos[0] != "myrepo" {
+		t.Errorf("centralized org-level (with policy repos): got %v, want [myrepo]", repos)
+	}
+
+	// Repo-level scope still wins regardless of centralized flag.
+	repos = buildRepositories("org/realrepo", pol, "repo:org/realrepo:ref:refs/heads/main")
+	if len(repos) != 1 || repos[0] != "realrepo" {
+		t.Errorf("centralized repo-level: got %v, want [realrepo]", repos)
+	}
+
+	// Centralized + subject we can't parse → empty slice (token will be
+	// rejected by GitHub) rather than silently issuing an org-wide token.
+	repos = buildRepositories("org", pol, "system:serviceaccount:foo")
+	if repos == nil || len(repos) != 0 {
+		t.Errorf("centralized unparseable subject: got %v, want empty non-nil", repos)
 	}
 }
 

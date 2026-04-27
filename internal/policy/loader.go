@@ -122,6 +122,15 @@ func (l *GitHubPolicyLoader) Load(ctx context.Context, scope, appName, identity 
 }
 
 // fetchAndCache performs the actual policy fetch from GitHub and caches the result.
+//
+// Resolution order:
+//   - Repo-level scope ("org/repo"): try the requesting repo first; if the
+//     policy file is missing AND the app has org_policy_repo configured, fall
+//     back to the centralized org policy repo. Policies resolved from the org
+//     repo are marked centralized so the response-token issuer can force
+//     per-request repo scoping.
+//   - Org-level scope ("org"): load from the centralized org policy repo
+//     (requires org_policy_repo). Always marked centralized.
 func (l *GitHubPolicyLoader) fetchAndCache(ctx context.Context, cacheKey, scope, appName, identity string) (*TrustPolicy, error) {
 	// Resolve the token provider for this app.
 	tp, ok := l.tokenProviders[appName]
@@ -129,27 +138,63 @@ func (l *GitHubPolicyLoader) fetchAndCache(ctx context.Context, cacheKey, scope,
 		return nil, fmt.Errorf("no token provider configured for app %q", appName)
 	}
 
-	// Determine repo and file path.
 	filePath := fmt.Sprintf("%s/%s/%s.sts.yaml", l.basePath, appName, identity)
+	orgPolicyRepo := l.orgPolicyRepos[appName]
 
-	var repo string
-	var tokenScope string
+	var pol *TrustPolicy
+	var err error
+	centralized := false
+
 	if strings.Contains(scope, "/") {
-		// Repo-level: load from target repo.
-		repo = scope
-		tokenScope = scope
+		// Repo-level: try requesting repo first.
+		pol, err = l.fetchFrom(ctx, tp, scope, scope, filePath, appName, identity)
+		if err != nil {
+			return nil, err
+		}
+		// If not found in the requesting repo and an org policy repo is
+		// configured, fall back to it.
+		if pol == nil && orgPolicyRepo != "" {
+			org := strings.SplitN(scope, "/", 2)[0]
+			orgRepo := org + "/" + orgPolicyRepo
+			pol, err = l.fetchFrom(ctx, tp, scope, orgRepo, filePath, appName, identity)
+			if err != nil {
+				return nil, err
+			}
+			centralized = pol != nil
+		}
 	} else {
-		// Org-level: load from centralized org policy repo.
-		orgPolicyRepo := l.orgPolicyRepos[appName]
+		// Org-level: load from the centralized org policy repo.
 		if orgPolicyRepo == "" {
 			return nil, fmt.Errorf("org_policy_repo required for app %q with org-level scope %q", appName, scope)
 		}
-		repo = scope + "/" + orgPolicyRepo
-		tokenScope = repo
+		orgRepo := scope + "/" + orgPolicyRepo
+		pol, err = l.fetchFrom(ctx, tp, scope, orgRepo, filePath, appName, identity)
+		if err != nil {
+			return nil, err
+		}
+		centralized = pol != nil
 	}
 
-	// Get installation token with contents:read to fetch the policy file.
-	token, err := tp.GetInstallationToken(ctx, tokenScope,
+	if pol != nil {
+		pol.SetCentralized(centralized)
+	}
+
+	// Cache result (including nil for not-found).
+	l.mu.Lock()
+	l.cache[cacheKey] = &cacheEntry{
+		policy:    pol,
+		expiresAt: time.Now().Add(l.cacheTTL),
+	}
+	l.mu.Unlock()
+
+	return pol, nil
+}
+
+// fetchFrom obtains an installation token scoped to repo and fetches the
+// policy file at filePath from that repo. Returns (nil, nil) if the policy
+// file does not exist (404).
+func (l *GitHubPolicyLoader) fetchFrom(ctx context.Context, tp TokenProvider, scope, repo, filePath, appName, identity string) (*TrustPolicy, error) {
+	token, err := tp.GetInstallationToken(ctx, repo,
 		map[string]string{"contents": "read"}, nil, "policy_loader")
 	if err != nil {
 		metrics.PolicyLoadsTotal.WithLabelValues(appName, "github", "token_error").Inc()
@@ -157,29 +202,14 @@ func (l *GitHubPolicyLoader) fetchAndCache(ctx context.Context, cacheKey, scope,
 			"scope", scope,
 			"app", appName,
 			"identity", identity,
-			"token_scope", tokenScope,
+			"token_scope", repo,
 			"repo", repo,
 			"policy_file", filePath,
 			"error", err,
 		)
 		return nil, fmt.Errorf("getting token for policy fetch from %s (policy: %s): %w", repo, filePath, err)
 	}
-
-	// Fetch policy file from GitHub.
-	policy, err := l.fetchPolicyFile(ctx, token, repo, filePath, appName)
-	if err != nil {
-		return nil, err
-	}
-
-	// Cache result (including nil for not-found).
-	l.mu.Lock()
-	l.cache[cacheKey] = &cacheEntry{
-		policy:    policy,
-		expiresAt: time.Now().Add(l.cacheTTL),
-	}
-	l.mu.Unlock()
-
-	return policy, nil
+	return l.fetchPolicyFile(ctx, token, repo, filePath, appName)
 }
 
 func (l *GitHubPolicyLoader) fetchPolicyFile(ctx context.Context, token, repo, filePath, appName string) (*TrustPolicy, error) {
