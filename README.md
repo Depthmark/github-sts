@@ -290,6 +290,42 @@ permissions:
   pull_requests: write
 ```
 
+#### Resolving identities defined in both repo and org
+
+When the same identity (e.g. `default/ci`) has a policy file in both the
+requesting repo and the org policy repo, `policy_resolution` decides which one
+wins:
+
+| Mode | Order | On collision | Use when |
+|------|-------|--------------|----------|
+| `org_first` *(default)* | org → repo fallback | **org wins** | Org admin owns identity names; repos may self-service identities the org has not claimed. |
+| `repo_first` *(legacy, deprecated)* | repo → org fallback | repo wins | Backwards-compat only; allows repo owners to override the centralized policy. Emits a deprecation warning at startup. |
+| `org_only` | org repo only, no fallback | n/a | Strictly forbid self-service. Repos cannot define their own policies. |
+
+The mode is configured per app:
+
+```yaml
+apps:
+  default:
+    app_id: 123456
+    private_key_path: "/etc/github-sts/keys/default.pem"
+    org_policy_repo: ".github"
+    policy_resolution: org_first   # default; can be "repo_first" or "org_only"
+```
+
+```bash
+export GITHUBSTS_APP_DEFAULT_POLICY_RESOLUTION="org_first"
+```
+
+The `org_first` default treats the org policy repo as a **reservation list**:
+any identity name the org admin writes a file for is reserved org-wide;
+identities the org has not claimed are delegated to repos. This closes a
+historical bypass where a repo owner could shadow a centralized policy by
+dropping a permissive file in their own repo.
+
+If `org_policy_repo` is unset, only the requesting repo is consulted regardless
+of mode.
+
 ## Configuration
 
 github-sts supports YAML configuration files and environment variable overrides.
@@ -324,6 +360,7 @@ All environment variables use the `GITHUBSTS_` prefix. Per-app variables use `GI
 | `GITHUBSTS_APP_{NAME}_PRIVATE_KEY` | *required* | PEM string (mutually exclusive with `_PATH`) |
 | `GITHUBSTS_APP_{NAME}_PRIVATE_KEY_PATH` | &mdash; | Path to PEM file |
 | `GITHUBSTS_APP_{NAME}_ORG_POLICY_REPO` | &mdash; | Repo for org-level policies (e.g. `.github`) |
+| `GITHUBSTS_APP_{NAME}_POLICY_RESOLUTION` | `org_first` | Resolution mode: `org_first`, `repo_first` (deprecated), or `org_only` |
 
 #### Policy & Security Settings
 

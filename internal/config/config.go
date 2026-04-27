@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/depthmark/github-sts/internal/policy"
 	"gopkg.in/yaml.v3"
 )
 
@@ -44,6 +45,13 @@ type AppConfig struct {
 	PrivateKey     string `yaml:"private_key"`
 	PrivateKeyPath string `yaml:"private_key_path"`
 	OrgPolicyRepo  string `yaml:"org_policy_repo"`
+
+	// PolicyResolution selects how the policy loader resolves an identity
+	// when both the requesting repo and the org policy repo could host it.
+	// Valid: "org_first" (default when org_policy_repo is set), "repo_first"
+	// (legacy; repo overrides org on collision), "org_only" (org repo only,
+	// no repo-local fallback). Ignored when org_policy_repo is unset.
+	PolicyResolution policy.Resolution `yaml:"policy_resolution"`
 
 	// ParsedKey is the RSA private key parsed from PrivateKey or PrivateKeyPath.
 	// Not serialized — populated during Load().
@@ -180,6 +188,26 @@ func (s *Settings) Validate() error {
 		}
 		if hasInline && hasPath {
 			return fmt.Errorf("app %q: private_key and private_key_path are mutually exclusive", name)
+		}
+
+		// Default and validate policy_resolution. The mode is only meaningful
+		// when an org policy repo is configured; otherwise it is ignored.
+		if app.OrgPolicyRepo != "" {
+			if app.PolicyResolution == "" {
+				app.PolicyResolution = policy.ResolutionOrgFirst
+				s.Apps[name] = app
+			}
+			if !policy.ValidResolution(app.PolicyResolution) {
+				return fmt.Errorf("app %q: policy_resolution must be one of org_first, repo_first, org_only (got %q)", name, app.PolicyResolution)
+			}
+		} else if app.PolicyResolution != "" {
+			// Modes that consult the org repo make no sense without one.
+			if app.PolicyResolution == policy.ResolutionOrgFirst || app.PolicyResolution == policy.ResolutionOrgOnly {
+				return fmt.Errorf("app %q: policy_resolution=%q requires org_policy_repo", name, app.PolicyResolution)
+			}
+			if !policy.ValidResolution(app.PolicyResolution) {
+				return fmt.Errorf("app %q: policy_resolution must be one of org_first, repo_first, org_only (got %q)", name, app.PolicyResolution)
+			}
 		}
 	}
 
@@ -426,6 +454,9 @@ func applyEnvOverrides(cfg *Settings) {
 		}
 		if v := os.Getenv("GITHUBSTS_APP_" + upper + "_ORG_POLICY_REPO"); v != "" {
 			app.OrgPolicyRepo = v
+		}
+		if v := os.Getenv("GITHUBSTS_APP_" + upper + "_POLICY_RESOLUTION"); v != "" {
+			app.PolicyResolution = policy.Resolution(v)
 		}
 		cfg.Apps[name] = app
 	}
