@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"crypto/subtle"
 	"net/http"
 	"sync/atomic"
 
@@ -29,15 +30,21 @@ func ReadinessHandler(ready *atomic.Bool) http.HandlerFunc {
 
 // MetricsHandler returns the Prometheus metrics exposition handler.
 // If authToken is non-empty, requests must include a matching
-// Authorization: Bearer <token> header.
+// Authorization: Bearer <token> header. The comparison is constant-time to
+// prevent timing-oracle recovery of the token byte-by-byte.
 func MetricsHandler(authToken string) http.Handler {
 	inner := promhttp.Handler()
 	if authToken == "" {
 		return inner
 	}
-	expected := "Bearer " + authToken
+	expected := []byte("Bearer " + authToken)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != expected {
+		got := []byte(r.Header.Get("Authorization"))
+		// subtle.ConstantTimeCompare returns 0 when the lengths differ,
+		// without leaking which prefix bytes match. The expected length is
+		// not a secret (it is fixed per deployment), so the length-only
+		// fastpath is acceptable.
+		if subtle.ConstantTimeCompare(got, expected) != 1 {
 			writeJSON(w, http.StatusUnauthorized, ErrorResponse{Error: "unauthorized"})
 			return
 		}
