@@ -108,3 +108,28 @@ func TestMetricsHandler_MissingAuth(t *testing.T) {
 		t.Errorf("status = %d, want 401", w.Code)
 	}
 }
+
+// Length-mismatch hits a different branch in subtle.ConstantTimeCompare
+// (returns 0 without comparing bytes). Verify it still rejects correctly.
+func TestMetricsHandler_LengthMismatch(t *testing.T) {
+	h := MetricsHandler("secret-token")
+	cases := []string{
+		"",                                      // empty
+		"Bearer ",                               // prefix only
+		"Bearer secret-tok",                     // shorter than expected
+		"Bearer secret-token-with-extra-suffix", // longer than expected
+		"secret-token",                          // missing scheme
+		"Basic secret-token",                    // wrong scheme
+	}
+	for _, hdr := range cases {
+		req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+		if hdr != "" {
+			req.Header.Set("Authorization", hdr)
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		if w.Code != http.StatusUnauthorized {
+			t.Errorf("Authorization=%q: status = %d, want 401", hdr, w.Code)
+		}
+	}
+}
