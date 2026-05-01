@@ -53,6 +53,12 @@ type AppConfig struct {
 // OIDCConfig holds OIDC validation settings.
 type OIDCConfig struct {
 	AllowedIssuers []string `yaml:"allowed_issuers"`
+
+	// TrustedJWKSHosts pins additional `jwks_uri` hosts per issuer for
+	// providers that publish JWKS on a different host than the issuer
+	// (e.g., Google: accounts.google.com → www.googleapis.com). Default
+	// behavior is same-host pinning; this map is the escape hatch.
+	TrustedJWKSHosts map[string][]string `yaml:"trusted_jwks_hosts"`
 }
 
 // JTIConfig holds JTI replay prevention settings.

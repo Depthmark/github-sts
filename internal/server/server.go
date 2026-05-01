@@ -21,6 +21,7 @@ import (
 	"github.com/depthmark/github-sts/internal/handler"
 	"github.com/depthmark/github-sts/internal/jti"
 	"github.com/depthmark/github-sts/internal/metrics"
+	"github.com/depthmark/github-sts/internal/oidc"
 	"github.com/depthmark/github-sts/internal/policy"
 	"github.com/depthmark/github-sts/internal/ratelimit"
 
@@ -49,6 +50,11 @@ func New(cfg *config.Settings, slogger *slog.Logger) (*Server, error) {
 		cfg:     cfg,
 		slogger: slogger,
 	}
+
+	// Install per-issuer JWKS host overrides for providers that publish their
+	// JWKS on a different host than the issuer (e.g., Google). Default
+	// behavior with no overrides is strict same-host pinning.
+	oidc.SetTrustedJWKSHosts(cfg.OIDC.TrustedJWKSHosts)
 
 	// Initialize JTI cache.
 	switch cfg.JTI.Backend {
