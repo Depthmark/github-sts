@@ -44,7 +44,7 @@ LABEL org.opencontainers.image.description="GitHub Security Token Service (STS) 
 LABEL org.opencontainers.image.licenses="MIT"
 LABEL org.opencontainers.image.authors="Alexandre Delisle <oss@adelisle.com>"
 # x-release-please-start-version
-LABEL org.opencontainers.image.version="0.0.2"
+LABEL org.opencontainers.image.version="0.0.3"
 # x-release-please-end
 
 COPY --from=builder /github-sts /github-sts
