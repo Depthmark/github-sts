@@ -118,10 +118,21 @@ func TestEvaluate_MissingClaim(t *testing.T) {
 func TestValidate_ValidPolicy(t *testing.T) {
 	p := &TrustPolicy{
 		Issuer:      "https://token.actions.githubusercontent.com",
+		Audience:    "https://sts.example.com",
 		Permissions: map[string]string{"contents": "read", "pull_requests": "write"},
 	}
 	if err := p.Validate(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidate_MissingAudience(t *testing.T) {
+	p := &TrustPolicy{
+		Issuer:      "https://token.actions.githubusercontent.com",
+		Permissions: map[string]string{"contents": "read"},
+	}
+	if err := p.Validate(); err == nil {
+		t.Fatal("expected error for missing audience")
 	}
 }
 
@@ -178,6 +189,7 @@ func TestParsePolicy_ValidYAML(t *testing.T) {
 	yaml := `
 issuer: https://token.actions.githubusercontent.com
 subject_pattern: "repo:myorg/.*:ref:refs/heads/main"
+audience: https://sts.example.com
 permissions:
   contents: read
   pull_requests: write

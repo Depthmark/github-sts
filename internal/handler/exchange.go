@@ -60,17 +60,21 @@ type ExchangeHandler struct {
 	policyLoader          policy.Loader
 	appProviders          map[string]*github.AppTokenProvider
 	allowedIssuers        []string
+	requiredAudience      string
 	auditLogger           audit.Logger
 	slogger               *slog.Logger
 	trustForwardedHeaders bool
 }
 
 // NewExchangeHandler creates a new ExchangeHandler with all dependencies injected.
+// requiredAudience, when non-empty, is enforced on every token before policy
+// lookup as a server-wide defense against permissive policy files.
 func NewExchangeHandler(
 	jtiCache jti.Cache,
 	policyLoader policy.Loader,
 	appProviders map[string]*github.AppTokenProvider,
 	allowedIssuers []string,
+	requiredAudience string,
 	auditLogger audit.Logger,
 	slogger *slog.Logger,
 	trustForwardedHeaders bool,
@@ -80,6 +84,7 @@ func NewExchangeHandler(
 		policyLoader:          policyLoader,
 		appProviders:          appProviders,
 		allowedIssuers:        allowedIssuers,
+		requiredAudience:      requiredAudience,
 		auditLogger:           auditLogger,
 		slogger:               slogger,
 		trustForwardedHeaders: trustForwardedHeaders,
@@ -170,6 +175,27 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	event.Issuer = claimString(claims, "iss")
 	event.Subject = claimString(claims, "sub")
+
+	// Server-wide required audience: enforced before JTI reservation so a
+	// token minted for the wrong relying party cannot burn a replay slot or
+	// reach policy lookup. Acts as defense-in-depth on top of the per-policy
+	// audience check below.
+	if h.requiredAudience != "" && !audienceMatches(claims, h.requiredAudience) {
+		event.Result = audit.ResultPolicyDenied
+		event.ErrorReason = "audience mismatch (server required_audience)"
+		event.DurationMS = msSince(start)
+		h.emitResult(event, req, start)
+		if h.slogger != nil {
+			h.slogger.Warn("audience mismatch (server required_audience)",
+				"trace_id", traceID,
+				"scope", req.Scope,
+				"identity", req.Identity,
+				"expected_audience", h.requiredAudience,
+			)
+		}
+		writeJSON(w, http.StatusForbidden, ErrorResponse{Error: "forbidden"})
+		return
+	}
 
 	// Step 2: JTI replay prevention (atomic reserve).
 	jtiValue := claimString(claims, "jti")
@@ -291,24 +317,29 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Audience validation.
-	if pol.Audience != "" {
-		if !audienceMatches(claims, pol.Audience) {
-			event.Result = audit.ResultPolicyDenied
+	// Per-policy audience validation. Audience is mandatory in the policy
+	// schema (see policy.Validate), so an empty value here means a policy
+	// loaded through a non-validating path — fail closed.
+	if pol.Audience == "" || !audienceMatches(claims, pol.Audience) {
+		event.Result = audit.ResultPolicyDenied
+		if pol.Audience == "" {
+			event.ErrorReason = "policy missing audience"
+		} else {
 			event.ErrorReason = "audience mismatch"
-			event.DurationMS = msSince(start)
-			h.emitResult(event, req, start)
-			if h.slogger != nil {
-				h.slogger.Warn("audience mismatch",
-					"trace_id", traceID,
-					"scope", req.Scope,
-					"identity", req.Identity,
-					"expected_audience", pol.Audience,
-				)
-			}
-			writeJSON(w, http.StatusForbidden, ErrorResponse{Error: "forbidden"})
-			return
 		}
+		event.DurationMS = msSince(start)
+		h.emitResult(event, req, start)
+		if h.slogger != nil {
+			h.slogger.Warn("audience check failed",
+				"trace_id", traceID,
+				"scope", req.Scope,
+				"identity", req.Identity,
+				"expected_audience", pol.Audience,
+				"reason", event.ErrorReason,
+			)
+		}
+		writeJSON(w, http.StatusForbidden, ErrorResponse{Error: "forbidden"})
+		return
 	}
 
 	// Policy evaluation.

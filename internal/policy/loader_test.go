@@ -33,6 +33,7 @@ func TestGitHubLoader_RepoLevel(t *testing.T) {
 	policyYAML := `
 issuer: https://token.actions.githubusercontent.com
 subject_pattern: "repo:myorg/myrepo:.*"
+audience: https://sts.example.com
 permissions:
   contents: read
 `
@@ -67,6 +68,7 @@ permissions:
 func TestGitHubLoader_OrgLevel(t *testing.T) {
 	policyYAML := `
 issuer: https://token.actions.githubusercontent.com
+audience: https://sts.example.com
 permissions:
   contents: read
 `
@@ -127,6 +129,7 @@ func TestGitHubLoader_CacheHit(t *testing.T) {
 	fetchCount := 0
 	policyYAML := `
 issuer: https://iss.example.com
+audience: https://sts.example.com
 permissions:
   contents: read
 `
@@ -173,6 +176,7 @@ func TestGitHubLoader_ParseError(t *testing.T) {
 func TestGitHubLoader_MultiApp_UsesCorrectProvider(t *testing.T) {
 	policyYAML := `
 issuer: https://iss.example.com
+audience: https://sts.example.com
 permissions:
   contents: read
 `
