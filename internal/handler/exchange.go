@@ -90,17 +90,21 @@ type ExchangeHandler struct {
 	policyLoader          policy.Loader
 	appProviders          map[string]*github.AppTokenProvider
 	allowedIssuers        []string
+	requiredAudience      string
 	auditLogger           audit.Logger
 	slogger               *slog.Logger
 	trustForwardedHeaders bool
 }
 
 // NewExchangeHandler creates a new ExchangeHandler with all dependencies injected.
+// requiredAudience, when non-empty, is enforced on every token before policy
+// lookup as a server-wide defense against permissive policy files.
 func NewExchangeHandler(
 	jtiCache jti.Cache,
 	policyLoader policy.Loader,
 	appProviders map[string]*github.AppTokenProvider,
 	allowedIssuers []string,
+	requiredAudience string,
 	auditLogger audit.Logger,
 	slogger *slog.Logger,
 	trustForwardedHeaders bool,
@@ -110,6 +114,7 @@ func NewExchangeHandler(
 		policyLoader:          policyLoader,
 		appProviders:          appProviders,
 		allowedIssuers:        allowedIssuers,
+		requiredAudience:      requiredAudience,
 		auditLogger:           auditLogger,
 		slogger:               slogger,
 		trustForwardedHeaders: trustForwardedHeaders,
@@ -200,6 +205,27 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	event.Issuer = claimString(claims, "iss")
 	event.Subject = claimString(claims, "sub")
+
+	// Server-wide required audience: enforced before JTI reservation so a
+	// token minted for the wrong relying party cannot burn a replay slot or
+	// reach policy lookup. Acts as defense-in-depth on top of the per-policy
+	// audience check below.
+	if h.requiredAudience != "" && !audienceMatches(claims, h.requiredAudience) {
+		event.Result = audit.ResultPolicyDenied
+		event.ErrorReason = "audience mismatch (server required_audience)"
+		event.DurationMS = msSince(start)
+		h.emitResult(event, req, start)
+		if h.slogger != nil {
+			h.slogger.Warn("audience mismatch (server required_audience)",
+				"trace_id", traceID,
+				"scope", req.Scope,
+				"identity", req.Identity,
+				"expected_audience", h.requiredAudience,
+			)
+		}
+		writeJSON(w, http.StatusForbidden, ErrorResponse{Error: "forbidden", Code: CodeAudienceMismatch, TraceID: traceID})
+		return
+	}
 
 	// Step 2: JTI replay prevention (atomic reserve).
 	jtiValue := claimString(claims, "jti")
@@ -321,24 +347,29 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Audience validation.
-	if pol.Audience != "" {
-		if !audienceMatches(claims, pol.Audience) {
-			event.Result = audit.ResultPolicyDenied
+	// Per-policy audience validation. Audience is mandatory in the policy
+	// schema (see policy.Validate), so an empty value here means a policy
+	// loaded through a non-validating path — fail closed.
+	if pol.Audience == "" || !audienceMatches(claims, pol.Audience) {
+		event.Result = audit.ResultPolicyDenied
+		if pol.Audience == "" {
+			event.ErrorReason = "policy missing audience"
+		} else {
 			event.ErrorReason = "audience mismatch"
-			event.DurationMS = msSince(start)
-			h.emitResult(event, req, start)
-			if h.slogger != nil {
-				h.slogger.Warn("audience mismatch",
-					"trace_id", traceID,
-					"scope", req.Scope,
-					"identity", req.Identity,
-					"expected_audience", pol.Audience,
-				)
-			}
-			writeJSON(w, http.StatusForbidden, ErrorResponse{Error: "forbidden", Code: CodeAudienceMismatch, TraceID: traceID})
-			return
 		}
+		event.DurationMS = msSince(start)
+		h.emitResult(event, req, start)
+		if h.slogger != nil {
+			h.slogger.Warn("audience check failed",
+				"trace_id", traceID,
+				"scope", req.Scope,
+				"identity", req.Identity,
+				"expected_audience", pol.Audience,
+				"reason", event.ErrorReason,
+			)
+		}
+		writeJSON(w, http.StatusForbidden, ErrorResponse{Error: "forbidden", Code: CodeAudienceMismatch, TraceID: traceID})
+		return
 	}
 
 	// Policy evaluation.
@@ -361,7 +392,8 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Step 5: Issue GitHub token.
-	repositories := buildRepositories(req.Scope, pol)
+	subject, _ := claims["sub"].(string)
+	repositories := buildRepositories(req.Scope, pol, subject)
 	token, err := provider.GetInstallationToken(r.Context(), req.Scope, pol.Permissions, repositories, traceID)
 	if err != nil {
 		event.Result = audit.ResultGitHubError
@@ -538,16 +570,38 @@ func audienceMatches(claims map[string]any, expected string) bool {
 	return false
 }
 
+// subjectRepoPattern matches the leading "repo:<org>/<repo>:" segment of a
+// GitHub Actions OIDC subject and captures the repo name.
+var subjectRepoPattern = regexp.MustCompile(`^repo:[^/]+/([^:]+):`)
+
 // buildRepositories constructs the repository list for token issuance.
-func buildRepositories(scope string, pol *policy.TrustPolicy) []string {
+//
+// Security invariants:
+//   - Repo-level scope ("org/repo") always issues a token restricted to that
+//     repo, regardless of what the policy declares.
+//   - Centralized policies (loaded from the org policy repo) NEVER issue
+//     org-wide tokens. For org-level scope, the requesting repo is derived
+//     from the OIDC subject and the token is restricted to that single repo.
+//     This prevents a centralized identity from minting cross-repo tokens.
+//   - Non-centralized org-level scope falls back to the policy's repositories
+//     field (may be nil for full org access — only honored for repo-local
+//     identities that explicitly opt in).
+func buildRepositories(scope string, pol *policy.TrustPolicy, subject string) []string {
 	if strings.Contains(scope, "/") {
-		// Repo-level scope: extract repo name.
 		parts := strings.SplitN(scope, "/", 2)
 		if len(parts) == 2 {
 			return []string{parts[1]}
 		}
 	}
-	// Org-level scope: use policy repositories (may be nil for full access).
+	if pol.Centralized() {
+		if m := subjectRepoPattern.FindStringSubmatch(subject); len(m) == 2 {
+			return []string{m[1]}
+		}
+		// Centralized policy but subject doesn't identify a repo — refuse to
+		// issue an org-wide token. Returning an empty (non-nil) slice causes
+		// GitHub to reject the token request rather than grant org-wide access.
+		return []string{}
+	}
 	return pol.Repositories
 }
 

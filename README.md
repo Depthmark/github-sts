@@ -216,7 +216,7 @@ For example, `app=my-app` and `identity=ci` resolves to:
 | `subject` | `string` | OIDC `sub` claim (exact match) |
 | `subject_pattern` | `regex` | OIDC `sub` claim (regex, used when `subject` is absent) |
 | `claim_pattern` | `map[string]regex` | Additional JWT claims to match |
-| `audience` | `string` | Expected OIDC `aud` claim |
+| `audience` | `string` | **Required.** Expected OIDC `aud` claim. A policy without it would accept tokens minted for any other relying party sharing the issuer (cross-RP token reuse) and is rejected at parse time. |
 | `repositories` | `list[string]` | Restrict org-scoped tokens to specific repos |
 | `permissions` | `map[string]string` | GitHub App permissions (`read` / `write` / `admin`) |
 
@@ -226,6 +226,7 @@ For example, `app=my-app` and `identity=ci` resolves to:
 ```yaml
 issuer: https://token.actions.githubusercontent.com
 subject: repo:org/repo:ref:refs/heads/main
+audience: https://sts.example.com
 permissions:
   contents: read
   issues: write
@@ -245,12 +246,19 @@ permissions:
 ```yaml
 issuer: https://token.actions.githubusercontent.com
 subject_pattern: "repo:org/repo:.*"
+audience: https://sts.example.com
 claim_pattern:
   job_workflow_ref: "org/repo/.github/workflows/deploy\\.yml@.*"
 permissions:
   deployments: write
   statuses: write
 ```
+
+> **`audience` is mandatory.** Every policy must declare the OIDC audience it
+> trusts. The same value must be passed to `core.getIDToken(<audience>)` in
+> the workflow that requests the token. A missing `audience:` is rejected at
+> policy parse time — it would otherwise accept tokens minted for any other
+> relying party that shares the issuer (cross-RP token reuse).
 
 ### Organization-Level Scope
 
@@ -281,6 +289,7 @@ export GITHUBSTS_APP_DEFAULT_ORG_POLICY_REPO=".github"
 ```yaml
 issuer: https://token.actions.githubusercontent.com
 subject_pattern: "repo:myorg/.*"
+audience: https://sts.example.com
 repositories:
   - frontend
   - backend
@@ -289,6 +298,42 @@ permissions:
   contents: read
   pull_requests: write
 ```
+
+#### Resolving identities defined in both repo and org
+
+When the same identity (e.g. `default/ci`) has a policy file in both the
+requesting repo and the org policy repo, `policy_resolution` decides which one
+wins:
+
+| Mode | Order | On collision | Use when |
+|------|-------|--------------|----------|
+| `org_first` *(default)* | org → repo fallback | **org wins** | Org admin owns identity names; repos may self-service identities the org has not claimed. |
+| `repo_first` *(legacy, deprecated)* | repo → org fallback | repo wins | Backwards-compat only; allows repo owners to override the centralized policy. Emits a deprecation warning at startup. |
+| `org_only` | org repo only, no fallback | n/a | Strictly forbid self-service. Repos cannot define their own policies. |
+
+The mode is configured per app:
+
+```yaml
+apps:
+  default:
+    app_id: 123456
+    private_key_path: "/etc/github-sts/keys/default.pem"
+    org_policy_repo: ".github"
+    policy_resolution: org_first   # default; can be "repo_first" or "org_only"
+```
+
+```bash
+export GITHUBSTS_APP_DEFAULT_POLICY_RESOLUTION="org_first"
+```
+
+The `org_first` default treats the org policy repo as a **reservation list**:
+any identity name the org admin writes a file for is reserved org-wide;
+identities the org has not claimed are delegated to repos. This closes a
+historical bypass where a repo owner could shadow a centralized policy by
+dropping a permissive file in their own repo.
+
+If `org_policy_repo` is unset, only the requesting repo is consulted regardless
+of mode.
 
 ## Configuration
 
@@ -324,6 +369,7 @@ All environment variables use the `GITHUBSTS_` prefix. Per-app variables use `GI
 | `GITHUBSTS_APP_{NAME}_PRIVATE_KEY` | *required* | PEM string (mutually exclusive with `_PATH`) |
 | `GITHUBSTS_APP_{NAME}_PRIVATE_KEY_PATH` | &mdash; | Path to PEM file |
 | `GITHUBSTS_APP_{NAME}_ORG_POLICY_REPO` | &mdash; | Repo for org-level policies (e.g. `.github`) |
+| `GITHUBSTS_APP_{NAME}_POLICY_RESOLUTION` | `org_first` | Resolution mode: `org_first`, `repo_first` (deprecated), or `org_only` |
 
 #### Policy & Security Settings
 
@@ -332,6 +378,7 @@ All environment variables use the `GITHUBSTS_` prefix. Per-app variables use `GI
 | `GITHUBSTS_POLICY_BASE_PATH` | `.github/sts` | Base path in repos for trust policies |
 | `GITHUBSTS_POLICY_CACHE_TTL` | `60s` | Policy cache TTL (`0` to disable) |
 | `GITHUBSTS_OIDC_ALLOWED_ISSUERS` | &mdash; | Comma-separated issuer allowlist (empty = any) |
+| `GITHUBSTS_OIDC_REQUIRED_AUDIENCE` | &mdash; | Server-wide required `aud` claim. When set, every token must carry this value (defense-in-depth on top of the per-policy `audience:` field). |
 | `GITHUBSTS_JTI_BACKEND` | `memory` | `memory` or `redis` |
 | `GITHUBSTS_JTI_REDIS_URL` | &mdash; | Redis connection URL (when backend=`redis`) |
 | `GITHUBSTS_JTI_TTL` | `1h` | JTI replay protection window |
@@ -458,6 +505,7 @@ docker run -p 8080:8080 \
   -e GITHUBSTS_APP_DEFAULT_APP_ID="$GITHUBSTS_APP_DEFAULT_APP_ID" \
   -e GITHUBSTS_APP_DEFAULT_PRIVATE_KEY="$GITHUBSTS_APP_DEFAULT_PRIVATE_KEY" \
   -e GITHUBSTS_OIDC_ALLOWED_ISSUERS="https://token.actions.githubusercontent.com" \
+  -e GITHUBSTS_OIDC_REQUIRED_AUDIENCE="https://sts.example.com" \
   github-sts:local
 ```
 
@@ -535,7 +583,9 @@ make act-build    # build only
 |---|---|
 | **Docker build fails** with `go.mod requires go >= X` | Update `FROM golang:X-alpine` in `Dockerfile` to match `go.mod` |
 | **Health check fails** | Verify `GITHUBSTS_CONFIG_PATH` is set and the file exists |
-| **Exchange returns `403`** | Look at `code` in the response body — it tells you which layer rejected the request (`oidc_invalid`, `audience_mismatch`, `app_unknown`, `policy_not_found`, `policy_denied`). Then grep server logs for the `trace_id` returned in the same response for the precise reason. See [Errors](#response) for the full table. |
+| **Exchange returns `401`** | Check OIDC token expiry, verify `allowed_issuers` includes the issuer, review server logs |
+| **Exchange returns `403`** with `code: "audience_mismatch"` | Token's `aud` does not match. Verify `core.getIDToken(<audience>)` in the workflow uses the same value as the policy's `audience:` field (and `oidc.required_audience` if configured server-side). |
+| **Exchange returns `403`** (any other code) | Look at `code` in the response body — it tells you which layer rejected the request (`oidc_invalid`, `app_unknown`, `policy_not_found`, `policy_denied`). Then grep server logs for the `trace_id` returned in the same response for the precise reason. See [Errors](#response) for the full table. |
 | **Exchange returns `404`** | Verify the trust policy exists at `{base_path}/{app}/{identity}.sts.yaml` in the target repo |
 | **Exchange returns `409`** | JTI replay &mdash; the OIDC token was already used. Obtain a fresh token |
 

@@ -24,6 +24,51 @@ type TrustPolicy struct {
 	// Pre-compiled regexes (populated by Validate, not serialized).
 	subjectRegex *regexp.Regexp
 	claimRegexes map[string]*regexp.Regexp
+
+	// centralized is true when the policy was loaded from the org policy repo
+	// rather than the requesting repo. Set by the loader, never serialized.
+	centralized bool
+}
+
+// Centralized reports whether this policy was resolved from the centralized
+// org policy repo. The token issuer must force per-request repo scoping in
+// that case so a centralized identity cannot mint a cross-repo token.
+func (p *TrustPolicy) Centralized() bool { return p.centralized }
+
+// SetCentralized marks the policy as having been loaded from the org policy
+// repo. Intended for use by the loader.
+func (p *TrustPolicy) SetCentralized(v bool) { p.centralized = v }
+
+// Resolution selects how the loader resolves an identity policy when both a
+// requesting repo and an org policy repo could host it.
+type Resolution string
+
+const (
+	// ResolutionOrgFirst tries the org policy repo first; falls back to the
+	// requesting repo if the org has no file for that identity. On collision,
+	// the org wins. This is the default and the secure choice for any
+	// deployment that uses a central policy repo as a source of truth.
+	ResolutionOrgFirst Resolution = "org_first"
+
+	// ResolutionRepoFirst tries the requesting repo first; falls back to the
+	// org policy repo. On collision, the repo wins. This is the legacy
+	// behavior; it allows a repo owner to override the centralized policy and
+	// is retained for backwards compatibility only.
+	ResolutionRepoFirst Resolution = "repo_first"
+
+	// ResolutionOrgOnly loads only from the org policy repo. The requesting
+	// repo is never consulted. Use this when self-service policies must be
+	// forbidden entirely.
+	ResolutionOrgOnly Resolution = "org_only"
+)
+
+// ValidResolution reports whether m is a known resolution mode.
+func ValidResolution(m Resolution) bool {
+	switch m {
+	case ResolutionOrgFirst, ResolutionRepoFirst, ResolutionOrgOnly:
+		return true
+	}
+	return false
 }
 
 // ParsePolicy parses a YAML trust policy from raw bytes.
@@ -100,6 +145,12 @@ func (p *TrustPolicy) Evaluate(claims map[string]any) EvalResult {
 func (p *TrustPolicy) Validate() error {
 	if p.Issuer == "" {
 		return fmt.Errorf("trust policy: issuer is required")
+	}
+	// Audience is mandatory: a policy without it would accept tokens minted
+	// for any other relying party that shares the issuer (cross-RP token
+	// reuse — see security.md B-2).
+	if p.Audience == "" {
+		return fmt.Errorf("trust policy: audience is required (a policy without audience accepts tokens minted for any other relying party sharing the issuer)")
 	}
 	if len(p.Permissions) == 0 {
 		return fmt.Errorf("trust policy: at least one permission is required")

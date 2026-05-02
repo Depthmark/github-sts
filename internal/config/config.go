@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/depthmark/github-sts/internal/policy"
 	"gopkg.in/yaml.v3"
 )
 
@@ -45,6 +46,13 @@ type AppConfig struct {
 	PrivateKeyPath string `yaml:"private_key_path"`
 	OrgPolicyRepo  string `yaml:"org_policy_repo"`
 
+	// PolicyResolution selects how the policy loader resolves an identity
+	// when both the requesting repo and the org policy repo could host it.
+	// Valid: "org_first" (default when org_policy_repo is set), "repo_first"
+	// (legacy; repo overrides org on collision), "org_only" (org repo only,
+	// no repo-local fallback). Ignored when org_policy_repo is unset.
+	PolicyResolution policy.Resolution `yaml:"policy_resolution"`
+
 	// ParsedKey is the RSA private key parsed from PrivateKey or PrivateKeyPath.
 	// Not serialized — populated during Load().
 	ParsedKey *rsa.PrivateKey `yaml:"-"`
@@ -59,6 +67,11 @@ type OIDCConfig struct {
 	// (e.g., Google: accounts.google.com → www.googleapis.com). Default
 	// behavior is same-host pinning; this map is the escape hatch.
 	TrustedJWKSHosts map[string][]string `yaml:"trusted_jwks_hosts"`
+
+	// RequiredAudience, when set, is enforced on every exchange before
+	// per-policy audience checks. Defense-in-depth against a permissive or
+	// misconfigured policy file leaking cross-RP token acceptance.
+	RequiredAudience string `yaml:"required_audience"`
 }
 
 // JTIConfig holds JTI replay prevention settings.
@@ -187,6 +200,26 @@ func (s *Settings) Validate() error {
 		if hasInline && hasPath {
 			return fmt.Errorf("app %q: private_key and private_key_path are mutually exclusive", name)
 		}
+
+		// Default and validate policy_resolution. The mode is only meaningful
+		// when an org policy repo is configured; otherwise it is ignored.
+		if app.OrgPolicyRepo != "" {
+			if app.PolicyResolution == "" {
+				app.PolicyResolution = policy.ResolutionOrgFirst
+				s.Apps[name] = app
+			}
+			if !policy.ValidResolution(app.PolicyResolution) {
+				return fmt.Errorf("app %q: policy_resolution must be one of org_first, repo_first, org_only (got %q)", name, app.PolicyResolution)
+			}
+		} else if app.PolicyResolution != "" {
+			// Modes that consult the org repo make no sense without one.
+			if app.PolicyResolution == policy.ResolutionOrgFirst || app.PolicyResolution == policy.ResolutionOrgOnly {
+				return fmt.Errorf("app %q: policy_resolution=%q requires org_policy_repo", name, app.PolicyResolution)
+			}
+			if !policy.ValidResolution(app.PolicyResolution) {
+				return fmt.Errorf("app %q: policy_resolution must be one of org_first, repo_first, org_only (got %q)", name, app.PolicyResolution)
+			}
+		}
 	}
 
 	if s.JTI.Backend == "redis" && s.RedisURL() == "" {
@@ -254,6 +287,11 @@ func (s *Settings) AppNames() []string {
 // AllowedIssuers returns the OIDC allowed issuers list.
 func (s *Settings) AllowedIssuers() []string {
 	return s.OIDC.AllowedIssuers
+}
+
+// RequiredAudience returns the server-wide required audience (empty if unset).
+func (s *Settings) RequiredAudience() string {
+	return s.OIDC.RequiredAudience
 }
 
 // GetApp returns the AppConfig for the given name.
@@ -333,6 +371,9 @@ func applyEnvOverrides(cfg *Settings) {
 		if len(issuers) > 0 {
 			cfg.OIDC.AllowedIssuers = issuers
 		}
+	}
+	if v := os.Getenv("GITHUBSTS_OIDC_REQUIRED_AUDIENCE"); v != "" {
+		cfg.OIDC.RequiredAudience = v
 	}
 
 	// JTI
@@ -432,6 +473,9 @@ func applyEnvOverrides(cfg *Settings) {
 		}
 		if v := os.Getenv("GITHUBSTS_APP_" + upper + "_ORG_POLICY_REPO"); v != "" {
 			app.OrgPolicyRepo = v
+		}
+		if v := os.Getenv("GITHUBSTS_APP_" + upper + "_POLICY_RESOLUTION"); v != "" {
+			app.PolicyResolution = policy.Resolution(v)
 		}
 		cfg.Apps[name] = app
 	}

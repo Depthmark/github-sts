@@ -312,6 +312,82 @@ func TestParsePrivateKeys_InvalidPEM(t *testing.T) {
 	}
 }
 
+func TestValidate_PolicyResolution_DefaultsToOrgFirst(t *testing.T) {
+	cfg := validDefaults()
+	app := cfg.Apps["test"]
+	app.OrgPolicyRepo = ".github"
+	cfg.Apps["test"] = app
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := cfg.Apps["test"].PolicyResolution; got != "org_first" {
+		t.Errorf("policy_resolution default = %q, want org_first", got)
+	}
+}
+
+func TestValidate_PolicyResolution_UnknownValueRejected(t *testing.T) {
+	cfg := validDefaults()
+	app := cfg.Apps["test"]
+	app.OrgPolicyRepo = ".github"
+	app.PolicyResolution = "bogus"
+	cfg.Apps["test"] = app
+
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), "policy_resolution") {
+		t.Errorf("expected policy_resolution error, got: %v", err)
+	}
+}
+
+func TestValidate_PolicyResolution_OrgFirstRequiresOrgRepo(t *testing.T) {
+	cfg := validDefaults()
+	app := cfg.Apps["test"]
+	app.PolicyResolution = "org_first" // no OrgPolicyRepo set
+	cfg.Apps["test"] = app
+
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), "requires org_policy_repo") {
+		t.Errorf("expected org_policy_repo requirement error, got: %v", err)
+	}
+}
+
+func TestValidate_PolicyResolution_OrgOnlyRequiresOrgRepo(t *testing.T) {
+	cfg := validDefaults()
+	app := cfg.Apps["test"]
+	app.PolicyResolution = "org_only"
+	cfg.Apps["test"] = app
+
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), "requires org_policy_repo") {
+		t.Errorf("expected org_policy_repo requirement error, got: %v", err)
+	}
+}
+
+func TestValidate_PolicyResolution_RepoFirstAllowedWithoutOrgRepo(t *testing.T) {
+	// repo_first is meaningful even without an org repo (it just degenerates
+	// to repo-only). Keep this allowed for parity with the legacy default.
+	cfg := validDefaults()
+	app := cfg.Apps["test"]
+	app.PolicyResolution = "repo_first"
+	cfg.Apps["test"] = app
+
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestValidate_PolicyResolution_ExplicitOrgFirstAccepted(t *testing.T) {
+	cfg := validDefaults()
+	app := cfg.Apps["test"]
+	app.OrgPolicyRepo = ".github"
+	app.PolicyResolution = "org_first"
+	cfg.Apps["test"] = app
+
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
 func TestDefaultAppName_SingleApp(t *testing.T) {
 	cfg := defaults()
 	cfg.Apps["myapp"] = AppConfig{}
