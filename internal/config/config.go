@@ -59,6 +59,11 @@ type OIDCConfig struct {
 	// (e.g., Google: accounts.google.com → www.googleapis.com). Default
 	// behavior is same-host pinning; this map is the escape hatch.
 	TrustedJWKSHosts map[string][]string `yaml:"trusted_jwks_hosts"`
+
+	// RequiredAudience, when set, is enforced on every exchange before
+	// per-policy audience checks. Defense-in-depth against a permissive or
+	// misconfigured policy file leaking cross-RP token acceptance.
+	RequiredAudience string `yaml:"required_audience"`
 }
 
 // JTIConfig holds JTI replay prevention settings.
@@ -256,6 +261,11 @@ func (s *Settings) AllowedIssuers() []string {
 	return s.OIDC.AllowedIssuers
 }
 
+// RequiredAudience returns the server-wide required audience (empty if unset).
+func (s *Settings) RequiredAudience() string {
+	return s.OIDC.RequiredAudience
+}
+
 // GetApp returns the AppConfig for the given name.
 func (s *Settings) GetApp(name string) (AppConfig, bool) {
 	app, ok := s.Apps[name]
@@ -333,6 +343,9 @@ func applyEnvOverrides(cfg *Settings) {
 		if len(issuers) > 0 {
 			cfg.OIDC.AllowedIssuers = issuers
 		}
+	}
+	if v := os.Getenv("GITHUBSTS_OIDC_REQUIRED_AUDIENCE"); v != "" {
+		cfg.OIDC.RequiredAudience = v
 	}
 
 	// JTI

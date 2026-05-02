@@ -47,6 +47,14 @@ oidc:
     # - "https://sts.windows.net/{tenant}/"              # Azure AD
     # - "https://accounts.google.com"                    # Google Cloud
 
+  # Server-wide required audience. When set, every incoming OIDC token MUST
+  # carry this value in its `aud` claim — enforced before policy lookup.
+  # This is defense-in-depth on top of the per-policy `audience:` field
+  # (which is also mandatory). Pick a stable identifier you control for THIS
+  # STS deployment (URL form is conventional). The same value must be passed
+  # to actions/github-script's core.getIDToken(<audience>).
+  required_audience: "https://sts.example.com"
+
 # JTI replay prevention
 jti:
   backend: "memory"                 # memory | redis (use redis for multi-instance deployments)

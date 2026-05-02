@@ -170,6 +170,7 @@ func New(cfg *config.Settings, slogger *slog.Logger) (*Server, error) {
 		policyLoader,
 		appProviders,
 		cfg.AllowedIssuers(),
+		cfg.RequiredAudience(),
 		s.auditLogger,
 		slogger,
 		cfg.Server.TrustForwardedHeaders,

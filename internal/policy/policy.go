@@ -101,6 +101,12 @@ func (p *TrustPolicy) Validate() error {
 	if p.Issuer == "" {
 		return fmt.Errorf("trust policy: issuer is required")
 	}
+	// Audience is mandatory: a policy without it would accept tokens minted
+	// for any other relying party that shares the issuer (cross-RP token
+	// reuse — see security.md B-2).
+	if p.Audience == "" {
+		return fmt.Errorf("trust policy: audience is required (a policy without audience accepts tokens minted for any other relying party sharing the issuer)")
+	}
 	if len(p.Permissions) == 0 {
 		return fmt.Errorf("trust policy: at least one permission is required")
 	}
