@@ -116,9 +116,11 @@ func New(cfg *config.Settings, slogger *slog.Logger) (*Server, error) {
 		slogger.Info("github app initialized", "app", name, "app_id", app.AppID)
 	}
 
-	// Initialize policy loader with per-app token providers and org policy repos.
+	// Initialize policy loader with per-app token providers, org policy
+	// repos, and resolution modes.
 	policyTPs := make(map[string]policy.TokenProvider, len(appProviders))
 	orgPolicyRepos := make(map[string]string, len(cfg.Apps))
+	policyModes := make(map[string]policy.Resolution, len(cfg.Apps))
 	for name, provider := range appProviders {
 		policyTPs[name] = provider
 	}
@@ -126,10 +128,14 @@ func New(cfg *config.Settings, slogger *slog.Logger) (*Server, error) {
 		if app.OrgPolicyRepo != "" {
 			orgPolicyRepos[name] = app.OrgPolicyRepo
 		}
+		if app.PolicyResolution != "" {
+			policyModes[name] = app.PolicyResolution
+		}
 	}
 	policyLoader := policy.NewGitHubLoader(
 		policyTPs,
 		orgPolicyRepos,
+		policyModes,
 		apiURL,
 		cfg.Policy.BasePath,
 		cfg.Policy.CacheTTL,

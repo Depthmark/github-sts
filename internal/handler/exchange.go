@@ -362,7 +362,8 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Step 5: Issue GitHub token.
-	repositories := buildRepositories(req.Scope, pol)
+	subject, _ := claims["sub"].(string)
+	repositories := buildRepositories(req.Scope, pol, subject)
 	token, err := provider.GetInstallationToken(r.Context(), req.Scope, pol.Permissions, repositories, traceID)
 	if err != nil {
 		event.Result = audit.ResultGitHubError
@@ -539,16 +540,38 @@ func audienceMatches(claims map[string]any, expected string) bool {
 	return false
 }
 
+// subjectRepoPattern matches the leading "repo:<org>/<repo>:" segment of a
+// GitHub Actions OIDC subject and captures the repo name.
+var subjectRepoPattern = regexp.MustCompile(`^repo:[^/]+/([^:]+):`)
+
 // buildRepositories constructs the repository list for token issuance.
-func buildRepositories(scope string, pol *policy.TrustPolicy) []string {
+//
+// Security invariants:
+//   - Repo-level scope ("org/repo") always issues a token restricted to that
+//     repo, regardless of what the policy declares.
+//   - Centralized policies (loaded from the org policy repo) NEVER issue
+//     org-wide tokens. For org-level scope, the requesting repo is derived
+//     from the OIDC subject and the token is restricted to that single repo.
+//     This prevents a centralized identity from minting cross-repo tokens.
+//   - Non-centralized org-level scope falls back to the policy's repositories
+//     field (may be nil for full org access — only honored for repo-local
+//     identities that explicitly opt in).
+func buildRepositories(scope string, pol *policy.TrustPolicy, subject string) []string {
 	if strings.Contains(scope, "/") {
-		// Repo-level scope: extract repo name.
 		parts := strings.SplitN(scope, "/", 2)
 		if len(parts) == 2 {
 			return []string{parts[1]}
 		}
 	}
-	// Org-level scope: use policy repositories (may be nil for full access).
+	if pol.Centralized() {
+		if m := subjectRepoPattern.FindStringSubmatch(subject); len(m) == 2 {
+			return []string{m[1]}
+		}
+		// Centralized policy but subject doesn't identify a repo — refuse to
+		// issue an org-wide token. Returning an empty (non-nil) slice causes
+		// GitHub to reject the token request rather than grant org-wide access.
+		return []string{}
+	}
 	return pol.Repositories
 }
 
