@@ -14,6 +14,8 @@ import (
 	"log/slog"
 	"math/big"
 	"net/http"
+	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -37,9 +39,77 @@ const (
 	maxJWKSResponseBytes = 5 << 20
 )
 
-// oidcHTTPClient is a dedicated client for OIDC/JWKS fetches with a
-// reasonable timeout, avoiding use of http.DefaultClient.
-var oidcHTTPClient = &http.Client{Timeout: 15 * time.Second}
+// oidcHTTPClient is a dedicated client for OIDC/JWKS fetches.
+//
+// Redirects are refused: a 3xx response is returned as-is so the downstream
+// `StatusCode != 200` check rejects it. This prevents a tampered discovery
+// doc from redirecting signature verification to an attacker-controlled host
+// or chaining SSRF through redirects.
+var oidcHTTPClient = &http.Client{
+	Timeout: 15 * time.Second,
+	CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+		return http.ErrUseLastResponse
+	},
+}
+
+// trustedJWKSHosts: per-issuer override list of extra `jwks_uri` hosts beyond
+// the issuer's own host. Default policy is same-host pinning; a few real-world
+// providers split JWKS onto a different host (e.g., Google issuer
+// `accounts.google.com` → JWKS at `www.googleapis.com`) and opt in here.
+var (
+	trustedJWKSHosts   = map[string][]string{}
+	trustedJWKSHostsMu sync.RWMutex
+)
+
+// SetTrustedJWKSHosts installs the per-issuer JWKS host override map. Set once
+// at startup. Issuer keys are matched after trimming trailing slash; host
+// values are matched case-insensitively against the discovered jwks_uri host.
+func SetTrustedJWKSHosts(m map[string][]string) {
+	out := make(map[string][]string, len(m))
+	for iss, hosts := range m {
+		lowered := make([]string, 0, len(hosts))
+		for _, h := range hosts {
+			if h = strings.ToLower(strings.TrimSpace(h)); h != "" {
+				lowered = append(lowered, h)
+			}
+		}
+		if len(lowered) > 0 {
+			out[strings.TrimRight(iss, "/")] = lowered
+		}
+	}
+	trustedJWKSHostsMu.Lock()
+	trustedJWKSHosts = out
+	trustedJWKSHostsMu.Unlock()
+}
+
+// verifyJWKSHost rejects a discovered jwks_uri that is not the issuer's own
+// host (default) or an operator-pinned override. A tampered discovery doc
+// therefore cannot redirect signature verification to attacker-controlled
+// keys.
+func verifyJWKSHost(issuer, jwksURI string) error {
+	iss, err := url.Parse(issuer)
+	if err != nil || iss.Host == "" {
+		return fmt.Errorf("invalid issuer URL %q", issuer)
+	}
+	jwks, err := url.Parse(jwksURI)
+	if err != nil || jwks.Host == "" {
+		return fmt.Errorf("invalid jwks_uri %q", jwksURI)
+	}
+	if !strings.EqualFold(jwks.Scheme, iss.Scheme) {
+		return fmt.Errorf("jwks_uri scheme %q does not match issuer scheme %q", jwks.Scheme, iss.Scheme)
+	}
+	jwksHost := strings.ToLower(jwks.Host)
+	if jwksHost == strings.ToLower(iss.Host) {
+		return nil
+	}
+	trustedJWKSHostsMu.RLock()
+	allowed := trustedJWKSHosts[strings.TrimRight(issuer, "/")]
+	trustedJWKSHostsMu.RUnlock()
+	if slices.Contains(allowed, jwksHost) {
+		return nil
+	}
+	return fmt.Errorf("jwks_uri host %q is not the issuer host and not in the trusted JWKS host override", jwksHost)
+}
 
 // Claims is a map of decoded JWT claims.
 type Claims map[string]any
@@ -104,20 +174,20 @@ func Validate(ctx context.Context, tokenString string, allowedIssuers []string) 
 		return nil, fmt.Errorf("fetching JWKS for issuer %q: %w", issuer, err)
 	}
 
-	// Build keyfunc for verification.
+	// Build keyfunc for verification. `kid` is required: the previous
+	// "no kid → first key in map" fallback was non-deterministic (Go map
+	// iteration is randomized), so a leaked key from a multi-key
+	// rotation-overlap issuer would validate intermittently.
 	keyfunc := func(token *jwt.Token) (any, error) {
 		kid, _ := token.Header["kid"].(string)
-		if kid != "" {
-			if key, ok := keys[kid]; ok {
-				return key, nil
-			}
+		if kid == "" {
+			return nil, fmt.Errorf("token header missing kid")
+		}
+		key, ok := keys[kid]
+		if !ok {
 			return nil, fmt.Errorf("key %q not found in JWKS", kid)
 		}
-		// No kid — use first available key (single-key providers).
-		for _, key := range keys {
-			return key, nil
-		}
-		return nil, fmt.Errorf("no keys in JWKS for issuer %q", issuer)
+		return key, nil
 	}
 
 	// Parse and verify with explicit algorithm enforcement.
@@ -245,6 +315,11 @@ func fetchJWKS(ctx context.Context, issuer string) (map[string]*rsa.PublicKey, e
 		return nil, fmt.Errorf("OIDC discovery missing jwks_uri")
 	}
 
+	// Pin jwks_uri to the issuer's host (or an operator-pinned override).
+	if err := verifyJWKSHost(issuer, discovery.JWKSURI); err != nil {
+		return nil, fmt.Errorf("rejecting jwks_uri from issuer %q: %w", issuer, err)
+	}
+
 	// Fetch JWKS.
 	req, err = http.NewRequestWithContext(ctx, http.MethodGet, discovery.JWKSURI, nil)
 	if err != nil {
@@ -273,16 +348,18 @@ func fetchJWKS(ctx context.Context, issuer string) (map[string]*rsa.PublicKey, e
 		if k.Kty != "RSA" {
 			continue
 		}
+		// Index by `kid` only. Kid-less keys are skipped rather than
+		// collapsed under a shared sentinel — keyfunc requires kid match.
+		if k.Kid == "" {
+			slog.Warn("skipping kid-less JWKS key", "issuer", issuer)
+			continue
+		}
 		pub, err := k.toRSAPublicKey()
 		if err != nil {
 			slog.Warn("skipping invalid JWKS key", "kid", k.Kid, "error", err)
 			continue
 		}
-		kid := k.Kid
-		if kid == "" {
-			kid = "_default"
-		}
-		keys[kid] = pub
+		keys[k.Kid] = pub
 	}
 
 	if len(keys) == 0 {
