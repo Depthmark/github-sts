@@ -366,10 +366,45 @@ func TestClaimExpiry(t *testing.T) {
 
 // Ensure ErrorResponse has the right JSON shape.
 func TestErrorResponse_JSON(t *testing.T) {
+	// code/trace_id are omitempty — bare error keeps the legacy shape.
 	resp := ErrorResponse{Error: "something failed"}
 	data, _ := json.Marshal(resp)
 	if string(data) != `{"error":"something failed"}` {
 		t.Errorf("unexpected JSON: %s", data)
+	}
+
+	// With code + trace_id populated.
+	resp = ErrorResponse{Error: "forbidden", Code: CodePolicyDenied, TraceID: "abc-123"}
+	data, _ = json.Marshal(resp)
+	want := `{"error":"forbidden","code":"policy_denied","trace_id":"abc-123"}`
+	if string(data) != want {
+		t.Errorf("unexpected JSON:\n got: %s\nwant: %s", data, want)
+	}
+}
+
+// TestErrorCodes_Stable pins the wire values of the public error codes.
+// These appear in operator runbooks; renaming them is a breaking change.
+func TestErrorCodes_Stable(t *testing.T) {
+	pairs := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{"CodeBadRequest", CodeBadRequest, "bad_request"},
+		{"CodeOIDCInvalid", CodeOIDCInvalid, "oidc_invalid"},
+		{"CodeAudienceMismatch", CodeAudienceMismatch, "audience_mismatch"},
+		{"CodeAppUnknown", CodeAppUnknown, "app_unknown"},
+		{"CodePolicyNotFound", CodePolicyNotFound, "policy_not_found"},
+		{"CodePolicyDenied", CodePolicyDenied, "policy_denied"},
+		{"CodeMethodNotAllowed", CodeMethodNotAllowed, "method_not_allowed"},
+		{"CodeReplay", CodeReplay, "replay_detected"},
+		{"CodeInternal", CodeInternal, "internal_error"},
+		{"CodeUpstream", CodeUpstream, "upstream_error"},
+	}
+	for _, p := range pairs {
+		if p.got != p.want {
+			t.Errorf("%s = %q, want %q", p.name, p.got, p.want)
+		}
 	}
 }
 

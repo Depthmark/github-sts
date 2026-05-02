@@ -391,15 +391,26 @@ curl -X POST -H "Authorization: Bearer $OIDC_TOKEN" \
 
 **Errors:**
 
-| Status | Meaning |
-|---|---|
-| `400` | Missing or invalid parameters |
-| `401` | Invalid or missing OIDC token |
-| `403` | Policy evaluation denied |
-| `404` | Trust policy not found |
-| `405` | Method not allowed |
-| `409` | JTI replay &mdash; token already consumed |
-| `500` | Internal server error |
+Error responses share this shape:
+
+```json
+{ "error": "forbidden", "code": "policy_denied", "trace_id": "abc-123" }
+```
+
+`error` is deliberately generic so attackers can't probe the validator. Use `code` to branch in your client and `trace_id` to correlate with server/audit logs (the log line carries the full reason).
+
+| Status | `code` | What to fix |
+|---|---|---|
+| `400` | `bad_request` | Missing/invalid query params or JSON body. |
+| `403` | `oidc_invalid` | OIDC token rejected (missing/expired, bad signature, unknown `iss`, missing `kid`, malformed). Refresh or re-mint the token; verify `allowed_issuers`. |
+| `403` | `audience_mismatch` | Token's `aud` does not match the policy's `audience:`. Pass the right value to `core.getIDToken(<audience>)` or update the policy. |
+| `403` | `app_unknown` | `?app=` does not match a configured app. Check spelling or omit when only one app is configured. |
+| `403` | `policy_not_found` | No `.sts.yaml` for this `scope/app/identity`. Verify the file path: `{base_path}/{app}/{identity}.sts.yaml` in the target (or org policy) repo. |
+| `403` | `policy_denied` | Policy exists but evaluation failed (subject, claim_pattern). Check the audit log line at `trace_id` for the precise mismatch. |
+| `405` | `method_not_allowed` | Use `GET` or `POST`. |
+| `409` | `replay_detected` | JTI already consumed; obtain a fresh OIDC token. |
+| `500` | `internal_error` | Server-side problem (cache backend, app misconfig). Check server logs at `trace_id`. |
+| `502` | `upstream_error` | Policy fetch or GitHub token mint failed. Check server logs at `trace_id`. |
 
 ### Token Revocation
 
@@ -524,8 +535,7 @@ make act-build    # build only
 |---|---|
 | **Docker build fails** with `go.mod requires go >= X` | Update `FROM golang:X-alpine` in `Dockerfile` to match `go.mod` |
 | **Health check fails** | Verify `GITHUBSTS_CONFIG_PATH` is set and the file exists |
-| **Exchange returns `401`** | Check OIDC token expiry, verify `allowed_issuers` includes the issuer, review server logs |
-| **Exchange returns `403`** | Policy evaluation failed &mdash; check issuer, subject, and claim patterns in the `.sts.yaml` file |
+| **Exchange returns `403`** | Look at `code` in the response body — it tells you which layer rejected the request (`oidc_invalid`, `audience_mismatch`, `app_unknown`, `policy_not_found`, `policy_denied`). Then grep server logs for the `trace_id` returned in the same response for the precise reason. See [Errors](#response) for the full table. |
 | **Exchange returns `404`** | Verify the trust policy exists at `{base_path}/{app}/{identity}.sts.yaml` in the target repo |
 | **Exchange returns `409`** | JTI replay &mdash; the OIDC token was already used. Obtain a fresh token |
 
