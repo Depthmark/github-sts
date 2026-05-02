@@ -118,6 +118,7 @@ func TestGitHubLoader_RepoFirst_FallsBackToOrgPolicyRepo(t *testing.T) {
 	policyYAML := `
 issuer: https://token.actions.githubusercontent.com
 subject_pattern: "repo:myorg/.*"
+audience: https://sts.example.com
 permissions:
   contents: read
 `
@@ -193,6 +194,7 @@ func TestGitHubLoader_RepoLevel_NoFallbackWhenOrgPolicyRepoUnset(t *testing.T) {
 func TestGitHubLoader_OrgLevel_MarksCentralized(t *testing.T) {
 	policyYAML := `
 issuer: https://token.actions.githubusercontent.com
+audience: https://sts.example.com
 permissions:
   contents: read
 `
@@ -367,6 +369,7 @@ func (f *fakeRepoMux) handler(t *testing.T) http.Handler {
 const samplePolicyYAML = `
 issuer: https://token.actions.githubusercontent.com
 subject_pattern: "repo:myorg/.*"
+audience: https://sts.example.com
 permissions:
   contents: read
 `

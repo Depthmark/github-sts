@@ -44,9 +44,39 @@ type ExchangeResponse struct {
 }
 
 // ErrorResponse is returned on exchange errors.
+//
+// Error stays deliberately generic ("forbidden", "upstream error") so
+// attackers cannot probe the validator. Code is a stable, coarse category
+// safe to surface to callers — operators use it to tell apart "fix the
+// workflow" from "fix the policy" failures without log access. TraceID is
+// the per-request identifier also emitted in audit/server logs; give it to
+// ops to find the matching log line, which carries the full reason.
 type ErrorResponse struct {
-	Error string `json:"error"`
+	Error   string `json:"error"`
+	Code    string `json:"code,omitempty"`
+	TraceID string `json:"trace_id,omitempty"`
 }
+
+// Error codes returned in ErrorResponse.Code. These are a stable public API —
+// do not rename without a major version bump.
+const (
+	// 400 — request shape rejected before any auth happened.
+	CodeBadRequest = "bad_request"
+
+	// 403 — token rejected. Coarse on purpose; the matching trace_id log line
+	// carries the precise reason.
+	CodeOIDCInvalid      = "oidc_invalid"       // missing/expired/bad-signature/unknown-issuer/missing-kid/malformed
+	CodeAudienceMismatch = "audience_mismatch"  // token aud did not match policy.audience
+	CodeAppUnknown       = "app_unknown"        // requested ?app= is not configured on the server
+	CodePolicyNotFound   = "policy_not_found"   // no .sts.yaml for this scope/app/identity
+	CodePolicyDenied     = "policy_denied"      // policy exists but evaluation failed (subject/claim_pattern)
+
+	// Other status codes.
+	CodeMethodNotAllowed = "method_not_allowed" // 405
+	CodeReplay           = "replay_detected"    // 409
+	CodeInternal         = "internal_error"     // 500
+	CodeUpstream         = "upstream_error"     // 502
+)
 
 // contextKey is an unexported type for context keys.
 type contextKey string
@@ -95,39 +125,39 @@ func NewExchangeHandler(
 func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 
+	traceID := traceIDFromContext(r)
+
 	// Only GET and POST are allowed.
 	if r.Method != http.MethodGet && r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, ErrorResponse{Error: "method not allowed"})
+		writeJSON(w, http.StatusMethodNotAllowed, ErrorResponse{Error: "method not allowed", Code: CodeMethodNotAllowed, TraceID: traceID})
 		return
 	}
-
-	traceID := traceIDFromContext(r)
 
 	// Parse request parameters.
 	req, err := parseExchangeRequest(r)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error()})
+		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error(), Code: CodeBadRequest, TraceID: traceID})
 		return
 	}
 
 	// Validate required fields.
 	if req.Scope == "" || req.Identity == "" {
-		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "scope and identity are required"})
+		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "scope and identity are required", Code: CodeBadRequest, TraceID: traceID})
 		return
 	}
 
 	// Validate field characters and length to prevent metrics cardinality abuse.
 	if err := validateField("scope", req.Scope, 200); err != nil {
-		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error()})
+		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error(), Code: CodeBadRequest, TraceID: traceID})
 		return
 	}
 	if err := validateField("identity", req.Identity, 100); err != nil {
-		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error()})
+		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error(), Code: CodeBadRequest, TraceID: traceID})
 		return
 	}
 	if req.AppName != "" {
 		if err := validateField("app", req.AppName, 100); err != nil {
-			writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error()})
+			writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error(), Code: CodeBadRequest, TraceID: traceID})
 			return
 		}
 	}
@@ -148,7 +178,7 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		event.ErrorReason = "missing or invalid authorization header"
 		event.DurationMS = msSince(start)
 		h.emitResult(event, req, start)
-		writeJSON(w, http.StatusForbidden, ErrorResponse{Error: "forbidden"})
+		writeJSON(w, http.StatusForbidden, ErrorResponse{Error: "forbidden", Code: CodeOIDCInvalid, TraceID: traceID})
 		return
 	}
 
@@ -169,7 +199,7 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"error", err,
 			)
 		}
-		writeJSON(w, http.StatusForbidden, ErrorResponse{Error: "forbidden"})
+		writeJSON(w, http.StatusForbidden, ErrorResponse{Error: "forbidden", Code: CodeOIDCInvalid, TraceID: traceID})
 		return
 	}
 
@@ -193,7 +223,7 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"expected_audience", h.requiredAudience,
 			)
 		}
-		writeJSON(w, http.StatusForbidden, ErrorResponse{Error: "forbidden"})
+		writeJSON(w, http.StatusForbidden, ErrorResponse{Error: "forbidden", Code: CodeAudienceMismatch, TraceID: traceID})
 		return
 	}
 
@@ -219,7 +249,7 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"error", err,
 			)
 		}
-		writeJSON(w, http.StatusInternalServerError, ErrorResponse{Error: "internal error"})
+		writeJSON(w, http.StatusInternalServerError, ErrorResponse{Error: "internal error", Code: CodeInternal, TraceID: traceID})
 		return
 	}
 	if !isNew {
@@ -227,7 +257,7 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		event.ErrorReason = "token already used"
 		event.DurationMS = msSince(start)
 		h.emitResult(event, req, start)
-		writeJSON(w, http.StatusConflict, ErrorResponse{Error: "token replay detected"})
+		writeJSON(w, http.StatusConflict, ErrorResponse{Error: "token replay detected", Code: CodeReplay, TraceID: traceID})
 		return
 	}
 
@@ -268,14 +298,14 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			)
 		}
 		status := http.StatusForbidden
+		code := CodeAppUnknown
+		msg := "forbidden"
 		if strings.Contains(err.Error(), "misconfiguration") {
 			status = http.StatusInternalServerError
-		}
-		msg := "forbidden"
-		if status == http.StatusInternalServerError {
+			code = CodeInternal
 			msg = "internal error"
 		}
-		writeJSON(w, status, ErrorResponse{Error: msg})
+		writeJSON(w, status, ErrorResponse{Error: msg, Code: code, TraceID: traceID})
 		return
 	}
 	event.AppName = appName
@@ -297,7 +327,7 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"hint", classifyUpstreamError(err),
 			)
 		}
-		writeJSON(w, http.StatusBadGateway, ErrorResponse{Error: "upstream error"})
+		writeJSON(w, http.StatusBadGateway, ErrorResponse{Error: "upstream error", Code: CodeUpstream, TraceID: traceID})
 		return
 	}
 	if pol == nil {
@@ -313,7 +343,7 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"identity", req.Identity,
 			)
 		}
-		writeJSON(w, http.StatusForbidden, ErrorResponse{Error: "forbidden"})
+		writeJSON(w, http.StatusForbidden, ErrorResponse{Error: "forbidden", Code: CodePolicyNotFound, TraceID: traceID})
 		return
 	}
 
@@ -338,7 +368,7 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"reason", event.ErrorReason,
 			)
 		}
-		writeJSON(w, http.StatusForbidden, ErrorResponse{Error: "forbidden"})
+		writeJSON(w, http.StatusForbidden, ErrorResponse{Error: "forbidden", Code: CodeAudienceMismatch, TraceID: traceID})
 		return
 	}
 
@@ -357,7 +387,7 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"subject", event.Subject,
 			"reason", evalResult.Reason,
 		)
-		writeJSON(w, http.StatusForbidden, ErrorResponse{Error: "forbidden"})
+		writeJSON(w, http.StatusForbidden, ErrorResponse{Error: "forbidden", Code: CodePolicyDenied, TraceID: traceID})
 		return
 	}
 
@@ -378,7 +408,7 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"error", err,
 			"hint", classifyUpstreamError(err),
 		)
-		writeJSON(w, http.StatusBadGateway, ErrorResponse{Error: "upstream error"})
+		writeJSON(w, http.StatusBadGateway, ErrorResponse{Error: "upstream error", Code: CodeUpstream, TraceID: traceID})
 		return
 	}
 
