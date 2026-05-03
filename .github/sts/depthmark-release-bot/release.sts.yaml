@@ -3,7 +3,9 @@ subject: "repo:Depthmark/github-sts:ref:refs/heads/main"
 
 claim_pattern:
   workflow_ref: "Depthmark/github-sts/.github/workflows/release-please.yml@refs/heads/main"
-  
+
+audience: github-sts
+
 permissions:
   contents: write
   checks: write
