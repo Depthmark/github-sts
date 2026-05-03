@@ -80,7 +80,7 @@
         {
           "datasource": { "type": "prometheus", "uid": "$datasource" },
           "editorMode": "code",
-          "expr": "sum(rate(githubsts_requests_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$instance\"}[5m]))",
+          "expr": "sum(rate(githubsts_http_requests_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$instance\"}[5m]))",
           "legendFormat": "RPS",
           "range": true,
           "refId": "A"
@@ -117,7 +117,7 @@
         {
           "datasource": { "type": "prometheus", "uid": "$datasource" },
           "editorMode": "code",
-          "expr": "100 * sum(rate(githubsts_requests_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$instance\",status=~\"5..\"}[5m])) / clamp_min(sum(rate(githubsts_requests_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$instance\"}[5m])), 0.000001)",
+          "expr": "100 * sum(rate(githubsts_http_requests_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$instance\",status=~\"5..\"}[5m])) / clamp_min(sum(rate(githubsts_http_requests_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$instance\"}[5m])), 0.000001)",
           "legendFormat": "5xx %",
           "range": true,
           "refId": "A"
@@ -154,7 +154,7 @@
         {
           "datasource": { "type": "prometheus", "uid": "$datasource" },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(githubsts_request_duration_seconds_bucket{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$instance\"}[5m])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(githubsts_http_request_duration_seconds_bucket{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$instance\"}[5m])))",
           "legendFormat": "p95",
           "range": true,
           "refId": "A"
@@ -191,7 +191,7 @@
         {
           "datasource": { "type": "prometheus", "uid": "$datasource" },
           "editorMode": "code",
-          "expr": "sum(githubsts_requests_in_flight{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$instance\"})",
+          "expr": "sum(githubsts_http_requests_in_flight{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$instance\"})",
           "legendFormat": "in-flight",
           "range": true,
           "refId": "A"
@@ -376,7 +376,7 @@
         {
           "datasource": { "type": "prometheus", "uid": "$datasource" },
           "editorMode": "code",
-          "expr": "sum by (instance) (rate(githubsts_requests_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$instance\"}[5m]))",
+          "expr": "sum by (instance) (rate(githubsts_http_requests_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$instance\"}[5m]))",
           "legendFormat": "{{instance}}",
           "range": true,
           "refId": "A"
@@ -424,7 +424,7 @@
         {
           "datasource": { "type": "prometheus", "uid": "$datasource" },
           "editorMode": "code",
-          "expr": "sum by (status) (rate(githubsts_requests_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$instance\"}[5m]))",
+          "expr": "sum by (status) (rate(githubsts_http_requests_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$instance\"}[5m]))",
           "legendFormat": "{{status}}",
           "range": true,
           "refId": "A"
@@ -472,7 +472,7 @@
         {
           "datasource": { "type": "prometheus", "uid": "$datasource" },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.50, sum by (le) (rate(githubsts_request_duration_seconds_bucket{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$instance\"}[5m])))",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(githubsts_http_request_duration_seconds_bucket{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$instance\"}[5m])))",
           "legendFormat": "p50",
           "range": true,
           "refId": "A"
@@ -480,7 +480,7 @@
         {
           "datasource": { "type": "prometheus", "uid": "$datasource" },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(githubsts_request_duration_seconds_bucket{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$instance\"}[5m])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(githubsts_http_request_duration_seconds_bucket{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$instance\"}[5m])))",
           "legendFormat": "p95",
           "range": true,
           "refId": "B"
@@ -488,7 +488,7 @@
         {
           "datasource": { "type": "prometheus", "uid": "$datasource" },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(githubsts_request_duration_seconds_bucket{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$instance\"}[5m])))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(githubsts_http_request_duration_seconds_bucket{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$instance\"}[5m])))",
           "legendFormat": "p99",
           "range": true,
           "refId": "C"
@@ -870,7 +870,7 @@
         {
           "datasource": { "type": "prometheus", "uid": "$datasource" },
           "editorMode": "code",
-          "expr": "sum by (path, status) (rate(githubsts_requests_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$instance\",path=~\"/health|/ready\"}[5m]))",
+          "expr": "sum by (path, status) (rate(githubsts_http_requests_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$instance\",path=~\"/health|/ready\"}[5m]))",
           "legendFormat": "{{path}} {{status}}",
           "range": true,
           "refId": "A"
@@ -904,7 +904,7 @@
         "allValue": ".*",
         "current": { "selected": true, "text": "All", "value": "$__all" },
         "datasource": { "type": "prometheus", "uid": "$datasource" },
-        "definition": "label_values(githubsts_requests_total, namespace)",
+        "definition": "label_values(githubsts_http_requests_total, namespace)",
         "hide": 0,
         "includeAll": true,
         "label": "Namespace",
@@ -913,7 +913,7 @@
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(githubsts_requests_total, namespace)",
+          "query": "label_values(githubsts_http_requests_total, namespace)",
           "refId": "Prometheus-namespace-Variable-Query"
         },
         "refresh": 2,
@@ -926,7 +926,7 @@
         "allValue": ".*",
         "current": { "selected": true, "text": "All", "value": "$__all" },
         "datasource": { "type": "prometheus", "uid": "$datasource" },
-        "definition": "label_values(githubsts_requests_total{namespace=~\"$namespace\"}, job)",
+        "definition": "label_values(githubsts_http_requests_total{namespace=~\"$namespace\"}, job)",
         "hide": 0,
         "includeAll": true,
         "label": "Job",
@@ -935,7 +935,7 @@
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(githubsts_requests_total{namespace=~\"$namespace\"}, job)",
+          "query": "label_values(githubsts_http_requests_total{namespace=~\"$namespace\"}, job)",
           "refId": "Prometheus-job-Variable-Query"
         },
         "refresh": 2,
@@ -948,7 +948,7 @@
         "allValue": ".*",
         "current": { "selected": true, "text": "All", "value": "$__all" },
         "datasource": { "type": "prometheus", "uid": "$datasource" },
-        "definition": "label_values(githubsts_requests_total{namespace=~\"$namespace\",job=~\"$job\"}, instance)",
+        "definition": "label_values(githubsts_http_requests_total{namespace=~\"$namespace\",job=~\"$job\"}, instance)",
         "hide": 0,
         "includeAll": true,
         "label": "Instance",
@@ -957,7 +957,7 @@
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(githubsts_requests_total{namespace=~\"$namespace\",job=~\"$job\"}, instance)",
+          "query": "label_values(githubsts_http_requests_total{namespace=~\"$namespace\",job=~\"$job\"}, instance)",
           "refId": "Prometheus-instance-Variable-Query"
         },
         "refresh": 2,
