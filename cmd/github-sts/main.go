@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/depthmark/github-sts/internal/config"
 	"github.com/depthmark/github-sts/internal/server"
@@ -34,9 +35,29 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Signal handling.
+	// Signal handling: SIGINT/SIGTERM cancel the server context;
+	// SIGHUP triggers a bundle reload without restarting the broker.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	hupCh := make(chan os.Signal, 1)
+	signal.Notify(hupCh, syscall.SIGHUP)
+	defer signal.Stop(hupCh)
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-hupCh:
+				slogger.Info("SIGHUP received: reloading bundle")
+				reloadCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+				if err := srv.ReloadBundle(reloadCtx); err != nil {
+					slogger.Warn("SIGHUP reload failed (keeping previous bundle)", "error", err)
+				}
+				cancel()
+			}
+		}
+	}()
 
 	// Start server (blocks until context is cancelled).
 	if err := srv.ListenAndServe(ctx); err != nil {

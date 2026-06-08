@@ -16,22 +16,21 @@ permissions:
   attestations: write
 
 jobs:
-  # ─────────────────────────────────────────────────────────────────────────
-  # Gate: run full CI before releasing
-  # ─────────────────────────────────────────────────────────────────────────
-  ci:
-    name: CI Gate
+  ci-go:
+    name: CI Gate (Go)
     uses: ./.github/workflows/ci.yml
     permissions:
       contents: read
 
-  # ─────────────────────────────────────────────────────────────────────────
-  # Build, push, sign (cosign keyless) and attest the multi-arch image
-  # via the shared Depthmark/reusable-workflows pipeline.
-  # ─────────────────────────────────────────────────────────────────────────
+  ci-schema:
+    name: CI Gate (Schema)
+    uses: ./.github/workflows/ci-schema.yml
+    permissions:
+      contents: read
+
   docker:
     name: Docker
-    needs: [ci]
+    needs: [ci-go, ci-schema]
     uses: Depthmark/reusable-workflows/.github/workflows/docker-build-push.yml@b75184a59af82875f02abd547e57645ffcdcd91a # v1.0.1
     with:
       tag_name: ${{ inputs.tag_name }}

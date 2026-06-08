@@ -1,0 +1,165 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.depthmark.io/sts/v1/trust-policy.json",
+  "title": "github-sts trust policy v1",
+  "description": "Trust policy for github-sts. Authored at .github/sts/{app}/{identity}.sts.yaml in a consuming repo (or in the org policy repo for centralised resolution). Controls which OIDC identity may exchange a token for which GitHub App installation token, with which permissions, scoped to which repositories.\n\nSchema source of truth: github.com/Depthmark/github-sts. Customise by forking that repo, not this URL.",
+  "type": "object",
+  "required": ["issuer", "audience", "permissions"],
+  "additionalProperties": false,
+  "not": {
+    "required": ["subject", "subject_pattern"],
+    "description": "subject and subject_pattern are mutually exclusive. If both are set, the broker uses subject and ignores subject_pattern; the schema rejects this redundancy."
+  },
+  "properties": {
+    "issuer": {
+      "type": "string",
+      "format": "uri",
+      "minLength": 1,
+      "description": "OIDC issuer URL. Must exactly match the iss claim of the presented token. Examples: https://token.actions.githubusercontent.com (GitHub Actions), https://accounts.google.com (Google Workload Identity), https://sts.windows.net/<tenant>/ (Azure AD), https://oidc.eks.<region>.amazonaws.com/id/<id> (AWS EKS).",
+      "examples": [
+        "https://token.actions.githubusercontent.com",
+        "https://accounts.google.com"
+      ]
+    },
+    "subject": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Exact-match subject (sub claim). Mutually exclusive with subject_pattern. Use for tightly scoped identities (e.g., a single workflow on a single ref).",
+      "examples": [
+        "repo:myorg/myrepo:ref:refs/heads/main"
+      ]
+    },
+    "subject_pattern": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Regex matched against the sub claim. Anchored automatically: the broker compiles ^<pattern>$. Mutually exclusive with subject. Use for ranges (e.g., any branch in a repo) or workflow-level scoping that's not a fixed string.",
+      "examples": [
+        "repo:myorg/myrepo:ref:refs/heads/.*",
+        "repo:myorg/.*"
+      ]
+    },
+    "claim_pattern": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Regex matched against the claim's value. Anchored automatically: the broker compiles ^<pattern>$. All entries in claim_pattern must match (logical AND)."
+      },
+      "description": "Per-claim regex constraints applied in addition to subject/subject_pattern. Keys are arbitrary OIDC claim names (e.g., job_workflow_ref, email, oid); values are regex patterns. Useful for narrowing GitHub Actions tokens to a specific reusable workflow or pinning a Google service account email.",
+      "examples": [
+        {
+          "job_workflow_ref": "myorg/myrepo/.github/workflows/release\\.yml@.*"
+        }
+      ]
+    },
+    "audience": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Required. Exact-match audience (aud claim). Reject tokens minted for other relying parties that share the same issuer. Workflows must request a token with this audience (e.g., core.getIDToken('https://sts.example.com')). A policy without audience would accept tokens minted for any other RP — see security guidance B-2 in the broker's docs.",
+      "examples": [
+        "https://sts.example.com"
+      ]
+    },
+    "repositories": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Repository name without owner prefix. The owner is inferred from the request scope."
+      },
+      "description": "Restrict the minted GitHub App installation token to this subset of repositories. Only meaningful for org-scoped requests (scope=myorg). Omit for repo-scoped requests (scope=myorg/myrepo) — the requesting repo is implicit."
+    },
+    "permissions": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "enum": [
+          "actions",
+          "administration",
+          "artifact_metadata",
+          "attestations",
+          "checks",
+          "codespaces",
+          "contents",
+          "dependabot_secrets",
+          "deployments",
+          "discussions",
+          "environments",
+          "issues",
+          "merge_queues",
+          "metadata",
+          "packages",
+          "pages",
+          "pull_requests",
+          "repository_custom_properties",
+          "repository_hooks",
+          "repository_projects",
+          "secret_scanning_alerts",
+          "secrets",
+          "security_events",
+          "single_file",
+          "statuses",
+          "vulnerability_alerts",
+          "workflows",
+          "custom_properties_for_organizations",
+          "members",
+          "organization_administration",
+          "organization_announcement_banners",
+          "organization_copilot_agent_settings",
+          "organization_copilot_seat_management",
+          "organization_custom_org_roles",
+          "organization_custom_properties",
+          "organization_custom_roles",
+          "organization_events",
+          "organization_hooks",
+          "organization_packages",
+          "organization_personal_access_token_requests",
+          "organization_personal_access_tokens",
+          "organization_plan",
+          "organization_projects",
+          "organization_secrets",
+          "organization_self_hosted_runners",
+          "organization_user_blocking",
+          "email_addresses",
+          "followers",
+          "git_ssh_keys",
+          "gpg_keys",
+          "interaction_limits",
+          "profile",
+          "starring",
+          "enterprise_custom_properties_for_organizations"
+        ]
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/permissionLevel"
+      },
+      "description": "Required. At least one permission must be granted. Keys are GitHub App installation token permission names (matching the GitHub REST API for creating installation access tokens); values are 'read', 'write', or 'admin'. The broker rejects unknown keys and rejects values other than these three.",
+      "examples": [
+        {
+          "contents": "read",
+          "pull_requests": "write"
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "permissionLevel": {
+      "enum": ["read", "write", "admin"],
+      "description": "Permission level granted to the minted GitHub App installation token. Note: GitHub's API uses 'none' to omit a permission, but in this schema you simply omit the key — only granting levels are expressible."
+    }
+  },
+  "examples": [
+    {
+      "issuer": "https://token.actions.githubusercontent.com",
+      "subject": "repo:myorg/myrepo:ref:refs/heads/main",
+      "audience": "https://sts.example.com",
+      "permissions": {
+        "contents": "read",
+        "pull_requests": "write"
+      }
+    }
+  ]
+}

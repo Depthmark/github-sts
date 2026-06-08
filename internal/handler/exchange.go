@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/depthmark/github-sts/internal/audit"
+	"github.com/depthmark/github-sts/internal/bundle"
 	"github.com/depthmark/github-sts/internal/github"
 	"github.com/depthmark/github-sts/internal/jti"
 	"github.com/depthmark/github-sts/internal/metrics"
@@ -65,11 +67,15 @@ const (
 
 	// 403 — token rejected. Coarse on purpose; the matching trace_id log line
 	// carries the precise reason.
-	CodeOIDCInvalid      = "oidc_invalid"       // missing/expired/bad-signature/unknown-issuer/missing-kid/malformed
-	CodeAudienceMismatch = "audience_mismatch"  // token aud did not match policy.audience
-	CodeAppUnknown       = "app_unknown"        // requested ?app= is not configured on the server
-	CodePolicyNotFound   = "policy_not_found"   // no .sts.yaml for this scope/app/identity
-	CodePolicyDenied     = "policy_denied"      // policy exists but evaluation failed (subject/claim_pattern)
+	CodeOIDCInvalid      = "oidc_invalid"      // missing/expired/bad-signature/unknown-issuer/missing-kid/malformed
+	CodeAudienceMismatch = "audience_mismatch" // token aud did not match policy.audience
+	CodeAppUnknown       = "app_unknown"       // requested ?app= is not configured on the server
+	CodePolicyNotFound   = "policy_not_found"  // no .sts.yaml for this scope/app/identity
+	CodePolicyDenied     = "policy_denied"     // policy exists but evaluation failed (subject/claim_pattern)
+	CodeOrgPolicyDenied  = "org_policy_denied" // org-rego bundle blocked this request at exchange time
+
+	// 503 — server is up but a dependency is degraded.
+	CodeBundleStale = "bundle_stale" // bundle hasn't refreshed in time and fail_mode=closed
 
 	// Other status codes.
 	CodeMethodNotAllowed = "method_not_allowed" // 405
@@ -94,11 +100,22 @@ type ExchangeHandler struct {
 	auditLogger           audit.Logger
 	slogger               *slog.Logger
 	trustForwardedHeaders bool
+	bundleManager         bundle.Manager
+
+	// validator is the OIDC token validator. Production wires
+	// oidc.Validate; tests override to inject synthetic claims so the
+	// handler can be driven past OIDC validation without a JWKS server.
+	validator func(ctx context.Context, token string, allowedIssuers []string) (oidc.Claims, error)
 }
 
 // NewExchangeHandler creates a new ExchangeHandler with all dependencies injected.
 // requiredAudience, when non-empty, is enforced on every token before policy
 // lookup as a server-wide defense against permissive policy files.
+//
+// bundleManager is the org-rego guardrail. When Enabled() is true, the
+// handler consults it after the YAML policy match and before the GitHub
+// API mint; a deny returns 403 org_policy_denied. Pass bundle.Disabled{}
+// when bundle integration is off (default).
 func NewExchangeHandler(
 	jtiCache jti.Cache,
 	policyLoader policy.Loader,
@@ -108,7 +125,11 @@ func NewExchangeHandler(
 	auditLogger audit.Logger,
 	slogger *slog.Logger,
 	trustForwardedHeaders bool,
+	bundleManager bundle.Manager,
 ) *ExchangeHandler {
+	if bundleManager == nil {
+		bundleManager = bundle.Disabled{}
+	}
 	return &ExchangeHandler{
 		jtiCache:              jtiCache,
 		policyLoader:          policyLoader,
@@ -118,6 +139,8 @@ func NewExchangeHandler(
 		auditLogger:           auditLogger,
 		slogger:               slogger,
 		trustForwardedHeaders: trustForwardedHeaders,
+		bundleManager:         bundleManager,
+		validator:             oidc.Validate,
 	}
 }
 
@@ -182,7 +205,11 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	claims, err := oidc.Validate(r.Context(), bearer, h.allowedIssuers)
+	validate := h.validator
+	if validate == nil {
+		validate = oidc.Validate
+	}
+	claims, err := validate(r.Context(), bearer, h.allowedIssuers)
 	if err != nil {
 		event.Issuer = claimString(claims, "iss")
 		event.Subject = claimString(claims, "sub")
@@ -394,6 +421,93 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Step 5: Issue GitHub token.
 	subject, _ := claims["sub"].(string)
 	repositories := buildRepositories(req.Scope, pol, subject)
+
+	// Step 4.5: Org-rego bundle guardrail. Composes with the YAML policy
+	// (deny wins, both must allow). The bundle digest is recorded in
+	// the audit event whether the call allowed or denied — it's the
+	// fingerprint that proves which bundle gated which decision. A
+	// deny here returns 403 org_policy_denied and never reaches the
+	// mint call. An engine error fails closed (also 403, not 500) so
+	// a Rego compile bug or context cancellation can't accidentally
+	// produce an allow.
+	if h.bundleManager.Enabled() {
+		event.BundleDigest = h.bundleManager.Digest()
+		input := bundle.Input{
+			Mode: bundle.ModeExchange,
+			Request: bundle.InputRequest{
+				Scope: req.Scope, App: appName, Identity: req.Identity,
+			},
+			YAMLPolicy: bundle.FromPolicy(pol),
+			Claims:     claims,
+			Requested: &bundle.InputRequested{
+				Permissions:  pol.Permissions,
+				Repositories: repositories,
+			},
+		}
+		decision, evalErr := h.bundleManager.Eval(r.Context(), input)
+		if evalErr != nil {
+			// Bundle staleness (fail_mode=closed + age > max_staleness)
+			// surfaces as 503 bundle_stale, not 403 — this is a server-
+			// side dependency degradation, not a policy decision. Clients
+			// (and especially github-sts-action) should back off + retry,
+			// not surface the request as a hard authorization failure to
+			// end users.
+			if errors.Is(evalErr, bundle.ErrBundleStale) {
+				event.Result = audit.ResultOrgPolicyDenied
+				event.ErrorReason = "bundle stale: " + evalErr.Error()
+				event.OrgDecision = &audit.OrgDecision{Allow: false, Reasons: []string{"bundle stale (no successful refresh within max_staleness)"}}
+				event.DurationMS = msSince(start)
+				h.emitResult(event, req, start)
+				h.slogger.Warn("bundle stale: refusing exchange (fail_mode=closed)",
+					"trace_id", traceID,
+					"scope", req.Scope,
+					"app", appName,
+					"identity", req.Identity,
+					"bundle_digest", event.BundleDigest,
+				)
+				w.Header().Set("Retry-After", "60")
+				writeJSON(w, http.StatusServiceUnavailable, ErrorResponse{Error: "service unavailable", Code: CodeBundleStale, TraceID: traceID})
+				return
+			}
+			metrics.OrgDecisionTotal.WithLabelValues(appName, "all", "error").Inc()
+			event.Result = audit.ResultOrgPolicyDenied
+			event.ErrorReason = fmt.Sprintf("bundle eval error: %v", evalErr)
+			event.OrgDecision = &audit.OrgDecision{Allow: false, Reasons: []string{"bundle eval error"}}
+			event.DurationMS = msSince(start)
+			h.emitResult(event, req, start)
+			h.slogger.Error("bundle eval failed (failing closed)",
+				"trace_id", traceID,
+				"scope", req.Scope,
+				"app", appName,
+				"identity", req.Identity,
+				"bundle_digest", event.BundleDigest,
+				"error", evalErr,
+			)
+			writeJSON(w, http.StatusForbidden, ErrorResponse{Error: "forbidden", Code: CodeOrgPolicyDenied, TraceID: traceID})
+			return
+		}
+		event.OrgDecision = &audit.OrgDecision{Allow: decision.Allow, Reasons: decision.Reasons}
+		event.BundleDecisions = audit.FromBundleDecision(decision)
+		if !decision.Allow {
+			metrics.OrgDecisionTotal.WithLabelValues(appName, "all", "deny").Inc()
+			event.Result = audit.ResultOrgPolicyDenied
+			event.ErrorReason = fmt.Sprintf("org policy denied: %v", decision.Reasons)
+			event.DurationMS = msSince(start)
+			h.emitResult(event, req, start)
+			h.slogger.Warn("org policy denied",
+				"trace_id", traceID,
+				"scope", req.Scope,
+				"app", appName,
+				"identity", req.Identity,
+				"bundle_digest", event.BundleDigest,
+				"reasons", decision.Reasons,
+			)
+			writeJSON(w, http.StatusForbidden, ErrorResponse{Error: "forbidden", Code: CodeOrgPolicyDenied, TraceID: traceID})
+			return
+		}
+		metrics.OrgDecisionTotal.WithLabelValues(appName, "all", "allow").Inc()
+	}
+
 	token, err := provider.GetInstallationToken(r.Context(), req.Scope, pol.Permissions, repositories, traceID)
 	if err != nil {
 		event.Result = audit.ResultGitHubError

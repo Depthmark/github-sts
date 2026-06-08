@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -24,6 +25,7 @@ type Settings struct {
 	OIDC      OIDCConfig           `yaml:"oidc"`
 	JTI       JTIConfig            `yaml:"jti"`
 	Policy    PolicyConfig         `yaml:"policy"`
+	Bundles   []BundleConfig       `yaml:"bundles"`
 	Audit     AuditConfig          `yaml:"audit"`
 	Metrics   MetricsConfig        `yaml:"metrics"`
 	RateLimit RateLimitConfig      `yaml:"rate_limit"`
@@ -102,6 +104,43 @@ type MetricsConfig struct {
 	RateLimitPollInterval     time.Duration `yaml:"rate_limit_poll_interval"`
 	ReachabilityProbeEnabled  bool          `yaml:"reachability_probe_enabled"`
 	ReachabilityProbeInterval time.Duration `yaml:"reachability_probe_interval"`
+}
+
+// BundleConfig holds one OPA bundle setting for the org-rego guardrail layer.
+// The broker loads every configured bundle, discovers every package exposing a
+// decision document, and consults them on each token exchange between the YAML
+// policy match and the GitHub API mint. A deny returns 403 org_policy_denied;
+// the YAML policy and all bundle decisions must allow.
+//
+// OCI bundle refs require keyless cosign verification settings. PollInterval,
+// MaxStaleness, and FailMode control reload and stale-bundle behavior. The
+// defaults are conservative: a 5 minute poll, a 10 minute staleness ceiling,
+// and fail-closed when stale.
+type BundleConfig struct {
+	Name         string        `yaml:"name"`
+	Ref          string        `yaml:"ref"`
+	Cosign       CosignConfig  `yaml:"cosign"`
+	PollInterval time.Duration `yaml:"poll_interval"`
+	MaxStaleness time.Duration `yaml:"max_staleness"`
+	FailMode     string        `yaml:"fail_mode"`
+}
+
+// Bundle fail mode constants. closed is the secure default — when the
+// bundle exceeds MaxStaleness, eval refuses with bundle_stale. open is
+// the availability-first option — eval proceeds with a stale bundle but
+// emits a warning + metric per request so operators see the drift.
+const (
+	BundleFailModeClosed = "closed"
+	BundleFailModeOpen   = "open"
+)
+
+// CosignConfig holds cosign verification parameters. OCI bundle refs require
+// either keyless certificate identity/issuer fields or PublicKeyRef.
+type CosignConfig struct {
+	CertificateIdentityRegexp string `yaml:"certificate_identity_regexp"`
+	CertificateOIDCIssuer     string `yaml:"certificate_oidc_issuer"`
+	PublicKeyRef              string `yaml:"public_key_ref"`
+	IgnoreTlog                bool   `yaml:"ignore_tlog"`
 }
 
 // RateLimitConfig holds per-IP rate limiting settings.
@@ -226,6 +265,10 @@ func (s *Settings) Validate() error {
 		return fmt.Errorf("jti.redis_url is required when backend is redis")
 	}
 
+	if err := s.validateBundles(); err != nil {
+		return err
+	}
+
 	if s.Server.Port < 1 || s.Server.Port > 65535 {
 		return fmt.Errorf("server.port must be between 1 and 65535")
 	}
@@ -257,6 +300,76 @@ func (s *Settings) Validate() error {
 	}
 
 	return nil
+}
+
+func (s *Settings) validateBundles() error {
+	seen := make(map[string]struct{}, len(s.Bundles))
+	for i, b := range s.Bundles {
+		prefix := fmt.Sprintf("bundles[%d]", i)
+		if b.Name == "" {
+			return fmt.Errorf("%s.name is required", prefix)
+		}
+		if _, ok := seen[b.Name]; ok {
+			return fmt.Errorf("bundle name %q is duplicated", b.Name)
+		}
+		seen[b.Name] = struct{}{}
+		if b.Ref == "" {
+			return fmt.Errorf("%s.ref is required", prefix)
+		}
+		if strings.HasPrefix(b.Ref, "oci://") {
+			hasKeyless := b.Cosign.CertificateIdentityRegexp != "" || b.Cosign.CertificateOIDCIssuer != ""
+			hasPublicKey := b.Cosign.PublicKeyRef != ""
+			if hasKeyless && hasPublicKey {
+				return fmt.Errorf("%s.cosign must use either keyless certificate identity/issuer or public_key_ref, not both", prefix)
+			}
+			if !hasKeyless && !hasPublicKey {
+				return fmt.Errorf("%s.cosign requires certificate_identity_regexp and certificate_oidc_issuer, or public_key_ref, for oci bundles", prefix)
+			}
+			if hasKeyless && b.Cosign.CertificateIdentityRegexp == "" {
+				return fmt.Errorf("%s.cosign.certificate_identity_regexp is required for keyless oci bundles", prefix)
+			}
+			if hasKeyless && b.Cosign.CertificateOIDCIssuer == "" {
+				return fmt.Errorf("%s.cosign.certificate_oidc_issuer is required for keyless oci bundles", prefix)
+			}
+		}
+		if b.Cosign.CertificateIdentityRegexp != "" {
+			if _, err := regexp.Compile(b.Cosign.CertificateIdentityRegexp); err != nil {
+				return fmt.Errorf("%s.cosign.certificate_identity_regexp: invalid regex: %w", prefix, err)
+			}
+		}
+		if b.PollInterval == 0 {
+			b.PollInterval = 5 * time.Minute
+		}
+		if b.MaxStaleness == 0 {
+			b.MaxStaleness = 10 * time.Minute
+		}
+		if b.FailMode == "" {
+			b.FailMode = BundleFailModeClosed
+		}
+		if b.PollInterval <= 0 {
+			return fmt.Errorf("%s.poll_interval must be positive (got %s)", prefix, b.PollInterval)
+		}
+		if b.MaxStaleness <= 0 {
+			return fmt.Errorf("%s.max_staleness must be positive (got %s)", prefix, b.MaxStaleness)
+		}
+		if b.MaxStaleness < b.PollInterval {
+			return fmt.Errorf("%s.max_staleness (%s) must be >= poll_interval (%s)", prefix, b.MaxStaleness, b.PollInterval)
+		}
+		switch b.FailMode {
+		case BundleFailModeClosed, BundleFailModeOpen:
+			// valid
+		default:
+			return fmt.Errorf("%s.fail_mode must be %q or %q (got %q)", prefix, BundleFailModeClosed, BundleFailModeOpen, b.FailMode)
+		}
+		s.Bundles[i] = b
+	}
+	return nil
+}
+
+func (s *Settings) EffectiveBundles() []BundleConfig {
+	out := make([]BundleConfig, len(s.Bundles))
+	copy(out, s.Bundles)
+	return out
 }
 
 // RedisURL returns the JTI Redis URL.

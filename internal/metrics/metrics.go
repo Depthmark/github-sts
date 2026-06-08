@@ -170,6 +170,94 @@ var (
 	}, []string{"app", "reason"})
 )
 
+// OPA bundle metrics. The bundle is the org-rego guardrail layer pulled
+// from an OCI registry, cosign-verified, and consulted on every token
+// exchange. Phase 1 ships exchange-mode only; the `mode` label on
+// OrgDecisionTotal is added in Phase 3 alongside validate-mode.
+var (
+	OrgDecisionTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "githubsts_org_decision_total",
+		Help: "Org-rego bundle decisions. result is allow|deny|error.",
+	}, []string{"app", "bundle", "result"})
+
+	BundlePullTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "githubsts_bundle_pull_total",
+		Help: "OCI bundle pull attempts. result is success|failure.",
+	}, []string{"bundle", "result"})
+
+	BundleVerifyTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "githubsts_bundle_verify_total",
+		Help: "Cosign bundle verification attempts. result is success|failure.",
+	}, []string{"bundle", "result"})
+
+	BundleLoadedDigestInfo = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "githubsts_bundle_loaded_digest_info",
+		Help: "1 for the OCI digest of the currently loaded bundle.",
+	}, []string{"bundle", "digest"})
+
+	BundleAgeSeconds = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "githubsts_bundle_age_seconds",
+		Help: "Seconds since the last successful bundle pull.",
+	}, []string{"bundle"})
+
+	// BundleReloadTotal counts reload attempts after the initial Init.
+	// result is success|failure|unchanged. Init pulls also stamp
+	// BundlePullTotal so they don't double-count here.
+	BundleReloadTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "githubsts_bundle_reload_total",
+		Help: "Bundle reload attempts. result is success|failure|unchanged.",
+	}, []string{"bundle", "result"})
+
+	// BundleStaleEvalsTotal counts requests where the bundle was stale
+	// at eval time. mode=closed means the request was rejected with
+	// bundle_stale; mode=open means it proceeded with a warning. Both
+	// are counted separately from a healthy allow/deny.
+	BundleStaleEvalsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "githubsts_bundle_stale_evals_total",
+		Help: "Bundle eval attempts where the bundle was stale (age > max_staleness). mode is closed|open.",
+	}, []string{"bundle", "mode"})
+
+	BundlePolicyRevisionInfo = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "githubsts_bundle_policy_revision_info",
+		Help: "1 for the active Rego policy digest by bundle.",
+	}, []string{"bundle", "digest"})
+
+	BundlePolicyRevisionChangesTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "githubsts_bundle_policy_revision_changes_total",
+		Help: "Policy revision reload outcomes. result is changed|unchanged|failure.",
+	}, []string{"bundle", "result"})
+
+	BundlePolicyDecisionsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "githubsts_bundle_policy_decisions_total",
+		Help: "Policy decisions by app, bundle, digest, and result.",
+	}, []string{"app", "bundle", "digest", "result"})
+
+	BundlePolicyRuleDecisionsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "githubsts_bundle_policy_rule_decisions_total",
+		Help: "Policy decisions by bounded enterprise rule ID.",
+	}, []string{"bundle", "rule_id", "result"})
+
+	BundlePolicyExceptionsTotal = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "githubsts_bundle_policy_exceptions_total",
+		Help: "Discovered policy exceptions by status. status is active|expiring|expired|invalid.",
+	}, []string{"bundle", "digest", "status"})
+
+	BundlePolicyExceptionExpirationTimestampSeconds = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "githubsts_bundle_policy_exception_expiration_timestamp_seconds",
+		Help: "Unix timestamp when a discovered policy exception expires.",
+	}, []string{"bundle", "digest", "exception_id", "rule_id", "owner"})
+
+	BundlePolicyExceptionSecondsUntilExpiration = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "githubsts_bundle_policy_exception_seconds_until_expiration",
+		Help: "Seconds until a discovered policy exception expires; negative means expired.",
+	}, []string{"bundle", "digest", "exception_id", "rule_id", "owner"})
+
+	BundlePolicyExceptionHitsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "githubsts_bundle_policy_exception_hits_total",
+		Help: "Exchange attempts where a policy decision reported an exception hit.",
+	}, []string{"bundle", "digest", "exception_id", "rule_id", "owner", "app"})
+)
+
 // Request rate limiting.
 var RateLimitRejections = prometheus.NewCounter(prometheus.CounterOpts{
 	Name: "githubsts_rate_limit_rejections_total",
@@ -202,6 +290,8 @@ func Register() {
 		GitHubRateLimitExceededTotal, GitHubSecondaryRateLimitTotal, GitHubSecondaryRateLimitRetryAfter)
 	// Reachability
 	prometheus.MustRegister(GitHubReachable, GitHubReachabilityCheckDuration, GitHubReachabilityFailuresTotal)
+	// Bundle
+	prometheus.MustRegister(OrgDecisionTotal, BundlePullTotal, BundleVerifyTotal, BundleLoadedDigestInfo, BundleAgeSeconds, BundleReloadTotal, BundleStaleEvalsTotal, BundlePolicyRevisionInfo, BundlePolicyRevisionChangesTotal, BundlePolicyDecisionsTotal, BundlePolicyRuleDecisionsTotal, BundlePolicyExceptionsTotal, BundlePolicyExceptionExpirationTimestampSeconds, BundlePolicyExceptionSecondsUntilExpiration, BundlePolicyExceptionHitsTotal)
 	// Request rate limiting
 	prometheus.MustRegister(RateLimitRejections)
 	// Readiness

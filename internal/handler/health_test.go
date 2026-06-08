@@ -2,14 +2,17 @@ package handler
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+
+	"github.com/depthmark/github-sts/internal/bundle"
 )
 
 func TestHealthHandler_Always200(t *testing.T) {
-	h := HealthHandler()
+	h := HealthHandler(nil)
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
@@ -22,6 +25,89 @@ func TestHealthHandler_Always200(t *testing.T) {
 	_ = json.NewDecoder(w.Body).Decode(&body)
 	if body["status"] != "ok" {
 		t.Errorf("status = %q, want ok", body["status"])
+	}
+}
+
+// fakeBundleReporter satisfies BundleHealthReporter for testing /health.
+type fakeBundleReporter struct {
+	digest  string
+	enabled bool
+	age     float64
+	err     error
+}
+
+func (f *fakeBundleReporter) Digest() string       { return f.digest }
+func (f *fakeBundleReporter) Enabled() bool        { return f.enabled }
+func (f *fakeBundleReporter) AgeSeconds() float64  { return f.age }
+func (f *fakeBundleReporter) LastPullError() error { return f.err }
+func (f *fakeBundleReporter) BundleStatuses() []bundle.Status {
+	st := bundle.Status{Name: "test", Enabled: f.enabled, Digest: f.digest, AgeSeconds: f.age}
+	if f.err != nil {
+		st.LastPullError = f.err.Error()
+	}
+	return []bundle.Status{st}
+}
+
+// TestHealthHandler_BundleStatus counter-validates that /health
+// surfaces bundle state to operators without log access: the loaded
+// digest, age, and last pull error are all in the response body when
+// a reporter is wired. A healthy bundle has no last_pull_error key
+// (operators can grep for its presence).
+func TestHealthHandler_BundleStatus(t *testing.T) {
+	rep := &fakeBundleReporter{
+		digest:  "sha256:abc",
+		enabled: true,
+		age:     42.5,
+	}
+	h := HealthHandler(rep)
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (liveness is independent of bundle freshness)", w.Code)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	b, ok := body["bundle"].(map[string]any)
+	if !ok {
+		t.Fatalf("body.bundle missing or wrong shape: %v", body)
+	}
+	if b["digest"] != "sha256:abc" {
+		t.Errorf("bundle.digest = %v, want sha256:abc", b["digest"])
+	}
+	if b["enabled"] != true {
+		t.Errorf("bundle.enabled = %v, want true", b["enabled"])
+	}
+	if _, has := b["last_pull_error"]; has {
+		t.Errorf("bundle.last_pull_error present on healthy bundle; want omitted")
+	}
+}
+
+// TestHealthHandler_BundleLastPullError counter-validates that a
+// non-nil LastPullError surfaces in the JSON. Operators rely on this
+// to alert "bundle reload failing without restarting the broker."
+func TestHealthHandler_BundleLastPullError(t *testing.T) {
+	rep := &fakeBundleReporter{
+		digest:  "sha256:def",
+		enabled: true,
+		age:     900,
+		err:     fmt.Errorf("registry timeout"),
+	}
+	h := HealthHandler(rep)
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	var body map[string]any
+	_ = json.NewDecoder(w.Body).Decode(&body)
+	b := body["bundle"].(map[string]any)
+	if b["last_pull_error"] != "registry timeout" {
+		t.Errorf("bundle.last_pull_error = %v, want %q", b["last_pull_error"], "registry timeout")
 	}
 }
 

@@ -303,6 +303,80 @@ func TestValidate_RateLimitValidCIDR(t *testing.T) {
 	}
 }
 
+func TestValidate_BundlesDefaultsAndValidation(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Bundles = []BundleConfig{{
+		Name: "enterprise-security",
+		Ref:  "file:///tmp/bundle.tar.gz",
+	}}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := cfg.Bundles[0].PollInterval; got != 5*time.Minute {
+		t.Errorf("poll_interval default = %s, want 5m", got)
+	}
+	if got := cfg.Bundles[0].MaxStaleness; got != 10*time.Minute {
+		t.Errorf("max_staleness default = %s, want 10m", got)
+	}
+	if got := cfg.Bundles[0].FailMode; got != BundleFailModeClosed {
+		t.Errorf("fail_mode default = %q, want closed", got)
+	}
+}
+
+func TestValidate_BundlesDuplicateNameRejected(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Bundles = []BundleConfig{
+		{Name: "enterprise", Ref: "file:///tmp/a.tar.gz"},
+		{Name: "enterprise", Ref: "file:///tmp/b.tar.gz"},
+	}
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), "duplicated") {
+		t.Errorf("expected duplicate bundle name error, got: %v", err)
+	}
+}
+
+func TestValidate_BundlesOCIRequiresCosign(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Bundles = []BundleConfig{{Name: "enterprise", Ref: "oci://ghcr.io/org/sts-policy:v1"}}
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), "cosign requires") {
+		t.Errorf("expected cosign identity requirement, got: %v", err)
+	}
+}
+
+func TestValidate_BundlesOCIAcceptsPublicKeyRef(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Bundles = []BundleConfig{{
+		Name: "enterprise",
+		Ref:  "oci://ghcr.io/org/sts-policy:v1",
+		Cosign: CosignConfig{
+			PublicKeyRef: "cosign.pub",
+			IgnoreTlog:   true,
+		},
+	}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidate_BundlesOCIRejectsMixedCosignModes(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Bundles = []BundleConfig{{
+		Name: "enterprise",
+		Ref:  "oci://ghcr.io/org/sts-policy:v1",
+		Cosign: CosignConfig{
+			CertificateIdentityRegexp: "^https://github.com/org/repo/.*$",
+			CertificateOIDCIssuer:     "https://token.actions.githubusercontent.com",
+			PublicKeyRef:              "cosign.pub",
+		},
+	}}
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), "not both") {
+		t.Errorf("expected mixed cosign mode error, got: %v", err)
+	}
+}
+
 func TestParsePrivateKeys_InvalidPEM(t *testing.T) {
 	cfg := defaults()
 	cfg.Apps["test"] = AppConfig{AppID: 1, PrivateKey: "not-a-pem"}
