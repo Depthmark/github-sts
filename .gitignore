@@ -43,3 +43,6 @@ scripts/
 .aidlc-rule-details
 .claude
 aidlc-docs
+.opencode/
+outputs/
+.github/.agents/

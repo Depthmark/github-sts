@@ -30,6 +30,7 @@ Dockerfile.dev
 
 # AI/AIDLC
 .aidlc-rule-details/
+outputs/
 
 # Build artifacts
 github-sts
