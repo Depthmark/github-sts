@@ -15,7 +15,6 @@ func TestOCILoader_LocalRegistrySignedBundle(t *testing.T) {
 
 	fetch, err := OCILoader{}.Fetch(context.Background(), Source{Raw: ref}, VerifyConfig{
 		PublicKeyRef: publicKeyRef,
-		IgnoreTlog:   os.Getenv("GITHUBSTS_OCI_TEST_IGNORE_TLOG") == "true",
 	})
 	if err != nil {
 		t.Fatalf("OCI fetch: %v", err)

@@ -88,7 +88,7 @@ func TestSchema_RouteServesBundleFile(t *testing.T) {
 	if w.Header().Get("Cache-Control") != "public, max-age=300" {
 		t.Errorf("Cache-Control = %q, want public, max-age=300", w.Header().Get("Cache-Control"))
 	}
-	if string(w.Body.Bytes()) != string(fixtureSchemaJSON) {
+	if w.Body.String() != string(fixtureSchemaJSON) {
 		t.Errorf("body length mismatch: got %d, want %d", w.Body.Len(), len(fixtureSchemaJSON))
 	}
 

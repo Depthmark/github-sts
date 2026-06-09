@@ -79,7 +79,6 @@ func verifyCosignSignature(ctx context.Context, ref name.Reference, verify Verif
 		RegistryClientOpts: []ociremote.Option{ociremote.WithRemoteOptions(opts...)},
 		TrustedMaterial:    trustedRoot,
 		ClaimVerifier:      cosign.SimpleClaimVerifier,
-		IgnoreTlog:         verify.IgnoreTlog,
 	}
 	if verify.PublicKeyRef != "" {
 		verifier, err := loadPublicKeyVerifier(verify.PublicKeyRef)

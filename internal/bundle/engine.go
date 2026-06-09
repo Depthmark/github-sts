@@ -199,9 +199,7 @@ func hasRule(mod *ast.Module, name string) bool {
 
 func qualifyReasons(pd PackageDecision) []string {
 	reasons := make([]string, 0, len(pd.Reasons))
-	for _, r := range pd.Reasons {
-		reasons = append(reasons, r)
-	}
+	reasons = append(reasons, pd.Reasons...)
 	return reasons
 }
 

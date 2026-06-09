@@ -25,6 +25,7 @@ Inspired by [octo-sts/app](https://github.com/octo-sts/app), which pioneered OID
 |---|---|---|
 | **Zero-trust** | OIDC Federation | No stored credentials &mdash; identity verified via OIDC JWT validation |
 | **Least-privilege** | Policy-based Scoping | YAML trust policies define exact permissions per workload identity |
+| **Enterprise policy** | Rego Bundle Guardrails | Signed OPA bundles add organization-wide deny-wins policy without broker code changes |
 | **Multi-app** | Multiple GitHub Apps | Route different workloads through different GitHub Apps |
 | **Org-scope** | Organization Tokens | Issue tokens scoped to an entire org or a subset of repositories |
 | **Observable** | Prometheus Metrics | Built-in metrics and structured audit logging |
@@ -46,6 +47,7 @@ Inspired by [octo-sts/app](https://github.com/octo-sts/app), which pioneered OID
   - [Environment Variables](#environment-variables)
 - [API Reference](#api-reference)
   - [Token Exchange](#token-exchange)
+  - [Trust Policy Validation](#trust-policy-validation)
   - [Token Revocation](#token-revocation)
   - [Health & Readiness](#health--readiness)
 - [Deployment](#deployment)
@@ -69,6 +71,7 @@ flowchart LR
 
     subgraph github-sts
         D["OIDC Validator"]
+        H["Enterprise Rego Guardrails"]
         F["Token Issuer"]
     end
 
@@ -81,7 +84,8 @@ flowchart LR
     B -- "OIDC JWT" --> D
     C -- "OIDC JWT" --> D
     D -- "load & evaluate" --> E
-    E -- "approved scope + perms" --> F
+    E -- "approved scope + perms" --> H
+    H -- "all bundles allow" --> F
     F -- "create installation token" --> G
     G -- "scoped token" --> F
     F -- "short-lived token" --> A
@@ -94,8 +98,9 @@ flowchart LR
 1. A workload presents its **OIDC JWT** to the `/sts/exchange` endpoint
 2. github-sts **validates** the token signature, expiry, and issuer against JWKS
 3. The **trust policy** (stored in the target repo) is loaded and evaluated against the JWT claims
-4. If approved, github-sts requests a **scoped installation token** from the GitHub API
-5. The short-lived token is returned to the workload with only the permitted permissions
+4. If configured, **enterprise Rego bundles** evaluate the approved request and any deny stops the exchange
+5. If approved, github-sts requests a **scoped installation token** from the GitHub API
+6. The short-lived token is returned to the workload with only the permitted permissions
 
 ```
 Workload ──OIDC JWT──> github-sts ──validates──> loads policy ──approved──> GitHub API
@@ -116,6 +121,7 @@ internal/
   metrics/                Prometheus metrics registry
   oidc/                   OIDC JWT validation with JWKS caching
   policy/                 Trust policy loading & claim evaluation
+  bundle/                 OPA bundle loading, verification, evaluation, and lifecycle
   jti/                    JTI replay cache (in-memory + Redis)
   github/                 GitHub App auth, installation token provider
 config/examples/          Ready-to-use trust policy templates
@@ -335,6 +341,28 @@ dropping a permissive file in their own repo.
 If `org_policy_repo` is unset, only the requesting repo is consulted regardless
 of mode.
 
+### Enterprise Rego Bundles
+
+Operators can add one or more enterprise OPA/Rego bundles in server config. Bundles are evaluated after the YAML trust policy allows and before GitHub token minting. Deny wins across all configured bundles and all Rego packages.
+
+```yaml
+bundles:
+  - name: enterprise-baseline
+    ref: oci://ghcr.io/example/github-sts-policy:2026-06-01
+    poll_interval: 5m
+    max_staleness: 10m
+    fail_mode: closed
+    cosign:
+      certificate_identity_regexp: ^https://github.com/example/github-sts-policy/.github/workflows/release\.yaml@refs/heads/main$
+      certificate_oidc_issuer: https://token.actions.githubusercontent.com
+```
+
+Each Rego package that participates exposes `decision` with `allow`, optional `reasons`, and optional `rule_id`, `rule_name`, or `exception_id`. Repository or organization bypasses must be implemented as Rego exceptions before deny rules match; the broker does not override a deny after it is emitted.
+
+See [Configuration](docs/configuration.md#enterprise-rego-bundles) for the complete bundle contract and exception inventory format.
+
+For local OCI/cosign testing, run `make test-oci-cosign-local`. It starts a throwaway Docker registry, pushes a generated OPA bundle, signs it with a local cosign key pair, and runs the OCI loader integration test.
+
 ## Configuration
 
 github-sts supports YAML configuration files and environment variable overrides.
@@ -454,10 +482,16 @@ Error responses share this shape:
 | `403` | `app_unknown` | `?app=` does not match a configured app. Check spelling or omit when only one app is configured. |
 | `403` | `policy_not_found` | No `.sts.yaml` for this `scope/app/identity`. Verify the file path: `{base_path}/{app}/{identity}.sts.yaml` in the target (or org policy) repo. |
 | `403` | `policy_denied` | Policy exists but evaluation failed (subject, claim_pattern). Check the audit log line at `trace_id` for the precise mismatch. |
+| `403` | `org_policy_denied` | Enterprise Rego denied the exchange after the YAML policy allowed it. Check audit `bundle_decisions` for bundle/package/rule details. |
 | `405` | `method_not_allowed` | Use `GET` or `POST`. |
 | `409` | `replay_detected` | JTI already consumed; obtain a fresh OIDC token. |
+| `503` | `bundle_stale` | A configured fail-closed bundle is older than `max_staleness`. |
 | `500` | `internal_error` | Server-side problem (cache backend, app misconfig). Check server logs at `trace_id`. |
 | `502` | `upstream_error` | Policy fetch or GitHub token mint failed. Check server logs at `trace_id`. |
+
+### Trust Policy Validation
+
+`POST /sts/v1/trust-policy/validate` validates `.github/sts/{app}/{identity}.sts.yaml` content for editor tooling such as VS Code. It accepts raw YAML or JSON `{"content":"..."}` and returns `valid`, `diagnostics`, and optional canonical `formatted` YAML. This endpoint validates YAML trust policies only; it does not expose enterprise Rego exception inventory.
 
 ### Token Revocation
 
@@ -480,7 +514,7 @@ err := client.RevokeToken(ctx, token, "https://api.github.com")
 | Endpoint | Method | Success | Failure |
 |---|---|---|---|
 | `/health` | `GET` | `200` `{"status":"ok"}` | &mdash; |
-| `/ready` | `GET` | `200` `{"status":"ready"}` | `503` `{"status":"not ready"}` |
+| `/ready` | `GET` | `200` `{"ready":true}` | `503` `{"ready":false}` |
 | `/metrics` | `GET` | Prometheus text format | &mdash; |
 
 ## Deployment
@@ -542,6 +576,13 @@ All metrics are exposed at `GET /metrics` in Prometheus text format with the `gi
 | `githubsts_jti_replay_attempts_total` | Counter | JTI replay attacks detected |
 | `githubsts_audit_events_dropped_total` | Counter | Audit events dropped (full buffer) |
 | `githubsts_ready` | Gauge | Instance readiness (1/0) |
+| `githubsts_bundle_policy_revision_info` | Gauge | Active Rego bundle digest by bundle |
+| `githubsts_bundle_policy_revision_changes_total` | Counter | Policy revision reload outcomes by bundle |
+| `githubsts_bundle_policy_decisions_total` | Counter | Rego decision impact by app, bundle, digest, and result |
+| `githubsts_bundle_policy_rule_decisions_total` | Counter | Rego decisions by bounded enterprise rule ID |
+| `githubsts_bundle_policy_exceptions_total` | Gauge | Exception inventory by active/expiring/expired/invalid status |
+| `githubsts_bundle_policy_exception_seconds_until_expiration` | Gauge | Seconds until each discovered exception expires |
+| `githubsts_bundle_policy_exception_hits_total` | Counter | Exchanges where Rego reported an exception hit |
 
 </details>
 

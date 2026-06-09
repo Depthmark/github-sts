@@ -352,7 +352,6 @@ func TestValidate_BundlesOCIAcceptsPublicKeyRef(t *testing.T) {
 		Ref:  "oci://ghcr.io/org/sts-policy:v1",
 		Cosign: CosignConfig{
 			PublicKeyRef: "cosign.pub",
-			IgnoreTlog:   true,
 		},
 	}}
 	if err := cfg.Validate(); err != nil {

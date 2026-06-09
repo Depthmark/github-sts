@@ -43,7 +43,6 @@ type VerifyConfig struct {
 	CertificateIdentityRegexp string
 	CertificateOIDCIssuer     string
 	PublicKeyRef              string
-	IgnoreTlog                bool
 }
 
 // Fetch is the result of a successful pull-and-verify cycle. Tarball is

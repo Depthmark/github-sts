@@ -372,7 +372,6 @@ func initBundleManager(cfg *config.Settings, slogger *slog.Logger) (bundle.Manag
 			CertificateIdentityRegexp: bc.Cosign.CertificateIdentityRegexp,
 			CertificateOIDCIssuer:     bc.Cosign.CertificateOIDCIssuer,
 			PublicKeyRef:              bc.Cosign.PublicKeyRef,
-			IgnoreTlog:                bc.Cosign.IgnoreTlog,
 		}
 		mgr := bundle.NewLiveManager(loader, src, verify, slogger.With("bundle", bc.Name), bundle.LiveOpts{
 			Name:         bc.Name,

@@ -140,7 +140,6 @@ type CosignConfig struct {
 	CertificateIdentityRegexp string `yaml:"certificate_identity_regexp"`
 	CertificateOIDCIssuer     string `yaml:"certificate_oidc_issuer"`
 	PublicKeyRef              string `yaml:"public_key_ref"`
-	IgnoreTlog                bool   `yaml:"ignore_tlog"`
 }
 
 // RateLimitConfig holds per-IP rate limiting settings.
