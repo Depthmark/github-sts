@@ -1,0 +1,9 @@
+# Trust policy for a deployment identity across any branch.
+# https://github.com/Depthmark/github-sts
+issuer: https://token.actions.githubusercontent.com
+subject_pattern: 'repo:myorg/myrepo:ref:refs/heads/.*'
+audience: https://sts.example.com
+permissions:
+  contents: read
+  deployments: write
+  statuses: write

@@ -1,0 +1,7 @@
+# Trust policy for a CI identity.
+# https://github.com/Depthmark/github-sts
+issuer: https://token.actions.githubusercontent.com
+subject: repo:myorg/myrepo:ref:refs/heads/main
+audience: https://sts.example.com
+permissions:
+  contents: read
