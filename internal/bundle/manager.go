@@ -110,7 +110,6 @@ func NewLiveManager(loader Loader, source Source, verify VerifyConfig, slogger *
 // metrics so an operator can tell pull failures from verify failures
 // from compile failures from a Prometheus dashboard.
 func (m *LiveManager) Init(ctx context.Context) error {
-	m.slogger.Info("bundle init: pulling", "source", m.source.Raw)
 	if err := m.fetchAndInstall(ctx, "init"); err != nil {
 		return err
 	}
@@ -175,6 +174,16 @@ func (m *LiveManager) Reload(ctx context.Context) (string, error) {
 // compile, atomic swap. Caller is responsible for any digest-comparison
 // logic and for setting/clearing lastPullErr around the call.
 func (m *LiveManager) fetchAndInstall(ctx context.Context, kind string) error {
+	scheme := m.source.Scheme()
+	if scheme == "" {
+		scheme = "file"
+	}
+	verificationMode := m.signatureVerificationMode()
+	m.slogger.Info("bundle "+kind+": loading rego bundle",
+		"source", m.source.Raw,
+		"source_scheme", scheme,
+		"signature_verification", verificationMode,
+	)
 	fetch, err := m.loader.Fetch(ctx, m.source, m.verify)
 	if err != nil {
 		metrics.BundlePullTotal.WithLabelValues(m.name, "failure").Inc()
@@ -185,6 +194,11 @@ func (m *LiveManager) fetchAndInstall(ctx context.Context, kind string) error {
 	}
 	metrics.BundlePullTotal.WithLabelValues(m.name, "success").Inc()
 	metrics.BundleVerifyTotal.WithLabelValues(m.name, "success").Inc()
+	m.slogger.Info("bundle "+kind+": pull succeeded",
+		"digest", fetch.Digest,
+		"size_bytes", len(fetch.Tarball),
+	)
+	m.logSignatureVerification(kind, verificationMode)
 
 	m.slogger.Info("bundle "+kind+": compiling",
 		"digest", fetch.Digest,
@@ -225,6 +239,35 @@ func (m *LiveManager) fetchAndInstall(ctx context.Context, kind string) error {
 	metrics.BundleAgeSeconds.WithLabelValues(m.name).Set(0)
 	m.updateExceptionMetrics(fetch.Digest, exceptions)
 	return nil
+}
+
+func (m *LiveManager) signatureVerificationMode() string {
+	if m.source.Scheme() != "oci" {
+		return "skipped"
+	}
+	if m.verify.SkipVerification {
+		return "skipped"
+	}
+	if m.verify.PublicKeyRef != "" {
+		return "cosign_public_key"
+	}
+	return "cosign_keyless"
+}
+
+func (m *LiveManager) logSignatureVerification(kind, mode string) {
+	if mode == "skipped" {
+		reason := "non_oci_source"
+		if m.source.Scheme() == "oci" && m.verify.SkipVerification {
+			reason = "configured_skip_verification"
+		}
+		m.slogger.Info("bundle "+kind+": signature verification skipped",
+			"reason", reason,
+		)
+		return
+	}
+	m.slogger.Info("bundle "+kind+": signature verification validated",
+		"signature_verification", mode,
+	)
 }
 
 // Start launches the background poll loop. Safe to call once. No-op

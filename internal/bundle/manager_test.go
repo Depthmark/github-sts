@@ -164,6 +164,19 @@ func TestOCILoader_RequiresCosignVerification(t *testing.T) {
 	}
 }
 
+func TestOCILoader_AcceptsSkippedCosignVerification(t *testing.T) {
+	if err := validateVerifyConfig(VerifyConfig{SkipVerification: true}); err != nil {
+		t.Fatalf("skip verification should be accepted: %v", err)
+	}
+}
+
+func TestOCILoader_RejectsSkippedCosignWithVerificationMode(t *testing.T) {
+	err := validateVerifyConfig(VerifyConfig{PublicKeyRef: "cosign.pub", SkipVerification: true})
+	if err == nil || !strings.Contains(err.Error(), "cannot be combined") {
+		t.Fatalf("expected skip verification conflict error, got %v", err)
+	}
+}
+
 func TestOCILoader_RejectsMixedCosignModes(t *testing.T) {
 	_, err := OCILoader{}.Fetch(context.Background(), Source{Raw: "oci://ghcr.io/depthmark/sts-policy:v1"}, VerifyConfig{
 		CertificateIdentityRegexp: "^https://github.com/depthmark/.*$",
@@ -172,6 +185,47 @@ func TestOCILoader_RejectsMixedCosignModes(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "not both") {
 		t.Fatalf("expected mixed cosign mode error, got %v", err)
+	}
+}
+
+func TestResolveBasicPasswordFromFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "password")
+	if err := os.WriteFile(path, []byte("secret\n"), 0o600); err != nil {
+		t.Fatalf("write password file: %v", err)
+	}
+	password, err := resolveBasicPassword(RegistryAuthConfig{
+		Mode:         "basic",
+		Username:     "robot$github-sts",
+		PasswordFile: path,
+	})
+	if err != nil {
+		t.Fatalf("resolveBasicPassword: %v", err)
+	}
+	if password != "secret" {
+		t.Fatalf("password = %q, want trimmed secret", password)
+	}
+}
+
+func TestResolveBasicPasswordFromEnv(t *testing.T) {
+	t.Setenv("HARBOR_PASSWORD", "secret")
+	password, err := resolveBasicPassword(RegistryAuthConfig{
+		Mode:        "basic",
+		Username:    "robot$github-sts",
+		PasswordEnv: "HARBOR_PASSWORD",
+	})
+	if err != nil {
+		t.Fatalf("resolveBasicPassword: %v", err)
+	}
+	if password != "secret" {
+		t.Fatalf("password = %q, want secret", password)
+	}
+}
+
+func TestResolveBasicPasswordRejectsMissingSecretRef(t *testing.T) {
+	_, err := resolveBasicPassword(RegistryAuthConfig{Mode: "basic", Username: "robot$github-sts"})
+	if err == nil || !strings.Contains(err.Error(), "password file or env") {
+		t.Fatalf("expected password ref error, got %v", err)
 	}
 }
 

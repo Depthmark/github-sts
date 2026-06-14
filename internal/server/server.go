@@ -372,6 +372,13 @@ func initBundleManager(cfg *config.Settings, slogger *slog.Logger) (bundle.Manag
 			CertificateIdentityRegexp: bc.Cosign.CertificateIdentityRegexp,
 			CertificateOIDCIssuer:     bc.Cosign.CertificateOIDCIssuer,
 			PublicKeyRef:              bc.Cosign.PublicKeyRef,
+			SkipVerification:          bc.Cosign.SkipVerification,
+			RegistryAuth: bundle.RegistryAuthConfig{
+				Mode:         bc.Registry.Auth.Mode,
+				Username:     bc.Registry.Auth.Username,
+				PasswordFile: bc.Registry.Auth.PasswordFile,
+				PasswordEnv:  bc.Registry.Auth.PasswordEnv,
+			},
 		}
 		mgr := bundle.NewLiveManager(loader, src, verify, slogger.With("bundle", bc.Name), bundle.LiveOpts{
 			Name:         bc.Name,

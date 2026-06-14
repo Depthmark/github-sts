@@ -340,8 +340,38 @@ func TestValidate_BundlesOCIRequiresCosign(t *testing.T) {
 	cfg := validDefaults()
 	cfg.Bundles = []BundleConfig{{Name: "enterprise", Ref: "oci://ghcr.io/org/sts-policy:v1"}}
 	err := cfg.Validate()
-	if err == nil || !contains(err.Error(), "cosign requires") {
+	if err == nil || !contains(err.Error(), "skip_verification") {
 		t.Errorf("expected cosign identity requirement, got: %v", err)
+	}
+}
+
+func TestValidate_BundlesOCIAcceptsSkipVerification(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Bundles = []BundleConfig{{
+		Name: "enterprise",
+		Ref:  "oci://harbor.local/org/sts-policy:v1",
+		Cosign: CosignConfig{
+			SkipVerification: true,
+		},
+	}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidate_BundlesOCIRejectsSkipVerificationWithCosignMode(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Bundles = []BundleConfig{{
+		Name: "enterprise",
+		Ref:  "oci://harbor.local/org/sts-policy:v1",
+		Cosign: CosignConfig{
+			PublicKeyRef:     "cosign.pub",
+			SkipVerification: true,
+		},
+	}}
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), "cannot be combined") {
+		t.Errorf("expected skip verification conflict error, got: %v", err)
 	}
 }
 
@@ -373,6 +403,83 @@ func TestValidate_BundlesOCIRejectsMixedCosignModes(t *testing.T) {
 	err := cfg.Validate()
 	if err == nil || !contains(err.Error(), "not both") {
 		t.Errorf("expected mixed cosign mode error, got: %v", err)
+	}
+}
+
+func TestValidate_BundlesOCIAcceptsBasicRegistryAuthPasswordFile(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Bundles = []BundleConfig{{
+		Name: "enterprise",
+		Ref:  "oci://ghcr.io/org/sts-policy:v1",
+		Cosign: CosignConfig{
+			PublicKeyRef: "cosign.pub",
+		},
+		Registry: RegistryConfig{Auth: RegistryAuthConfig{
+			Mode:         "basic",
+			Username:     "robot$github-sts",
+			PasswordFile: "/var/run/secrets/harbor/password",
+		}},
+	}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidate_BundlesOCIAcceptsBasicRegistryAuthPasswordEnv(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Bundles = []BundleConfig{{
+		Name: "enterprise",
+		Ref:  "oci://ghcr.io/org/sts-policy:v1",
+		Cosign: CosignConfig{
+			PublicKeyRef: "cosign.pub",
+		},
+		Registry: RegistryConfig{Auth: RegistryAuthConfig{
+			Mode:        "basic",
+			Username:    "robot$github-sts",
+			PasswordEnv: "HARBOR_PASSWORD",
+		}},
+	}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidate_BundlesOCIRejectsBasicRegistryAuthWithoutSecretRef(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Bundles = []BundleConfig{{
+		Name: "enterprise",
+		Ref:  "oci://ghcr.io/org/sts-policy:v1",
+		Cosign: CosignConfig{
+			PublicKeyRef: "cosign.pub",
+		},
+		Registry: RegistryConfig{Auth: RegistryAuthConfig{
+			Mode:     "basic",
+			Username: "robot$github-sts",
+		}},
+	}}
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), "password_file or password_env") {
+		t.Errorf("expected registry auth secret ref error, got: %v", err)
+	}
+}
+
+func TestValidate_BundlesOCIRejectsUnsupportedRegistryAuthMode(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Bundles = []BundleConfig{{
+		Name: "enterprise",
+		Ref:  "oci://ghcr.io/org/sts-policy:v1",
+		Cosign: CosignConfig{
+			PublicKeyRef: "cosign.pub",
+		},
+		Registry: RegistryConfig{Auth: RegistryAuthConfig{
+			Mode:        "oidc",
+			Username:    "robot$github-sts",
+			PasswordEnv: "HARBOR_PASSWORD",
+		}},
+	}}
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), "registry.auth.mode") {
+		t.Errorf("expected registry auth mode error, got: %v", err)
 	}
 }
 

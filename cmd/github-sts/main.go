@@ -26,6 +26,7 @@ func main() {
 	// Initialize structured logger.
 	slogger := initLogger(cfg.Server.LogLevel)
 	slog.SetDefault(slogger)
+	slogger.Info("application starting", "config_path", configPath, "log_level", cfg.Server.LogLevel)
 	slogger.Info("configuration loaded", "config_path", configPath)
 
 	// Create server.

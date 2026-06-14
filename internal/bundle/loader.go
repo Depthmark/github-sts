@@ -37,12 +37,24 @@ func (s Source) Path() string {
 }
 
 // VerifyConfig is the cosign verification policy. OCI sources can use keyless
-// certificate identity/issuer verification or public-key verification. It is
-// ignored when the source is file://.
+// certificate identity/issuer verification, public-key verification, or an
+// explicit verification skip for local/private-registry use. It is ignored when
+// the source is file://.
 type VerifyConfig struct {
 	CertificateIdentityRegexp string
 	CertificateOIDCIssuer     string
 	PublicKeyRef              string
+	SkipVerification          bool
+	RegistryAuth              RegistryAuthConfig
+}
+
+// RegistryAuthConfig carries optional OCI registry authentication settings.
+// Secret values are references only; the OCI loader resolves them at fetch time.
+type RegistryAuthConfig struct {
+	Mode         string
+	Username     string
+	PasswordFile string
+	PasswordEnv  string
 }
 
 // Fetch is the result of a successful pull-and-verify cycle. Tarball is

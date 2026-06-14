@@ -112,17 +112,19 @@ type MetricsConfig struct {
 // policy match and the GitHub API mint. A deny returns 403 org_policy_denied;
 // the YAML policy and all bundle decisions must allow.
 //
-// OCI bundle refs require keyless cosign verification settings. PollInterval,
-// MaxStaleness, and FailMode control reload and stale-bundle behavior. The
+// OCI bundle refs require cosign verification settings unless explicitly
+// configured to skip verification. PollInterval, MaxStaleness, and FailMode
+// control reload and stale-bundle behavior. The
 // defaults are conservative: a 5 minute poll, a 10 minute staleness ceiling,
 // and fail-closed when stale.
 type BundleConfig struct {
-	Name         string        `yaml:"name"`
-	Ref          string        `yaml:"ref"`
-	Cosign       CosignConfig  `yaml:"cosign"`
-	PollInterval time.Duration `yaml:"poll_interval"`
-	MaxStaleness time.Duration `yaml:"max_staleness"`
-	FailMode     string        `yaml:"fail_mode"`
+	Name         string         `yaml:"name"`
+	Ref          string         `yaml:"ref"`
+	Cosign       CosignConfig   `yaml:"cosign"`
+	Registry     RegistryConfig `yaml:"registry"`
+	PollInterval time.Duration  `yaml:"poll_interval"`
+	MaxStaleness time.Duration  `yaml:"max_staleness"`
+	FailMode     string         `yaml:"fail_mode"`
 }
 
 // Bundle fail mode constants. closed is the secure default — when the
@@ -135,11 +137,27 @@ const (
 )
 
 // CosignConfig holds cosign verification parameters. OCI bundle refs require
-// either keyless certificate identity/issuer fields or PublicKeyRef.
+// either keyless certificate identity/issuer fields or PublicKeyRef, unless
+// SkipVerification is explicitly enabled for local/private-registry use.
 type CosignConfig struct {
 	CertificateIdentityRegexp string `yaml:"certificate_identity_regexp"`
 	CertificateOIDCIssuer     string `yaml:"certificate_oidc_issuer"`
 	PublicKeyRef              string `yaml:"public_key_ref"`
+	SkipVerification          bool   `yaml:"skip_verification"`
+}
+
+// RegistryConfig holds optional OCI registry authentication settings.
+type RegistryConfig struct {
+	Auth RegistryAuthConfig `yaml:"auth"`
+}
+
+// RegistryAuthConfig currently supports basic auth only. Password material must
+// be referenced through a file or environment variable, never inline config.
+type RegistryAuthConfig struct {
+	Mode         string `yaml:"mode"`
+	Username     string `yaml:"username"`
+	PasswordFile string `yaml:"password_file"`
+	PasswordEnv  string `yaml:"password_env"`
 }
 
 // RateLimitConfig holds per-IP rate limiting settings.
@@ -318,11 +336,14 @@ func (s *Settings) validateBundles() error {
 		if strings.HasPrefix(b.Ref, "oci://") {
 			hasKeyless := b.Cosign.CertificateIdentityRegexp != "" || b.Cosign.CertificateOIDCIssuer != ""
 			hasPublicKey := b.Cosign.PublicKeyRef != ""
+			if b.Cosign.SkipVerification && (hasKeyless || hasPublicKey) {
+				return fmt.Errorf("%s.cosign.skip_verification cannot be combined with certificate identity/issuer or public_key_ref", prefix)
+			}
 			if hasKeyless && hasPublicKey {
 				return fmt.Errorf("%s.cosign must use either keyless certificate identity/issuer or public_key_ref, not both", prefix)
 			}
-			if !hasKeyless && !hasPublicKey {
-				return fmt.Errorf("%s.cosign requires certificate_identity_regexp and certificate_oidc_issuer, or public_key_ref, for oci bundles", prefix)
+			if !b.Cosign.SkipVerification && !hasKeyless && !hasPublicKey {
+				return fmt.Errorf("%s.cosign requires certificate_identity_regexp and certificate_oidc_issuer, public_key_ref, or skip_verification=true, for oci bundles", prefix)
 			}
 			if hasKeyless && b.Cosign.CertificateIdentityRegexp == "" {
 				return fmt.Errorf("%s.cosign.certificate_identity_regexp is required for keyless oci bundles", prefix)
@@ -330,6 +351,9 @@ func (s *Settings) validateBundles() error {
 			if hasKeyless && b.Cosign.CertificateOIDCIssuer == "" {
 				return fmt.Errorf("%s.cosign.certificate_oidc_issuer is required for keyless oci bundles", prefix)
 			}
+		}
+		if err := validateRegistryAuth(prefix, b.Registry.Auth); err != nil {
+			return err
 		}
 		if b.Cosign.CertificateIdentityRegexp != "" {
 			if _, err := regexp.Compile(b.Cosign.CertificateIdentityRegexp); err != nil {
@@ -361,6 +385,27 @@ func (s *Settings) validateBundles() error {
 			return fmt.Errorf("%s.fail_mode must be %q or %q (got %q)", prefix, BundleFailModeClosed, BundleFailModeOpen, b.FailMode)
 		}
 		s.Bundles[i] = b
+	}
+	return nil
+}
+
+func validateRegistryAuth(prefix string, auth RegistryAuthConfig) error {
+	if auth.Mode == "" {
+		if auth.Username != "" || auth.PasswordFile != "" || auth.PasswordEnv != "" {
+			return fmt.Errorf("%s.registry.auth.mode is required when registry auth fields are set", prefix)
+		}
+		return nil
+	}
+	if auth.Mode != "basic" {
+		return fmt.Errorf("%s.registry.auth.mode must be %q (got %q)", prefix, "basic", auth.Mode)
+	}
+	if auth.Username == "" {
+		return fmt.Errorf("%s.registry.auth.username is required for basic auth", prefix)
+	}
+	hasPasswordFile := auth.PasswordFile != ""
+	hasPasswordEnv := auth.PasswordEnv != ""
+	if hasPasswordFile == hasPasswordEnv {
+		return fmt.Errorf("%s.registry.auth must set exactly one of password_file or password_env for basic auth", prefix)
 	}
 	return nil
 }
