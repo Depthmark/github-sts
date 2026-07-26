@@ -5,7 +5,7 @@
 # Pinned by multi-arch index digest so a registry-side retag cannot swap base.
 # Refresh with: docker buildx imagetools inspect cgr.dev/chainguard/go:latest
 # ─────────────────────────────────────────────────────────────────────────────
-FROM cgr.dev/chainguard/go:latest@sha256:ece9523cc90b23126d89dd7b4fcef99989d6dfc0fad7adc105c406d123255387 AS builder
+FROM cgr.dev/chainguard/go:latest@sha256:10d8934810dc74aaa13e2e9dad7d48a759a4a24213c010d4490a3bbabe619850 AS builder
 
 WORKDIR /build
 
@@ -37,7 +37,7 @@ RUN --mount=type=cache,target=/cache/mod,sharing=locked \
 # nonroot uid 65532 by default. Pinned by multi-arch index digest.
 # Refresh with: docker buildx imagetools inspect cgr.dev/chainguard/static:latest
 # ─────────────────────────────────────────────────────────────────────────────
-FROM cgr.dev/chainguard/static:latest@sha256:77d8b8925dc27970ec2f48243f44c7a260d52c49cd778288e4ee97566e0cb75b
+FROM cgr.dev/chainguard/static:latest@sha256:60582b2ae6074f641094af0f370d4ab241aab271858a66223dcde7eee9f51638
 
 LABEL org.opencontainers.image.source="https://github.com/Depthmark/github-sts"
 LABEL org.opencontainers.image.description="GitHub Security Token Service (STS) - OIDC to GitHub token exchange"
