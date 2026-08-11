@@ -1,9 +1,10 @@
 package handler
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"context"
-	"crypto/rand"
-	"crypto/rsa"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,16 +12,32 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/depthmark/github-sts/internal/audit"
 	"github.com/depthmark/github-sts/internal/bundle"
-	gh "github.com/depthmark/github-sts/internal/github"
+	"github.com/depthmark/github-sts/internal/github"
 	"github.com/depthmark/github-sts/internal/oidc"
 	"github.com/depthmark/github-sts/internal/policy"
 )
+
+const bundleTestSubject = "repo:org@1001/repo@2002:ref:refs/heads/main"
+
+func bundleTestClaims(jtiValue string) oidc.Claims {
+	return oidc.Claims{
+		"iss":                 oidc.GitHubActionsIssuer,
+		"sub":                 bundleTestSubject,
+		"aud":                 "https://example.test/sts",
+		"jti":                 jtiValue,
+		"repository":          "org/repo",
+		"repository_owner":    "org",
+		"repository_id":       "2002",
+		"repository_owner_id": "1001",
+	}
+}
 
 // discardSlogger drops all log output; tests don't care about log lines.
 func discardSlogger() *slog.Logger {
@@ -47,19 +64,10 @@ func (m *spyManager) Eval(_ context.Context, in bundle.Input) (bundle.Decision, 
 }
 func (m *spyManager) Digest() string                    { return m.digest }
 func (m *spyManager) Enabled() bool                     { return m.enabled }
+func (m *spyManager) Enforcement() string               { return bundle.EnforcementOptional }
 func (m *spyManager) BundleFile(string) ([]byte, error) { return nil, bundle.ErrFileNotFound }
 func (m *spyManager) BundleStatuses() []bundle.Status {
 	return []bundle.Status{{Name: "test", Enabled: m.enabled, Digest: m.digest}}
-}
-
-// failOnHitServer is an httptest.Server that fails the test if any path
-// is requested. Used to prove that the broker never reaches the GitHub
-// API mint call when the bundle denies the request.
-func failOnHitServer(t *testing.T, label string) *httptest.Server {
-	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-		t.Errorf("%s: GitHub API was hit (counter-validation failure): %s %s", label, r.Method, r.URL.Path)
-	}))
 }
 
 // newBundleTestHandler constructs a handler driven past OIDC and policy
@@ -67,26 +75,21 @@ func failOnHitServer(t *testing.T, label string) *httptest.Server {
 // claims; the policy loader returns an allow-everything-for-this-test
 // policy; the bundle manager's behaviour is the test variable.
 //
-// The provider points at a fail-on-hit httptest.Server so any GitHub API
-// call (mint) becomes a test failure. This is the counter-validation
-// signal: when the bundle denies, we expect the spy server never to be
-// hit; if it is, the test fails loudly.
-func newBundleTestHandler(t *testing.T, mgr bundle.Manager) (*ExchangeHandler, *recordingAuditLogger, *httptest.Server) {
+// The fake App records target resolution and final mint separately so tests
+// can prove a bundle denial occurs after resolution but before minting.
+func newBundleTestHandler(t *testing.T, mgr bundle.Manager) (*ExchangeHandler, *recordingAuditLogger, *mockExchangeApp) {
 	t.Helper()
-	githubSpy := failOnHitServer(t, "spy github API")
-	t.Cleanup(githubSpy.Close)
-
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("rsa key gen: %v", err)
-	}
-	provider := gh.NewAppTokenProvider("test-app", 12345, key, githubSpy.URL, githubSpy.Client())
+	provider := &mockExchangeApp{}
 
 	pol := &policy.TrustPolicy{
 		Issuer:      "https://token.actions.githubusercontent.com",
-		Subject:     "repo:org/repo:ref:refs/heads/main",
+		Subject:     bundleTestSubject,
 		Audience:    "https://example.test/sts",
 		Permissions: map[string]string{"contents": "read"},
+		GitHub: &policy.GitHubPolicy{
+			Sources: []policy.GitHubRepository{{OwnerID: "1001", RepositoryID: "2002"}},
+			Target:  policy.GitHubRepository{OwnerID: "1001", RepositoryID: "2002"},
+		},
 	}
 	if err := pol.Validate(); err != nil {
 		t.Fatalf("policy validate: %v", err)
@@ -94,23 +97,19 @@ func newBundleTestHandler(t *testing.T, mgr bundle.Manager) (*ExchangeHandler, *
 
 	al := &recordingAuditLogger{}
 	h := &ExchangeHandler{
-		jtiCache:       &mockJTICache{isNew: true},
-		policyLoader:   &mockPolicyLoader{pol: pol},
-		appProviders:   map[string]*gh.AppTokenProvider{"test-app": provider},
-		allowedIssuers: []string{"https://token.actions.githubusercontent.com"},
-		auditLogger:    al,
-		slogger:        discardSlogger(),
-		bundleManager:  mgr,
+		jtiCache:                      &mockJTICache{isNew: true},
+		policyLoader:                  &mockPolicyLoader{pol: pol},
+		appProviders:                  map[string]github.ExchangeApp{"test-app": provider},
+		allowedIssuers:                []string{"https://token.actions.githubusercontent.com"},
+		requireImmutableSubjectClaims: true,
+		auditLogger:                   al,
+		slogger:                       discardSlogger(),
+		bundleManager:                 mgr,
 		validator: func(_ context.Context, _ string, _ []string) (oidc.Claims, error) {
-			return oidc.Claims{
-				"iss": "https://token.actions.githubusercontent.com",
-				"sub": "repo:org/repo:ref:refs/heads/main",
-				"aud": "https://example.test/sts",
-				"jti": fmt.Sprintf("test-%d", time.Now().UnixNano()),
-			}, nil
+			return bundleTestClaims(fmt.Sprintf("test-%d", time.Now().UnixNano())), nil
 		},
 	}
-	return h, al, githubSpy
+	return h, al, provider
 }
 
 func bundleExchangeRequest() *http.Request {
@@ -125,11 +124,14 @@ func bundleExchangeRequest() *http.Request {
 // audit result prove the deny was surfaced correctly.
 func TestExchange_BundleDeny_NoMintCall(t *testing.T) {
 	mgr := &spyManager{
-		enabled:  true,
-		digest:   "sha256:test-digest",
-		decision: bundle.Decision{Allow: false, Reasons: []string{"forbidden by org policy"}},
+		enabled: true,
+		digest:  "sha256:test-digest",
+		decision: bundle.Decision{
+			Applicable: true, Evaluated: true, EvaluatedDigest: "sha256:test-digest",
+			Allow: false, Reasons: []string{"forbidden by org policy"},
+		},
 	}
-	h, al, _ := newBundleTestHandler(t, mgr)
+	h, al, provider := newBundleTestHandler(t, mgr)
 
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, bundleExchangeRequest())
@@ -147,6 +149,9 @@ func TestExchange_BundleDeny_NoMintCall(t *testing.T) {
 	if mgr.calls.Load() != 1 {
 		t.Errorf("bundle Eval calls = %d, want 1", mgr.calls.Load())
 	}
+	if provider.resolveCalls != 1 || provider.mintCalls != 0 {
+		t.Errorf("resolve calls=%d mint calls=%d, want 1 and 0", provider.resolveCalls, provider.mintCalls)
+	}
 	last := al.lastEvent()
 	if last.Result != audit.ResultOrgPolicyDenied {
 		t.Errorf("audit result = %q, want %q", last.Result, audit.ResultOrgPolicyDenied)
@@ -160,24 +165,58 @@ func TestExchange_BundleDeny_NoMintCall(t *testing.T) {
 }
 
 // TestExchange_BundleEngineError_FailsClosed counter-validates that an
-// engine error becomes a 403 (not a 500, not a silent allow). A Rego
+// engine error becomes a retryable 503 (not a policy denial or silent allow). A Rego
 // compile bug in production must never accidentally allow tokens.
 func TestExchange_BundleEngineError_FailsClosed(t *testing.T) {
 	mgr := &spyManager{
-		enabled: true,
-		digest:  "sha256:err-digest",
-		err:     errors.New("simulated engine error"),
+		enabled:  true,
+		digest:   "sha256:err-digest",
+		decision: bundle.Decision{Applicable: true, SnapshotDigest: "sha256:err-digest"},
+		err:      errors.New("simulated engine error"),
 	}
 	h, al, _ := newBundleTestHandler(t, mgr)
 
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, bundleExchangeRequest())
 
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403 (fail-closed)", w.Code)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503 (fail-closed)", w.Code)
 	}
-	if got := al.lastEvent().Result; got != audit.ResultOrgPolicyDenied {
-		t.Errorf("audit result = %q, want %q", got, audit.ResultOrgPolicyDenied)
+	var resp ErrorResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if resp.Code != CodeBundleEvaluationFailed {
+		t.Errorf("error code = %q, want %q", resp.Code, CodeBundleEvaluationFailed)
+	}
+	if got := al.lastEvent().Result; got != audit.ResultBundleEvaluationFailed {
+		t.Errorf("audit result = %q, want %q", got, audit.ResultBundleEvaluationFailed)
+	}
+}
+
+func TestExchange_BundleUnavailable_503(t *testing.T) {
+	mgr := &spyManager{
+		enabled: true,
+		digest:  "sha256:unavailable-digest",
+		err:     bundle.ErrBundleUnavailable,
+	}
+	h, al, _ := newBundleTestHandler(t, mgr)
+
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, bundleExchangeRequest())
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", w.Code)
+	}
+	var resp ErrorResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if resp.Code != CodeBundleUnavailable {
+		t.Errorf("error code = %q, want %q", resp.Code, CodeBundleUnavailable)
+	}
+	if got := al.lastEvent().Result; got != audit.ResultBundleUnavailable {
+		t.Errorf("audit result = %q, want %q", got, audit.ResultBundleUnavailable)
 	}
 }
 
@@ -187,24 +226,17 @@ func TestExchange_BundleEngineError_FailsClosed(t *testing.T) {
 // defaulted Enabled to true on a misconfigured manager would slip
 // through any test that only checks behaviour when enabled is set.
 func TestExchange_BundleDisabled_NoEngineCall(t *testing.T) {
-	// Bypass the fail-on-hit spy and use a recording mock instead — in
-	// disabled mode we *expect* the mint to be attempted; what we're
-	// testing is that the bundle was skipped, not that mint was skipped.
-	githubMock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, "mock mint failure", http.StatusInternalServerError)
-	}))
-	t.Cleanup(githubMock.Close)
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("rsa key gen: %v", err)
-	}
-	provider := gh.NewAppTokenProvider("test-app", 12345, key, githubMock.URL, githubMock.Client())
+	provider := &mockExchangeApp{mintErr: errors.New("mock mint failure")}
 
 	pol := &policy.TrustPolicy{
 		Issuer:      "https://token.actions.githubusercontent.com",
-		Subject:     "repo:org/repo:ref:refs/heads/main",
+		Subject:     bundleTestSubject,
 		Audience:    "https://example.test/sts",
 		Permissions: map[string]string{"contents": "read"},
+		GitHub: &policy.GitHubPolicy{
+			Sources: []policy.GitHubRepository{{OwnerID: "1001", RepositoryID: "2002"}},
+			Target:  policy.GitHubRepository{OwnerID: "1001", RepositoryID: "2002"},
+		},
 	}
 	if err := pol.Validate(); err != nil {
 		t.Fatalf("policy validate: %v", err)
@@ -213,20 +245,16 @@ func TestExchange_BundleDisabled_NoEngineCall(t *testing.T) {
 	mgr := &spyManager{enabled: false} // Disabled-shaped fake
 	al := &recordingAuditLogger{}
 	h := &ExchangeHandler{
-		jtiCache:       &mockJTICache{isNew: true},
-		policyLoader:   &mockPolicyLoader{pol: pol},
-		appProviders:   map[string]*gh.AppTokenProvider{"test-app": provider},
-		allowedIssuers: []string{"https://token.actions.githubusercontent.com"},
-		auditLogger:    al,
-		slogger:        discardSlogger(),
-		bundleManager:  mgr,
+		jtiCache:                      &mockJTICache{isNew: true},
+		policyLoader:                  &mockPolicyLoader{pol: pol},
+		appProviders:                  map[string]github.ExchangeApp{"test-app": provider},
+		allowedIssuers:                []string{"https://token.actions.githubusercontent.com"},
+		requireImmutableSubjectClaims: true,
+		auditLogger:                   al,
+		slogger:                       discardSlogger(),
+		bundleManager:                 mgr,
 		validator: func(_ context.Context, _ string, _ []string) (oidc.Claims, error) {
-			return oidc.Claims{
-				"iss": "https://token.actions.githubusercontent.com",
-				"sub": "repo:org/repo:ref:refs/heads/main",
-				"aud": "https://example.test/sts",
-				"jti": "test-disabled-1",
-			}, nil
+			return bundleTestClaims("test-disabled-1"), nil
 		},
 	}
 
@@ -236,13 +264,73 @@ func TestExchange_BundleDisabled_NoEngineCall(t *testing.T) {
 	if mgr.calls.Load() != 0 {
 		t.Errorf("bundle Eval calls when disabled = %d, want 0", mgr.calls.Load())
 	}
+	if provider.mintCalls != 1 {
+		t.Errorf("mint calls when bundle disabled = %d, want 1", provider.mintCalls)
+	}
 	if al.lastEvent().BundleDigest != "" {
 		t.Errorf("audit bundle_digest when disabled = %q, want empty", al.lastEvent().BundleDigest)
 	}
 	if al.lastEvent().OrgDecision != nil {
 		t.Errorf("audit org_decision when disabled = %+v, want nil", al.lastEvent().OrgDecision)
 	}
+	if al.lastEvent().BundleEnforcement != bundle.EnforcementOptional {
+		t.Errorf("audit bundle_enforcement = %q, want optional", al.lastEvent().BundleEnforcement)
+	}
 	_ = w.Code
+}
+
+func TestExchange_OptionalBundleNotApplicableHasNoDigestAttribution(t *testing.T) {
+	mgr := &spyManager{
+		enabled:  true,
+		digest:   "optional-loaded=sha256:loaded-but-not-evaluated",
+		decision: bundle.Decision{Allow: true},
+	}
+	h, al, provider := newBundleTestHandler(t, mgr)
+
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, bundleExchangeRequest())
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	if provider.mintCalls != 1 {
+		t.Fatalf("mint calls = %d, want 1", provider.mintCalls)
+	}
+	event := al.lastEvent()
+	if event.BundleDigest != "" || len(event.BundleDecisions) != 0 {
+		t.Fatalf("non-participating bundle was attributed in audit: digest=%q decisions=%+v", event.BundleDigest, event.BundleDecisions)
+	}
+	if event.OrgDecision == nil || event.OrgDecision.Applicable || event.OrgDecision.Evaluated || !event.OrgDecision.Allow {
+		t.Fatalf("org decision does not expose non-participation: %+v", event.OrgDecision)
+	}
+}
+
+func TestExchange_BundleErrorAttributesFaultingSnapshot(t *testing.T) {
+	mgr := &spyManager{
+		enabled: true,
+		decision: bundle.Decision{
+			Applicable: true, Evaluated: true,
+			SnapshotDigest:  "first=sha256:one,second=sha256:two",
+			EvaluatedDigest: "first=sha256:one",
+			Packages:        []bundle.PackageDecision{{BundleName: "first", Digest: "sha256:one", Allow: true}},
+		},
+		err: errors.New("second bundle failed"),
+	}
+	h, al, _ := newBundleTestHandler(t, mgr)
+
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, bundleExchangeRequest())
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", w.Code)
+	}
+	event := al.lastEvent()
+	if event.BundleDigest != "first=sha256:one,second=sha256:two" {
+		t.Fatalf("bundle_digest = %q, want complete faulting snapshot", event.BundleDigest)
+	}
+	if len(event.BundleDecisions) != 1 || event.BundleDecisions[0].BundleName != "first" {
+		t.Fatalf("prior participating decision was lost: %+v", event.BundleDecisions)
+	}
 }
 
 // TestExchange_AuditFingerprint_OnAllowPath counter-validates that
@@ -253,50 +341,42 @@ func TestExchange_BundleDisabled_NoEngineCall(t *testing.T) {
 // on-hit; what matters here is that the bundle digest is recorded
 // before the mint attempt.
 func TestExchange_AuditFingerprint_OnAllowPath(t *testing.T) {
-	mintHit := atomic.Bool{}
-	githubMock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		mintHit.Store(true)
-		http.Error(w, "mock mint failure", http.StatusInternalServerError)
-	}))
-	t.Cleanup(githubMock.Close)
-
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("rsa key gen: %v", err)
-	}
-	provider := gh.NewAppTokenProvider("test-app", 12345, key, githubMock.URL, githubMock.Client())
+	provider := &mockExchangeApp{mintErr: errors.New("mock mint failure")}
 
 	pol := &policy.TrustPolicy{
 		Issuer:      "https://token.actions.githubusercontent.com",
-		Subject:     "repo:org/repo:ref:refs/heads/main",
+		Subject:     bundleTestSubject,
 		Audience:    "https://example.test/sts",
 		Permissions: map[string]string{"contents": "read"},
+		GitHub: &policy.GitHubPolicy{
+			Sources: []policy.GitHubRepository{{OwnerID: "1001", RepositoryID: "2002"}},
+			Target:  policy.GitHubRepository{OwnerID: "1001", RepositoryID: "2002"},
+		},
 	}
 	if err := pol.Validate(); err != nil {
 		t.Fatalf("policy validate: %v", err)
 	}
 
 	mgr := &spyManager{
-		enabled:  true,
-		digest:   "sha256:allow-digest",
-		decision: bundle.Decision{Allow: true, Reasons: []string{"green-light"}},
+		enabled: true,
+		digest:  "sha256:allow-digest",
+		decision: bundle.Decision{
+			Applicable: true, Evaluated: true, EvaluatedDigest: "sha256:allow-digest",
+			Allow: true, Reasons: []string{"green-light"},
+		},
 	}
 	al := &recordingAuditLogger{}
 	h := &ExchangeHandler{
-		jtiCache:       &mockJTICache{isNew: true},
-		policyLoader:   &mockPolicyLoader{pol: pol},
-		appProviders:   map[string]*gh.AppTokenProvider{"test-app": provider},
-		allowedIssuers: []string{"https://token.actions.githubusercontent.com"},
-		auditLogger:    al,
-		slogger:        discardSlogger(),
-		bundleManager:  mgr,
+		jtiCache:                      &mockJTICache{isNew: true},
+		policyLoader:                  &mockPolicyLoader{pol: pol},
+		appProviders:                  map[string]github.ExchangeApp{"test-app": provider},
+		allowedIssuers:                []string{"https://token.actions.githubusercontent.com"},
+		requireImmutableSubjectClaims: true,
+		auditLogger:                   al,
+		slogger:                       discardSlogger(),
+		bundleManager:                 mgr,
 		validator: func(_ context.Context, _ string, _ []string) (oidc.Claims, error) {
-			return oidc.Claims{
-				"iss": "https://token.actions.githubusercontent.com",
-				"sub": "repo:org/repo:ref:refs/heads/main",
-				"aud": "https://example.test/sts",
-				"jti": "test-allow-1",
-			}, nil
+			return bundleTestClaims("test-allow-1"), nil
 		},
 	}
 
@@ -306,7 +386,7 @@ func TestExchange_AuditFingerprint_OnAllowPath(t *testing.T) {
 	if mgr.calls.Load() != 1 {
 		t.Errorf("bundle Eval calls on allow path = %d, want 1", mgr.calls.Load())
 	}
-	if !mintHit.Load() {
+	if provider.mintCalls != 1 {
 		t.Errorf("expected mint to be attempted after bundle allow, but spy was not hit")
 	}
 	last := al.lastEvent()
@@ -325,9 +405,10 @@ func TestExchange_AuditFingerprint_OnAllowPath(t *testing.T) {
 // failure as an authorization error to end users.
 func TestExchange_BundleStale_503(t *testing.T) {
 	mgr := &spyManager{
-		enabled: true,
-		digest:  "sha256:stale-digest",
-		err:     bundle.ErrBundleStale,
+		enabled:  true,
+		digest:   "sha256:stale-digest",
+		decision: bundle.Decision{Applicable: true, SnapshotDigest: "sha256:stale-digest"},
+		err:      bundle.ErrBundleStale,
 	}
 	h, al, _ := newBundleTestHandler(t, mgr)
 
@@ -353,6 +434,9 @@ func TestExchange_BundleStale_503(t *testing.T) {
 	}
 	if last.OrgDecision == nil || last.OrgDecision.Allow {
 		t.Errorf("audit org_decision should be deny on stale, got %+v", last.OrgDecision)
+	}
+	if last.Result != audit.ResultBundleStale {
+		t.Errorf("audit result = %q, want %q", last.Result, audit.ResultBundleStale)
 	}
 }
 
@@ -381,13 +465,146 @@ func TestExchange_BundleInputShape(t *testing.T) {
 	if in.Request.Scope != "org/repo" || in.Request.App != "test-app" || in.Request.Identity != "ci" {
 		t.Errorf("input.Request = %+v, missing expected fields", in.Request)
 	}
-	if in.Claims["sub"] != "repo:org/repo:ref:refs/heads/main" {
+	if in.Claims["sub"] != bundleTestSubject {
 		t.Errorf("input.Claims missing or wrong sub: %v", in.Claims["sub"])
+	}
+	if in.SourceIdentity == nil {
+		t.Fatal("input.SourceIdentity is nil")
+	}
+	if in.SourceIdentity.Version != bundle.SourceIdentityVersionV1 ||
+		in.SourceIdentity.Repository != "org/repo" ||
+		in.SourceIdentity.RepositoryOwnerID != "1001" ||
+		in.SourceIdentity.RepositoryID != "2002" ||
+		!in.SourceIdentity.ImmutableSubject ||
+		!in.SourceIdentity.ImmutableSubjectRequired {
+		t.Errorf("input.SourceIdentity malformed: %+v", in.SourceIdentity)
 	}
 	if in.YAMLPolicy.Audience != "https://example.test/sts" {
 		t.Errorf("input.YAMLPolicy.Audience = %q, want https://example.test/sts", in.YAMLPolicy.Audience)
 	}
+	if in.YAMLPolicy.GitHub == nil || in.YAMLPolicy.GitHub.Target.RepositoryID != "2002" || len(in.YAMLPolicy.GitHub.Sources) != 1 {
+		t.Errorf("input.YAMLPolicy.GitHub malformed: %+v", in.YAMLPolicy.GitHub)
+	}
+	if in.TargetIdentity == nil || in.TargetIdentity.Version != bundle.TargetIdentityVersionV1 ||
+		in.TargetIdentity.Scope != "org/repo" || in.TargetIdentity.RepositoryOwnerID != "1001" || in.TargetIdentity.RepositoryID != "2002" {
+		t.Errorf("input.TargetIdentity malformed: %+v", in.TargetIdentity)
+	}
 	if in.Requested == nil || in.Requested.Permissions["contents"] != "read" {
 		t.Errorf("input.Requested malformed: %+v", in.Requested)
 	}
+	if len(in.Requested.RepositoryIDs) != 1 || in.Requested.RepositoryIDs[0] != "2002" || in.Requested.OrganizationWide {
+		t.Errorf("input.Requested target restriction malformed: %+v", in.Requested)
+	}
+}
+
+func TestExchange_CheckedInBaselineConformance(t *testing.T) {
+	manager := checkedInPolicyManager(t)
+	app := &mockExchangeApp{target: github.TargetIdentity{
+		Scope: "Depthmark/github-sts", Owner: "Depthmark", OwnerID: "268749784",
+		Repository: "github-sts", RepositoryID: "1198676434",
+	}}
+	subject := "repo:Depthmark@268749784/github-sts@1198676434:ref:refs/heads/main"
+	pol := &policy.TrustPolicy{
+		Issuer: oidc.GitHubActionsIssuer, Audience: "github-sts",
+		ClaimPattern: map[string]string{
+			"ref":          "refs/heads/main",
+			"workflow_ref": `[^/]+/[^/]+/\.github/workflows/release-please\.yml@refs/heads/main`,
+		},
+		Permissions: map[string]string{
+			"contents": "write", "checks": "write", "pull_requests": "write",
+		},
+		GitHub: &policy.GitHubPolicy{
+			Sources: []policy.GitHubRepository{{OwnerID: "268749784", RepositoryID: "1198676434"}},
+			Target:  policy.GitHubRepository{OwnerID: "268749784", RepositoryID: "1198676434"},
+		},
+	}
+	al := &recordingAuditLogger{}
+	h := &ExchangeHandler{
+		jtiCache:                      &mockJTICache{isNew: true},
+		policyLoader:                  &mockPolicyLoader{pol: pol},
+		appProviders:                  map[string]github.ExchangeApp{"depthmark-release-bot": app},
+		allowedIssuers:                []string{oidc.GitHubActionsIssuer},
+		requireImmutableSubjectClaims: true,
+		auditLogger:                   al,
+		slogger:                       discardSlogger(),
+		bundleManager:                 manager,
+		validator: func(_ context.Context, _ string, _ []string) (oidc.Claims, error) {
+			return oidc.Claims{
+				"iss": oidc.GitHubActionsIssuer, "sub": subject, "aud": "github-sts", "jti": "rego-conformance",
+				"ref": "refs/heads/main", "workflow_ref": "Depthmark/github-sts/.github/workflows/release-please.yml@refs/heads/main",
+				"repository": "Depthmark/github-sts", "repository_owner": "Depthmark",
+				"repository_id": "1198676434", "repository_owner_id": "268749784",
+			}, nil
+		},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/sts/exchange?scope=Depthmark/github-sts&identity=release&app=depthmark-release-bot", nil)
+	req.Header.Set("Authorization", "Bearer accepted")
+	w := httptest.NewRecorder()
+
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	if app.mintCalls != 1 || app.lastTarget.RepositoryID != "1198676434" {
+		t.Fatalf("immutable target was not minted exactly once: calls=%d target=%+v", app.mintCalls, app.lastTarget)
+	}
+	event := al.lastEvent()
+	if event.BundleEnforcement != bundle.EnforcementRequired {
+		t.Fatalf("bundle_enforcement = %q, want required", event.BundleEnforcement)
+	}
+	if event.OrgDecision == nil || !event.OrgDecision.Applicable || !event.OrgDecision.Evaluated || !event.OrgDecision.Allow {
+		t.Fatalf("org decision does not prove mandatory participation: %+v", event.OrgDecision)
+	}
+	if len(event.BundleDecisions) != 1 || event.BundleDecisions[0].BundleName != "enterprise-baseline" || event.BundleDecisions[0].Digest == "" {
+		t.Fatalf("bundle decisions missing exact participant: %+v", event.BundleDecisions)
+	}
+	if event.BundleDigest != "enterprise-baseline="+event.BundleDecisions[0].Digest {
+		t.Fatalf("bundle_digest = %q, package digest = %q", event.BundleDigest, event.BundleDecisions[0].Digest)
+	}
+}
+
+func checkedInPolicyManager(t *testing.T) bundle.Manager {
+	t.Helper()
+	rego, err := os.ReadFile("../../policies/depthmark_lab_baseline.rego")
+	if err != nil {
+		t.Fatalf("read baseline: %v", err)
+	}
+	data, err := os.ReadFile("../../policies/data.json")
+	if err != nil {
+		t.Fatalf("read baseline data: %v", err)
+	}
+
+	var buffer bytes.Buffer
+	gzipWriter := gzip.NewWriter(&buffer)
+	tarWriter := tar.NewWriter(gzipWriter)
+	for name, content := range map[string][]byte{
+		"policies/depthmark_lab_baseline.rego": rego,
+		"data.json":                            data,
+	} {
+		if err := tarWriter.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: int64(len(content))}); err != nil {
+			t.Fatalf("write bundle header: %v", err)
+		}
+		if _, err := tarWriter.Write(content); err != nil {
+			t.Fatalf("write bundle content: %v", err)
+		}
+	}
+	if err := tarWriter.Close(); err != nil {
+		t.Fatalf("close bundle tar: %v", err)
+	}
+	if err := gzipWriter.Close(); err != nil {
+		t.Fatalf("close bundle gzip: %v", err)
+	}
+	path := t.TempDir() + "/bundle.tar.gz"
+	if err := os.WriteFile(path, buffer.Bytes(), 0o600); err != nil {
+		t.Fatalf("write checked-in baseline bundle: %v", err)
+	}
+	live := bundle.NewLiveManager(
+		bundle.FilesystemLoader{}, bundle.Source{Raw: "file://" + path}, bundle.VerifyConfig{}, discardSlogger(),
+		bundle.LiveOpts{Name: "enterprise-baseline", Mandatory: true},
+	)
+	if err := live.Init(context.Background()); err != nil {
+		t.Fatalf("initialize checked-in mandatory baseline: %v", err)
+	}
+	return bundle.NewMultiManager([]bundle.LifecycleManager{live}, bundle.EnforcementRequired)
 }

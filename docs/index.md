@@ -12,8 +12,9 @@ Inspired by [octo-sts/app](https://github.com/octo-sts/app), which pioneered OID
 |---|---|---|
 | **Zero-trust** | OIDC Federation | No stored credentials — identity verified via OIDC JWT validation |
 | **Least-privilege** | Policy-based Scoping | YAML trust policies define exact permissions per workload identity |
+| **Enterprise policy** | Mandatory Bundle Contract | Required mode enforces a signed, digest-pinned global baseline plus additive app controls |
 | **Multi-app** | Multiple GitHub Apps | Route different workloads through different GitHub Apps |
-| **Org-scope** | Organization Tokens | Issue tokens scoped to an entire org or a subset of repositories |
+| **Immutable target** | Repository ID Scoping | Resolve canonical targets and mint using exact GitHub repository IDs |
 | **Observable** | Prometheus Metrics | Built-in metrics and structured audit logging |
 | **Replay-safe** | JTI Cache | Memory or Redis-backed JTI tracking prevents token replay attacks |
 | **Portable** | Distroless Container | Single static binary in a minimal container — runs anywhere |

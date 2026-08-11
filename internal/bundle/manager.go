@@ -46,14 +46,18 @@ type LiveManager struct {
 	pollInterval time.Duration
 	maxStaleness time.Duration
 	failMode     string
+	apps         map[string]struct{}
+	mandatory    bool
 
-	mu          sync.RWMutex
-	engine      *Engine
-	digest      string
-	loadedAt    time.Time
-	tarball     []byte // retained for BundleFile; bundles are small (~1KB-MB)
-	exceptions  []Exception
-	lastPullErr error // most recent reload failure, surfaced via /health
+	reloadMu       sync.Mutex
+	mu             sync.RWMutex
+	engine         *Engine
+	digest         string
+	loadedAt       time.Time
+	tarball        []byte // retained for BundleFile; bundles are small (~1KB-MB)
+	exceptions     []Exception
+	policyRevision string
+	lastPullErr    error // most recent reload failure, surfaced via /health
 
 	// Lifecycle state for the background poller. ctx is the parent the
 	// poller listens on; cancel stops the poller without affecting the
@@ -72,6 +76,8 @@ type LiveManager struct {
 //   - FailMode == "" → defaults to "closed" when MaxStaleness > 0.
 type LiveOpts struct {
 	Name         string
+	Apps         []string
+	Mandatory    bool
 	PollInterval time.Duration
 	MaxStaleness time.Duration
 	FailMode     string
@@ -93,6 +99,10 @@ func NewLiveManager(loader Loader, source Source, verify VerifyConfig, slogger *
 	if name == "" {
 		name = "default"
 	}
+	apps := make(map[string]struct{}, len(opts.Apps))
+	for _, app := range opts.Apps {
+		apps[app] = struct{}{}
+	}
 	return &LiveManager{
 		name:         name,
 		loader:       loader,
@@ -102,6 +112,8 @@ func NewLiveManager(loader Loader, source Source, verify VerifyConfig, slogger *
 		pollInterval: opts.PollInterval,
 		maxStaleness: opts.MaxStaleness,
 		failMode:     failMode,
+		apps:         apps,
+		mandatory:    opts.Mandatory,
 	}
 }
 
@@ -110,6 +122,8 @@ func NewLiveManager(loader Loader, source Source, verify VerifyConfig, slogger *
 // metrics so an operator can tell pull failures from verify failures
 // from compile failures from a Prometheus dashboard.
 func (m *LiveManager) Init(ctx context.Context) error {
+	m.reloadMu.Lock()
+	defer m.reloadMu.Unlock()
 	if err := m.fetchAndInstall(ctx, "init"); err != nil {
 		return err
 	}
@@ -137,6 +151,8 @@ func (m *LiveManager) Init(ctx context.Context) error {
 // loadedAt advances (the bundle is "fresh" again from staleness's
 // perspective) and BundleReloadTotal{result="unchanged"} increments.
 func (m *LiveManager) Reload(ctx context.Context) (string, error) {
+	m.reloadMu.Lock()
+	defer m.reloadMu.Unlock()
 	m.mu.RLock()
 	prev := m.digest
 	m.mu.RUnlock()
@@ -186,14 +202,20 @@ func (m *LiveManager) fetchAndInstall(ctx context.Context, kind string) error {
 	)
 	fetch, err := m.loader.Fetch(ctx, m.source, m.verify)
 	if err != nil {
-		metrics.BundlePullTotal.WithLabelValues(m.name, "failure").Inc()
-		// FilesystemLoader skips verify, so any error from Fetch is a
-		// pull error in iteration 1. Iteration 2's OCI loader will
-		// distinguish pull errors from verify errors via a typed error.
+		var verificationErr *verificationError
+		if errors.As(err, &verificationErr) {
+			metrics.BundleVerifyTotal.WithLabelValues(m.name, "failure").Inc()
+		} else {
+			metrics.BundlePullTotal.WithLabelValues(m.name, "failure").Inc()
+		}
 		return fmt.Errorf("bundle %s: pull/verify: %w", kind, err)
 	}
 	metrics.BundlePullTotal.WithLabelValues(m.name, "success").Inc()
-	metrics.BundleVerifyTotal.WithLabelValues(m.name, "success").Inc()
+	if verificationMode == "skipped" {
+		metrics.BundleVerifyTotal.WithLabelValues(m.name, "skipped").Inc()
+	} else {
+		metrics.BundleVerifyTotal.WithLabelValues(m.name, "success").Inc()
+	}
 	m.slogger.Info("bundle "+kind+": pull succeeded",
 		"digest", fetch.Digest,
 		"size_bytes", len(fetch.Tarball),
@@ -204,7 +226,12 @@ func (m *LiveManager) fetchAndInstall(ctx context.Context, kind string) error {
 		"digest", fetch.Digest,
 		"size_bytes", len(fetch.Tarball),
 	)
-	eng, err := NewEngine(ctx, fetch.Tarball)
+	var eng *Engine
+	if m.mandatory {
+		eng, err = NewMandatoryEngine(ctx, fetch.Tarball)
+	} else {
+		eng, err = NewEngine(ctx, fetch.Tarball)
+	}
 	if err != nil {
 		return fmt.Errorf("bundle %s: compile: %w", kind, err)
 	}
@@ -225,6 +252,7 @@ func (m *LiveManager) fetchAndInstall(ctx context.Context, kind string) error {
 	m.loadedAt = now
 	m.tarball = fetch.Tarball
 	m.exceptions = exceptions
+	m.policyRevision = eng.Metadata().PolicyRevision
 	m.mu.Unlock()
 
 	if previousDigest != "" && previousDigest != fetch.Digest {
@@ -256,12 +284,15 @@ func (m *LiveManager) signatureVerificationMode() string {
 
 func (m *LiveManager) logSignatureVerification(kind, mode string) {
 	if mode == "skipped" {
-		reason := "non_oci_source"
 		if m.source.Scheme() == "oci" && m.verify.SkipVerification {
-			reason = "configured_skip_verification"
+			m.slogger.Warn("bundle "+kind+": signature verification skipped",
+				"reason", "configured_skip_verification",
+				"risk", "unsigned OCI bundles are unsafe for production",
+			)
+			return
 		}
 		m.slogger.Info("bundle "+kind+": signature verification skipped",
-			"reason", reason,
+			"reason", "non_oci_source",
 		)
 		return
 	}
@@ -360,16 +391,20 @@ func (m *LiveManager) AgeSeconds() float64 {
 //     stale bundle, log a warning, increment
 //     BundleStaleEvalsTotal{mode="open"}.
 func (m *LiveManager) Eval(ctx context.Context, input Input) (Decision, error) {
+	if !m.appliesToApp(input.Request.App) {
+		return Decision{}, nil
+	}
+
 	m.mu.RLock()
 	eng := m.engine
 	loadedAt := m.loadedAt
+	digest := m.digest
 	m.mu.RUnlock()
 
 	if eng == nil {
-		// Init must run before serving traffic. This is a programmer
-		// error if it happens, not a runtime condition; fail closed.
-		return Decision{}, fmt.Errorf("bundle manager: Eval called before Init")
+		return Decision{Applicable: true}, fmt.Errorf("%w: bundle %q has no installed engine", ErrBundleUnavailable, m.name)
 	}
+	snapshotDigest := m.name + "=" + digest
 
 	age := time.Since(loadedAt)
 	metrics.BundleAgeSeconds.WithLabelValues(m.name).Set(age.Seconds())
@@ -381,28 +416,39 @@ func (m *LiveManager) Eval(ctx context.Context, input Input) (Decision, error) {
 			m.slogger.Warn("bundle stale: proceeding (fail_mode=open)",
 				"age_seconds", age.Seconds(),
 				"max_staleness_seconds", m.maxStaleness.Seconds(),
-				"digest", m.digest,
+				"digest", digest,
 			)
 			// Fall through to eval.
 		default: // "closed" or unset
 			metrics.BundleStaleEvalsTotal.WithLabelValues(m.name, "closed").Inc()
-			return Decision{}, ErrBundleStale
+			return Decision{Applicable: true, SnapshotDigest: snapshotDigest}, ErrBundleStale
 		}
 	}
 
 	d, err := eng.Eval(ctx, input)
-	if err != nil {
-		return Decision{}, err
-	}
 	for i := range d.Packages {
 		d.Packages[i].BundleName = m.name
-		d.Packages[i].Digest = m.digest
+		d.Packages[i].Digest = digest
 	}
 	for i := range d.Exceptions {
 		d.Exceptions[i].BundleName = m.name
-		d.Exceptions[i].Digest = m.digest
+		d.Exceptions[i].Digest = digest
 	}
-	return d, nil
+	d.Applicable = true
+	d.SnapshotDigest = snapshotDigest
+	d.Evaluated = len(d.Packages) > 0
+	if d.Evaluated {
+		d.EvaluatedDigest = snapshotDigest
+	}
+	return d, err
+}
+
+func (m *LiveManager) appliesToApp(app string) bool {
+	if len(m.apps) == 0 {
+		return true
+	}
+	_, ok := m.apps[app]
+	return ok
 }
 
 // Digest returns the OCI digest of the loaded bundle, used as the
@@ -423,10 +469,24 @@ func (m *LiveManager) Enabled() bool {
 	return m.engine != nil
 }
 
+func (m *LiveManager) Available() bool { return m.Enabled() }
+
+func (m *LiveManager) Enforcement() string {
+	if m.mandatory {
+		return EnforcementRequired
+	}
+	return EnforcementOptional
+}
+
+func (m *LiveManager) Mandatory() bool { return m.mandatory }
+
 func (m *LiveManager) BundleStatuses() []Status {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	st := Status{Name: m.name, Enabled: m.engine != nil, Digest: m.digest}
+	st := Status{
+		Name: m.name, Enabled: m.engine != nil, Mandatory: m.mandatory,
+		Digest: m.digest, PolicyRevision: m.policyRevision,
+	}
 	if !m.loadedAt.IsZero() {
 		st.AgeSeconds = time.Since(m.loadedAt).Seconds()
 	}

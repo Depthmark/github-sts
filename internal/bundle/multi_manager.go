@@ -14,6 +14,8 @@ import (
 // lifecycle hooks in addition to the request-time Manager interface.
 type LifecycleManager interface {
 	Manager
+	Mandatory() bool
+	Available() bool
 	Start(ctx context.Context)
 	Stop()
 	Reload(ctx context.Context) (string, error)
@@ -24,12 +26,18 @@ type LifecycleManager interface {
 // MultiManager composes independently-owned enterprise bundles. Every bundle
 // is evaluated on every request; deny wins across all bundles and packages.
 type MultiManager struct {
-	children []LifecycleManager
-	mu       sync.RWMutex
+	children    []LifecycleManager
+	enforcement string
+	mu          sync.RWMutex
 }
 
-func NewMultiManager(children []LifecycleManager) *MultiManager {
-	return &MultiManager{children: append([]LifecycleManager(nil), children...)}
+func NewMultiManager(children []LifecycleManager, enforcement string) *MultiManager {
+	if enforcement != EnforcementRequired {
+		enforcement = EnforcementOptional
+	}
+	return &MultiManager{
+		children: append([]LifecycleManager(nil), children...), enforcement: enforcement,
+	}
 }
 
 func (m *MultiManager) Eval(ctx context.Context, input Input) (Decision, error) {
@@ -38,35 +46,60 @@ func (m *MultiManager) Eval(ctx context.Context, input Input) (Decision, error) 
 	m.mu.RUnlock()
 
 	combined := Decision{Allow: true}
+	mandatoryParticipated := false
 	for _, child := range children {
 		if !child.Enabled() {
 			continue
 		}
 		d, err := child.Eval(ctx, input)
+		if d.Applicable {
+			combined.Applicable = true
+			combined.SnapshotDigest = appendDigest(combined.SnapshotDigest, d.SnapshotDigest)
+		}
+		if d.Evaluated {
+			combined.Evaluated = true
+			combined.EvaluatedDigest = appendDigest(combined.EvaluatedDigest, d.EvaluatedDigest)
+			if child.Mandatory() && err == nil {
+				mandatoryParticipated = true
+			}
+			combined.Packages = append(combined.Packages, d.Packages...)
+			combined.Exceptions = append(combined.Exceptions, d.Exceptions...)
+			if !d.Allow {
+				combined.Allow = false
+				combined.Reasons = append(combined.Reasons, d.Reasons...)
+			}
+			for _, pd := range d.Packages {
+				result := "allow"
+				if !pd.Allow {
+					result = "deny"
+				}
+				metrics.BundlePolicyDecisionsTotal.WithLabelValues(input.Request.App, pd.BundleName, pd.Digest, result).Inc()
+				if pd.RuleID != "" && pd.RuleID != "unknown" {
+					metrics.BundlePolicyRuleDecisionsTotal.WithLabelValues(pd.BundleName, pd.RuleID, result).Inc()
+				}
+				if pd.ExceptionID != "" && pd.ExceptionID != "unknown" {
+					metrics.BundlePolicyExceptionHitsTotal.WithLabelValues(pd.BundleName, pd.Digest, pd.ExceptionID, pd.RuleID, "unknown", input.Request.App).Inc()
+				}
+			}
+		}
 		if err != nil {
-			return Decision{}, err
-		}
-		combined.Packages = append(combined.Packages, d.Packages...)
-		combined.Exceptions = append(combined.Exceptions, d.Exceptions...)
-		if !d.Allow {
-			combined.Allow = false
-			combined.Reasons = append(combined.Reasons, d.Reasons...)
-		}
-		for _, pd := range d.Packages {
-			result := "allow"
-			if !pd.Allow {
-				result = "deny"
-			}
-			metrics.BundlePolicyDecisionsTotal.WithLabelValues(input.Request.App, pd.BundleName, pd.Digest, result).Inc()
-			if pd.RuleID != "" && pd.RuleID != "unknown" {
-				metrics.BundlePolicyRuleDecisionsTotal.WithLabelValues(pd.BundleName, pd.RuleID, result).Inc()
-			}
-			if pd.ExceptionID != "" && pd.ExceptionID != "unknown" {
-				metrics.BundlePolicyExceptionHitsTotal.WithLabelValues(pd.BundleName, pd.Digest, pd.ExceptionID, pd.RuleID, "unknown", input.Request.App).Inc()
-			}
+			return combined, err
 		}
 	}
+	if m.enforcement == EnforcementRequired && !mandatoryParticipated {
+		return combined, ErrBundleUnavailable
+	}
 	return combined, nil
+}
+
+func appendDigest(existing, next string) string {
+	if existing == "" {
+		return next
+	}
+	if next == "" {
+		return existing
+	}
+	return existing + "," + next
 }
 
 func (m *MultiManager) Digest() string {
@@ -86,6 +119,9 @@ func (m *MultiManager) Digest() string {
 func (m *MultiManager) Enabled() bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	if m.enforcement == EnforcementRequired {
+		return true
+	}
 	for _, child := range m.children {
 		if child.Enabled() {
 			return true
@@ -93,6 +129,31 @@ func (m *MultiManager) Enabled() bool {
 	}
 	return false
 }
+
+// Available reports actual loaded policy availability without weakening
+// Enabled's required-mode guarantee that the handler always calls Eval.
+func (m *MultiManager) Available() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.enforcement == EnforcementRequired {
+		for _, child := range m.children {
+			if child.Mandatory() {
+				return child.Enabled()
+			}
+		}
+		return false
+	}
+	for _, child := range m.children {
+		if child.Enabled() {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *MultiManager) Enforcement() string { return m.enforcement }
+
+func (m *MultiManager) Mandatory() bool { return m.enforcement == EnforcementRequired }
 
 func (m *MultiManager) BundleFile(name string) ([]byte, error) {
 	m.mu.RLock()

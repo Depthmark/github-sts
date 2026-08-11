@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -58,6 +59,82 @@ func TestLiveManager_InitSuccess(t *testing.T) {
 	}
 	if d.Allow {
 		t.Fatalf("Eval on default-deny bundle: got allow, want deny")
+	}
+}
+
+func TestLiveManager_MandatoryAdmissionAndStatus(t *testing.T) {
+	regoSource, err := os.ReadFile("../../policies/depthmark_lab_baseline.rego")
+	if err != nil {
+		t.Fatalf("read baseline: %v", err)
+	}
+	data, err := os.ReadFile("../../policies/data.json")
+	if err != nil {
+		t.Fatalf("read baseline data: %v", err)
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bundle.tar.gz")
+	if err := os.WriteFile(path, buildTarball(t, map[string]string{
+		"/policies/depthmark_lab_baseline.rego": string(regoSource),
+		"/data.json":                            string(data),
+	}), 0o600); err != nil {
+		t.Fatalf("writing fixture: %v", err)
+	}
+
+	mgr := NewLiveManager(
+		FilesystemLoader{}, Source{Raw: "file://" + path}, VerifyConfig{}, nil,
+		LiveOpts{Name: "enterprise-baseline", Mandatory: true},
+	)
+	if err := mgr.Init(context.Background()); err != nil {
+		t.Fatalf("Init mandatory baseline: %v", err)
+	}
+	statuses := mgr.BundleStatuses()
+	if len(statuses) != 1 || !statuses[0].Mandatory || statuses[0].PolicyRevision != "2026-08-11.1" {
+		t.Fatalf("mandatory status = %+v", statuses)
+	}
+	decision, err := mgr.Eval(context.Background(), Input{})
+	if err != nil {
+		t.Fatalf("Eval: %v", err)
+	}
+	if !decision.Applicable || !decision.Evaluated || decision.Allow {
+		t.Fatalf("mandatory malformed-input decision = %+v", decision)
+	}
+}
+
+func TestLiveManager_EvalSkipsUnscopedApp(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bundle.tar.gz")
+	if err := os.WriteFile(path, fixtureBundle(t), 0o600); err != nil {
+		t.Fatalf("writing fixture: %v", err)
+	}
+
+	mgr := NewLiveManager(FilesystemLoader{}, Source{Raw: "file://" + path}, VerifyConfig{}, nil, LiveOpts{Apps: []string{"support"}})
+	if err := mgr.Init(context.Background()); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	d, err := mgr.Eval(context.Background(), Input{
+		Mode:    ModeExchange,
+		Request: InputRequest{App: "deploy"},
+	})
+	if err != nil {
+		t.Fatalf("Eval: %v", err)
+	}
+	if d.Applicable || d.Evaluated || d.Allow {
+		t.Fatalf("Eval for unscoped app must be a non-participating decision, got %+v", d)
+	}
+
+	d, err = mgr.Eval(context.Background(), Input{
+		Mode:    ModeExchange,
+		Request: InputRequest{App: "support"},
+	})
+	if err != nil {
+		t.Fatalf("Eval scoped app: %v", err)
+	}
+	if d.Allow {
+		t.Fatalf("Eval for scoped app: got allow, want deny")
+	}
+	if !d.Applicable || !d.Evaluated {
+		t.Fatalf("Eval for scoped app did not record participation: %+v", d)
 	}
 }
 
@@ -313,6 +390,101 @@ default decision := {"allow": false, "reasons": ["v2 default deny"]}
 	}
 }
 
+type alternatingLoader struct {
+	mu        sync.Mutex
+	active    int
+	maxActive int
+	next      int
+	versions  []Fetch
+}
+
+func (l *alternatingLoader) Fetch(context.Context, Source, VerifyConfig) (Fetch, error) {
+	l.mu.Lock()
+	l.active++
+	if l.active > l.maxActive {
+		l.maxActive = l.active
+	}
+	version := l.versions[l.next%len(l.versions)]
+	l.next++
+	l.mu.Unlock()
+
+	time.Sleep(time.Millisecond)
+
+	l.mu.Lock()
+	l.active--
+	l.mu.Unlock()
+	return version, nil
+}
+
+func TestLiveManager_ConcurrentReloadKeepsEngineDigestSnapshot(t *testing.T) {
+	loader := &alternatingLoader{versions: []Fetch{
+		{
+			Tarball: buildTarball(t, map[string]string{"/policies/v.rego": `package sts.enterprise.snapshot
+import rego.v1
+decision := {"allow": false, "reasons": ["version-1"]}
+`}),
+			Digest: "sha256:version-1",
+		},
+		{
+			Tarball: buildTarball(t, map[string]string{"/policies/v.rego": `package sts.enterprise.snapshot
+import rego.v1
+decision := {"allow": false, "reasons": ["version-2"]}
+`}),
+			Digest: "sha256:version-2",
+		},
+	}}
+	mgr := NewLiveManager(loader, Source{Raw: "file:///unused"}, VerifyConfig{}, nil, LiveOpts{Name: "snapshot"})
+	if err := mgr.Init(context.Background()); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	errCh := make(chan error, 8)
+	var wg sync.WaitGroup
+	for range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 25 {
+				if _, err := mgr.Reload(context.Background()); err != nil {
+					errCh <- err
+					return
+				}
+			}
+		}()
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for range 2000 {
+			decision, err := mgr.Eval(context.Background(), Input{})
+			if err != nil {
+				errCh <- err
+				return
+			}
+			if len(decision.Packages) != 1 || len(decision.Reasons) != 1 {
+				errCh <- errors.New("snapshot decision missing package or reason")
+				return
+			}
+			wantDigest := "sha256:" + decision.Reasons[0]
+			if decision.Packages[0].Digest != wantDigest {
+				errCh <- errors.New("engine and attributed digest came from different snapshots")
+				return
+			}
+		}
+	}()
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Fatal(err)
+	}
+	loader.mu.Lock()
+	maxActive := loader.maxActive
+	loader.mu.Unlock()
+	if maxActive != 1 {
+		t.Fatalf("concurrent loader calls = %d, want serialized reloads", maxActive)
+	}
+}
+
 // TestLiveManager_Reload_KeepsOldOnError counter-validates the
 // failure-tolerance contract: a reload error must not blow away the
 // running engine. Operators rely on this — a transient registry blip
@@ -372,9 +544,12 @@ func TestLiveManager_Stale_Closed(t *testing.T) {
 	}
 	// Sleep a tick to guarantee age > 1ns.
 	time.Sleep(time.Millisecond)
-	_, err := mgr.Eval(context.Background(), Input{Mode: ModeExchange})
+	decision, err := mgr.Eval(context.Background(), Input{Mode: ModeExchange})
 	if !errors.Is(err, ErrBundleStale) {
 		t.Fatalf("Eval on stale bundle (closed): got %v, want ErrBundleStale", err)
+	}
+	if decision.SnapshotDigest == "" {
+		t.Fatal("stale decision did not identify the exact rejected snapshot")
 	}
 }
 

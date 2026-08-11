@@ -15,9 +15,20 @@ import (
 type BundleHealthReporter interface {
 	Digest() string
 	Enabled() bool
+	Available() bool
 	AgeSeconds() float64
 	LastPullError() error
 	BundleStatuses() []bundle.Status
+}
+
+// SecurityPosture exposes security-sensitive compatibility switches in health
+// output without affecting liveness.
+type SecurityPosture struct {
+	RequireImmutableSubjectClaims bool   `json:"require_immutable_subject_claims"`
+	LegacySubjectOptOut           bool   `json:"legacy_subject_opt_out"`
+	BundleEnforcement             string `json:"bundle_enforcement"`
+	EnterprisePolicyRequired      bool   `json:"enterprise_policy_required"`
+	YAMLOnlyAuthorization         bool   `json:"yaml_only_authorization"`
 }
 
 // HealthHandler returns a handler for the liveness probe.
@@ -31,12 +42,15 @@ type BundleHealthReporter interface {
 // path. A future /ready could degrade on bundle_age_seconds, but
 // liveness must not (kubelet would restart on every transient pull
 // failure).
-func HealthHandler(bundle BundleHealthReporter) http.HandlerFunc {
+func HealthHandler(bundle BundleHealthReporter, posture ...SecurityPosture) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		resp := map[string]any{"status": "ok"}
+		if len(posture) > 0 {
+			resp["security"] = posture[0]
+		}
 		if bundle != nil {
 			b := map[string]any{
-				"enabled":     bundle.Enabled(),
+				"enabled":     bundle.Available(),
 				"digest":      bundle.Digest(),
 				"age_seconds": bundle.AgeSeconds(),
 			}

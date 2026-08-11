@@ -11,7 +11,14 @@ import (
 func TestPolicyValidationHandler_ValidRawYAML(t *testing.T) {
 	body := []byte(`issuer: https://token.actions.githubusercontent.com
 audience: https://sts.example.com
-subject: repo:org/repo:ref:refs/heads/main
+subject: repo:org@123456/repo@456789:ref:refs/heads/main
+github:
+  sources:
+    - owner_id: "123456"
+      repository_id: "456789"
+  target:
+    owner_id: "123456"
+    repository_id: "456789"
 permissions:
   contents: read
 `)
@@ -37,6 +44,14 @@ permissions:
 func TestPolicyValidationHandler_JSONRequest(t *testing.T) {
 	payload := PolicyValidationRequest{Content: `issuer: https://token.actions.githubusercontent.com
 audience: https://sts.example.com
+subject: repo:org@123456/repo@456789:ref:refs/heads/main
+github:
+  sources:
+    - owner_id: "123456"
+      repository_id: "456789"
+  target:
+    owner_id: "123456"
+    repository_id: "456789"
 permissions:
   contents: read
 `}
@@ -68,9 +83,16 @@ func TestPolicyValidationHandler_InvalidYAML(t *testing.T) {
 func TestPolicyValidationHandler_UnknownFieldAndSubjectConflict(t *testing.T) {
 	body := `issuer: https://token.actions.githubusercontent.com
 audience: https://sts.example.com
-subject: repo:org/repo:ref:refs/heads/main
-subject_pattern: repo:org/repo:.*
+subject: repo:org@123456/repo@456789:ref:refs/heads/main
+subject_pattern: repo:org@123456/repo@456789:.*
 unexpected: true
+github:
+  sources:
+    - owner_id: "123456"
+      repository_id: "456789"
+  target:
+    owner_id: "123456"
+    repository_id: "456789"
 permissions:
   contents: read
 `
@@ -84,6 +106,46 @@ permissions:
 	resp := decodeValidationResponse(t, w.Body.Bytes())
 	if !hasDiagnostic(resp, "unknown_field") || !hasDiagnostic(resp, "subject_conflict") {
 		t.Fatalf("expected unknown_field and subject_conflict diagnostics, got %+v", resp.Diagnostics)
+	}
+}
+
+func TestPolicyValidationHandler_RequiresGitHubRelationship(t *testing.T) {
+	body := `issuer: https://token.actions.githubusercontent.com
+audience: https://sts.example.com
+subject: repo:org@123456/repo@456789:ref:refs/heads/main
+permissions:
+  contents: read
+`
+	req := httptest.NewRequest(http.MethodPost, "/sts/v1/trust-policy/validate", bytes.NewBufferString(body))
+	w := httptest.NewRecorder()
+	NewPolicyValidationHandler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422", w.Code)
+	}
+	if resp := decodeValidationResponse(t, w.Body.Bytes()); !hasDiagnostic(resp, "policy_validation_error") {
+		t.Fatalf("expected policy_validation_error, got %+v", resp.Diagnostics)
+	}
+}
+
+func TestPolicyValidationHandler_RejectsRepositories(t *testing.T) {
+	body := `issuer: https://issuer.example.com
+audience: https://sts.example.com
+subject: workload-1
+repositories:
+  - repo-a
+permissions:
+  contents: read
+`
+	req := httptest.NewRequest(http.MethodPost, "/sts/v1/trust-policy/validate", bytes.NewBufferString(body))
+	w := httptest.NewRecorder()
+	NewPolicyValidationHandler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422", w.Code)
+	}
+	if resp := decodeValidationResponse(t, w.Body.Bytes()); !hasDiagnostic(resp, "repositories_unsupported") {
+		t.Fatalf("expected repositories_unsupported, got %+v", resp.Diagnostics)
 	}
 }
 

@@ -36,8 +36,9 @@ type fakeFileManager struct {
 func (m *fakeFileManager) Eval(_ context.Context, _ bundle.Input) (bundle.Decision, error) {
 	panic("fakeFileManager.Eval should not be called by the schema route")
 }
-func (m *fakeFileManager) Digest() string { return m.digest }
-func (m *fakeFileManager) Enabled() bool  { return m.enabled }
+func (m *fakeFileManager) Digest() string      { return m.digest }
+func (m *fakeFileManager) Enabled() bool       { return m.enabled }
+func (m *fakeFileManager) Enforcement() string { return bundle.EnforcementOptional }
 func (m *fakeFileManager) BundleStatuses() []bundle.Status {
 	return []bundle.Status{{Name: "test", Enabled: m.enabled, Digest: m.digest}}
 }

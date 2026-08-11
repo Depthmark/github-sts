@@ -28,16 +28,60 @@ func TestHealthHandler_Always200(t *testing.T) {
 	}
 }
 
-// fakeBundleReporter satisfies BundleHealthReporter for testing /health.
-type fakeBundleReporter struct {
-	digest  string
-	enabled bool
-	age     float64
-	err     error
+func TestHealthHandler_ImmutableSubjectPosture(t *testing.T) {
+	h := HealthHandler(nil, SecurityPosture{
+		RequireImmutableSubjectClaims: false,
+		LegacySubjectOptOut:           true,
+		BundleEnforcement:             bundle.EnforcementOptional,
+		EnterprisePolicyRequired:      false,
+		YAMLOnlyAuthorization:         true,
+	})
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	var body map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	security, ok := body["security"].(map[string]any)
+	if !ok {
+		t.Fatalf("body.security missing or wrong shape: %v", body)
+	}
+	if security["require_immutable_subject_claims"] != false {
+		t.Errorf("require_immutable_subject_claims = %v, want false", security["require_immutable_subject_claims"])
+	}
+	if security["legacy_subject_opt_out"] != true {
+		t.Errorf("legacy_subject_opt_out = %v, want true", security["legacy_subject_opt_out"])
+	}
+	if security["bundle_enforcement"] != bundle.EnforcementOptional {
+		t.Errorf("bundle_enforcement = %v, want optional", security["bundle_enforcement"])
+	}
+	if security["enterprise_policy_required"] != false {
+		t.Errorf("enterprise_policy_required = %v, want false", security["enterprise_policy_required"])
+	}
+	if security["yaml_only_authorization"] != true {
+		t.Errorf("yaml_only_authorization = %v, want true", security["yaml_only_authorization"])
+	}
 }
 
-func (f *fakeBundleReporter) Digest() string       { return f.digest }
-func (f *fakeBundleReporter) Enabled() bool        { return f.enabled }
+// fakeBundleReporter satisfies BundleHealthReporter for testing /health.
+type fakeBundleReporter struct {
+	digest    string
+	enabled   bool
+	age       float64
+	err       error
+	available *bool
+}
+
+func (f *fakeBundleReporter) Digest() string { return f.digest }
+func (f *fakeBundleReporter) Enabled() bool  { return f.enabled }
+func (f *fakeBundleReporter) Available() bool {
+	if f.available != nil {
+		return *f.available
+	}
+	return f.enabled
+}
 func (f *fakeBundleReporter) AgeSeconds() float64  { return f.age }
 func (f *fakeBundleReporter) LastPullError() error { return f.err }
 func (f *fakeBundleReporter) BundleStatuses() []bundle.Status {
@@ -108,6 +152,26 @@ func TestHealthHandler_BundleLastPullError(t *testing.T) {
 	b := body["bundle"].(map[string]any)
 	if b["last_pull_error"] != "registry timeout" {
 		t.Errorf("bundle.last_pull_error = %v, want %q", b["last_pull_error"], "registry timeout")
+	}
+}
+
+func TestHealthHandler_RequiredBundleUnavailable(t *testing.T) {
+	available := false
+	rep := &fakeBundleReporter{enabled: true, available: &available}
+	h := HealthHandler(rep, SecurityPosture{
+		BundleEnforcement:        bundle.EnforcementRequired,
+		EnterprisePolicyRequired: true,
+	})
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/health", nil))
+
+	var body map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	bundleStatus := body["bundle"].(map[string]any)
+	if bundleStatus["enabled"] != false {
+		t.Fatalf("bundle.enabled = %v, want false when mandatory policy is unavailable", bundleStatus["enabled"])
 	}
 }
 

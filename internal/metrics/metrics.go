@@ -44,6 +44,11 @@ var (
 		Name: "githubsts_oidc_validation_errors_total",
 		Help: "OIDC token validation failures.",
 	}, []string{"issuer", "reason"})
+
+	ImmutableSubjectClaimsRequired = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "githubsts_oidc_immutable_subject_claims_required",
+		Help: "Whether immutable GitHub.com subject claims are required (1 = required, 0 = legacy subject format allowed).",
+	})
 )
 
 // JTI replay prevention metrics.
@@ -177,7 +182,7 @@ var (
 var (
 	OrgDecisionTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "githubsts_org_decision_total",
-		Help: "Org-rego bundle decisions. result is allow|deny|error.",
+		Help: "Org-rego bundle outcomes. result is allow|deny|error|not_evaluated.",
 	}, []string{"app", "bundle", "result"})
 
 	BundlePullTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -187,7 +192,7 @@ var (
 
 	BundleVerifyTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "githubsts_bundle_verify_total",
-		Help: "Cosign bundle verification attempts. result is success|failure.",
+		Help: "Cosign bundle verification attempts. result is success|failure|skipped.",
 	}, []string{"bundle", "result"})
 
 	BundleLoadedDigestInfo = prometheus.NewGaugeVec(prometheus.GaugeOpts{
@@ -256,6 +261,11 @@ var (
 		Name: "githubsts_bundle_policy_exception_hits_total",
 		Help: "Exchange attempts where a policy decision reported an exception hit.",
 	}, []string{"bundle", "digest", "exception_id", "rule_id", "owner", "app"})
+
+	BundleEnforcementRequired = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "githubsts_bundle_enforcement_required",
+		Help: "Configured bundle enforcement posture (1 = required, 0 = explicitly optional).",
+	})
 )
 
 // Request rate limiting.
@@ -275,7 +285,7 @@ func Register() {
 	// HTTP
 	prometheus.MustRegister(RequestCount, RequestLatency, InFlight)
 	// Token exchange
-	prometheus.MustRegister(TokenExchangesTotal, TokenExchangeLatency, OIDCValidationErrors)
+	prometheus.MustRegister(TokenExchangesTotal, TokenExchangeLatency, OIDCValidationErrors, ImmutableSubjectClaimsRequired)
 	// JTI
 	prometheus.MustRegister(JTIReplayAttempts, JTICacheErrors)
 	// Audit
@@ -291,7 +301,7 @@ func Register() {
 	// Reachability
 	prometheus.MustRegister(GitHubReachable, GitHubReachabilityCheckDuration, GitHubReachabilityFailuresTotal)
 	// Bundle
-	prometheus.MustRegister(OrgDecisionTotal, BundlePullTotal, BundleVerifyTotal, BundleLoadedDigestInfo, BundleAgeSeconds, BundleReloadTotal, BundleStaleEvalsTotal, BundlePolicyRevisionInfo, BundlePolicyRevisionChangesTotal, BundlePolicyDecisionsTotal, BundlePolicyRuleDecisionsTotal, BundlePolicyExceptionsTotal, BundlePolicyExceptionExpirationTimestampSeconds, BundlePolicyExceptionSecondsUntilExpiration, BundlePolicyExceptionHitsTotal)
+	prometheus.MustRegister(OrgDecisionTotal, BundlePullTotal, BundleVerifyTotal, BundleLoadedDigestInfo, BundleAgeSeconds, BundleReloadTotal, BundleStaleEvalsTotal, BundlePolicyRevisionInfo, BundlePolicyRevisionChangesTotal, BundlePolicyDecisionsTotal, BundlePolicyRuleDecisionsTotal, BundlePolicyExceptionsTotal, BundlePolicyExceptionExpirationTimestampSeconds, BundlePolicyExceptionSecondsUntilExpiration, BundlePolicyExceptionHitsTotal, BundleEnforcementRequired)
 	// Request rate limiting
 	prometheus.MustRegister(RateLimitRejections)
 	// Readiness

@@ -160,6 +160,15 @@ func TestAppTokenProvider_GetInstallationToken_RepoRestriction(t *testing.T) {
 	}
 }
 
+func TestAppTokenProvider_GetInstallationToken_RejectsEmptyRepositoryList(t *testing.T) {
+	p := NewAppTokenProvider("test-app", 12345, generateTestKey(t), "https://api.invalid", nil)
+
+	_, err := p.GetInstallationToken(context.Background(), "myorg", map[string]string{"contents": "read"}, []string{}, "test")
+	if err == nil || !strings.Contains(err.Error(), "empty repository list") {
+		t.Fatalf("expected empty repository list error, got: %v", err)
+	}
+}
+
 func TestExtractRateLimitHeaders(t *testing.T) {
 	resp := &http.Response{
 		StatusCode: http.StatusOK,

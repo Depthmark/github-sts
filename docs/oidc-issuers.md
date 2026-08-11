@@ -62,8 +62,27 @@ Most common case for this service. No JWKS host override required.
 oidc:
   allowed_issuers:
     - https://token.actions.githubusercontent.com
+  require_immutable_subject_claims: true # secure default
   # trusted_jwks_hosts: not needed
 ```
+
+For GitHub.com, github-sts requires signed string claims for
+`repository_owner`, `repository_owner_id`, `repository`, and `repository_id`.
+It cross-checks these values against the token subject before audience, replay,
+or policy lookup.
+
+By default the subject must contain immutable IDs:
+
+```text
+repo:OWNER@OWNER-ID/REPO@REPO-ID:ref:refs/heads/BRANCH
+```
+
+Repositories created before July 15, 2026 retain the previous name-only format
+until they opt in through GitHub's organization/repository Actions OIDC setting
+or REST API. Set `require_immutable_subject_claims: false` only as an explicit
+legacy migration posture. Separate immutable ID claims remain mandatory. This
+feature applies only to GitHub.com and is not available on GitHub Enterprise
+Server.
 
 Verify:
 
@@ -263,6 +282,7 @@ Failure modes to expect:
 | `OIDC discovery returned 302` (or similar 3xx) | Issuer's discovery doc redirects | Investigate — redirects are intentionally not followed. The issuer URL itself may be wrong. |
 | `audience mismatch (server required_audience)` | Token's `aud` does not contain `oidc.required_audience` | Either pass the right audience to the workflow (`core.getIDToken('<value>')`) or update `required_audience` in the server config. |
 | `audience check failed` (per-policy) | Token's `aud` does not match the policy's `audience:` field, or the policy was loaded without one | Set `audience:` in the `.sts.yaml` to the value the workflow requests. The field is mandatory at parse time — a policy without it never loads. |
+| `github_identity_invalid` | GitHub identity claims are missing, have wrong types, disagree, or use a legacy subject while immutable format is required | Opt the repository in to immutable subjects, verify owner/repository IDs, or use the visible legacy opt-out temporarily. Correlate `trace_id` for the finite reason. |
 
 ---
 

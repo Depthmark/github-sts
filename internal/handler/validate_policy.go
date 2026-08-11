@@ -143,6 +143,7 @@ func lintPolicyShape(doc *yaml.Node) []PolicyDiagnostic {
 		"subject_pattern": true,
 		"claim_pattern":   true,
 		"audience":        true,
+		"github":          true,
 		"repositories":    true,
 		"permissions":     true,
 	}
@@ -177,9 +178,9 @@ func lintPolicyShape(doc *yaml.Node) []PolicyDiagnostic {
 	}
 	if repos := seen["repositories"]; repos != nil {
 		diagnostics = append(diagnostics, PolicyDiagnostic{
-			Severity: "warning",
-			Code:     "repositories_org_scope_only",
-			Message:  "repositories is only meaningful for org-scoped exchanges; repo-scoped exchanges are already limited to the requesting repository",
+			Severity: "error",
+			Code:     "repositories_unsupported",
+			Message:  "repositories is unsupported while organization-level scopes are disabled; use an exact repository scope and github.target binding",
 			Path:     "$.repositories",
 			Line:     repos.Line,
 			Column:   repos.Column,

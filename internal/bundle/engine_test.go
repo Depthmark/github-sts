@@ -5,7 +5,11 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/json"
+	"os"
+	"strings"
 	"testing"
+	"time"
 )
 
 // buildTarball builds an OPA-style bundle tarball in memory from a map
@@ -158,6 +162,36 @@ func TestEngine_RejectsEmptyTarball(t *testing.T) {
 	}
 }
 
+func TestEngine_MalformedDecisionIsEvaluationError(t *testing.T) {
+	tests := []struct {
+		name     string
+		decision string
+		wantErr  string
+	}{
+		{name: "undefined", decision: `decision := {"allow": true} if { false }`, wantErr: "exactly one document"},
+		{name: "not object", decision: `decision := true`, wantErr: "must be an object"},
+		{name: "missing allow", decision: `decision := {"reasons": ["no allow"]}`, wantErr: "allow must be a boolean"},
+		{name: "wrong allow type", decision: `decision := {"allow": "yes"}`, wantErr: "allow must be a boolean"},
+		{name: "wrong reasons type", decision: `decision := {"allow": false, "reasons": "deny"}`, wantErr: "reasons must be an array"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			regoSource := "package sts.enterprise.malformed\nimport rego.v1\n" + tt.decision + "\n"
+			eng, err := NewEngine(context.Background(), buildTarball(t, map[string]string{
+				"/policies/malformed.rego": regoSource,
+			}))
+			if err != nil {
+				t.Fatalf("NewEngine: %v", err)
+			}
+			_, err = eng.Eval(context.Background(), Input{})
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Eval error = %v, want substring %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestEngine_MultiplePackages_DenyWins(t *testing.T) {
 	tarball := buildTarball(t, map[string]string{
 		"/policies/a.rego": `package sts.enterprise.allow
@@ -242,4 +276,414 @@ inventory contains {
 	if ex.Status != "active" {
 		t.Fatalf("exception status = %q, want active", ex.Status)
 	}
+}
+
+func TestEngine_CheckedInBaselineContract(t *testing.T) {
+	rego, err := os.ReadFile("../../policies/depthmark_lab_baseline.rego")
+	if err != nil {
+		t.Fatalf("read baseline: %v", err)
+	}
+	data, err := os.ReadFile("../../policies/data.json")
+	if err != nil {
+		t.Fatalf("read baseline data: %v", err)
+	}
+	eng, err := NewEngine(context.Background(), buildTarball(t, map[string]string{
+		"/policies/depthmark_lab_baseline.rego": string(rego),
+		"/data.json":                            string(data),
+	}))
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+
+	input := Input{
+		Mode: ModeExchange,
+		Request: InputRequest{
+			Scope: "Depthmark/github-sts", App: "depthmark-release-bot", Identity: "release",
+		},
+		SourceIdentity: &InputSourceIdentity{
+			Version: SourceIdentityVersionV1, Issuer: "https://token.actions.githubusercontent.com",
+			RepositoryOwner: "Depthmark", RepositoryOwnerID: "268749784",
+			Repository: "Depthmark/github-sts", RepositoryID: "1198676434",
+		},
+		TargetIdentity: &InputTargetIdentity{
+			Version: TargetIdentityVersionV1, Scope: "Depthmark/github-sts",
+			RepositoryOwner: "Depthmark", RepositoryOwnerID: "268749784",
+			Repository: "Depthmark/github-sts", RepositoryID: "1198676434",
+		},
+		YAMLPolicy: InputYAMLPolicy{GitHub: &InputGitHubPolicy{
+			Sources: []InputGitHubRepository{{OwnerID: "268749784", RepositoryID: "1198676434"}},
+			Target:  InputGitHubRepository{OwnerID: "268749784", RepositoryID: "1198676434"},
+		}},
+		Requested: &InputRequested{
+			Permissions: map[string]string{
+				"contents": "write", "checks": "write", "pull_requests": "write",
+			},
+			Repositories: []string{"github-sts"}, RepositoryIDs: []string{"1198676434"},
+			OrganizationWide: false,
+		},
+	}
+
+	decision, err := eng.Eval(context.Background(), input)
+	if err != nil {
+		t.Fatalf("Eval allow fixture: %v", err)
+	}
+	if !decision.Allow {
+		t.Fatalf("baseline denied valid release input: %+v", decision)
+	}
+
+	input.Requested.Permissions = map[string]string{"contents": "admin"}
+	decision, err = eng.Eval(context.Background(), input)
+	if err != nil {
+		t.Fatalf("Eval deny fixture: %v", err)
+	}
+	if decision.Allow {
+		t.Fatalf("baseline allowed permission above ceiling: %+v", decision)
+	}
+}
+
+func TestMandatoryEngine_CheckedInBaselineAdmission(t *testing.T) {
+	regoSource, err := os.ReadFile("../../policies/depthmark_lab_baseline.rego")
+	if err != nil {
+		t.Fatalf("read baseline: %v", err)
+	}
+	data, err := os.ReadFile("../../policies/data.json")
+	if err != nil {
+		t.Fatalf("read baseline data: %v", err)
+	}
+	eng, err := NewMandatoryEngine(context.Background(), buildTarball(t, map[string]string{
+		"/policies/depthmark_lab_baseline.rego": string(regoSource),
+		"/data.json":                            string(data),
+	}))
+	if err != nil {
+		t.Fatalf("NewMandatoryEngine: %v", err)
+	}
+	metadata := eng.Metadata()
+	if metadata.ContractVersion != "v1" || metadata.PolicyRevision != "2026-08-11.1" {
+		t.Fatalf("mandatory metadata = %+v", metadata)
+	}
+	if len(eng.decisions) != 1 || eng.decisions[0].Query != mandatoryEntrypoint {
+		t.Fatalf("mandatory decisions = %+v, want only %s", eng.decisions, mandatoryEntrypoint)
+	}
+}
+
+func TestMandatoryEngine_AdmissionRejectsIncompleteBundles(t *testing.T) {
+	metadata := `metadata := {
+  "contract_version": "v1",
+  "policy_revision": "test-1",
+  "controls": ["immutable_identity", "permission_boundary"],
+	"admission": {
+	  "app": "depthmark-release-bot",
+	  "identity": "release",
+	  "source": {"owner_id": "268749784", "repository_id": "1198676434"},
+	  "target": {"owner_id": "268749784", "repository_id": "1198676434"},
+	  "permissions": {"contents": "read"},
+	},
+}`
+	tests := []struct {
+		name    string
+		rego    string
+		wantErr string
+	}{
+		{
+			name: "missing fixed entrypoint",
+			rego: `package sts.enterprise.other
+import rego.v1
+decision := {"allow": false, "reasons": ["deny"]}
+`,
+			wantErr: "unsupported decision entrypoint",
+		},
+		{
+			name: "missing metadata",
+			rego: `package sts.enterprise.v1
+import rego.v1
+decision := {"allow": false, "reasons": ["deny"]}
+`,
+			wantErr: "mandatory metadata",
+		},
+		{
+			name: "allow all",
+			rego: `package sts.enterprise.v1
+import rego.v1
+decision := {"allow": true, "reasons": ["allow all"]}
+` + metadata,
+			wantErr: "allowed a broker-generated negative probe",
+		},
+		{
+			name: "app allow ignores identity and permissions",
+			rego: `package sts.enterprise.v1
+import rego.v1
+default decision := {"allow": false, "reasons": ["deny"]}
+decision := {"allow": true, "reasons": ["app only"]} if {
+  input.request.app == "depthmark-release-bot"
+}
+` + metadata,
+			wantErr: "allowed a broker-generated negative probe",
+		},
+		{
+			name: "allow ignores malformed mode",
+			rego: `package sts.enterprise.v1
+import rego.v1
+default decision := {"allow": false, "reasons": ["deny"]}
+decision := {"allow": true, "reasons": ["incomplete contract"]} if {
+  input.request.app == "depthmark-release-bot"
+  input.source_identity.repository_owner_id == "268749784"
+  input.source_identity.repository_id == "1198676434"
+  input.requested.permissions.contents == "read"
+}
+` + metadata,
+			wantErr: "malformed input probe",
+		},
+		{
+			name: "malformed decision metadata",
+			rego: `package sts.enterprise.v1
+import rego.v1
+decision := {"allow": false, "reasons": "deny"}
+` + metadata,
+			wantErr: "reasons must be an array",
+		},
+		{
+			name: "missing permission control",
+			rego: `package sts.enterprise.v1
+import rego.v1
+decision := {"allow": false, "reasons": ["deny"]}
+metadata := {
+  "contract_version": "v1",
+  "policy_revision": "test-1",
+  "controls": ["immutable_identity"],
+}
+`,
+			wantErr: "permission_boundary",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := NewMandatoryEngine(context.Background(), buildTarball(t, map[string]string{
+				"/policies/policy.rego": tt.rego,
+			}))
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error = %v, want substring %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateEnterprisePolicyData_Exceptions(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	tests := []struct {
+		name    string
+		mutate  func(map[string]any, map[string]any)
+		wantErr string
+	}{
+		{name: "valid"},
+		{
+			name: "unknown field",
+			mutate: func(_ map[string]any, exception map[string]any) {
+				exception["typo"] = true
+			},
+			wantErr: "unknown field",
+		},
+		{
+			name: "same owner and approver",
+			mutate: func(_ map[string]any, exception map[string]any) {
+				exception["approved_by"] = exception["owner"]
+			},
+			wantErr: "must be distinct",
+		},
+		{
+			name: "principal whitespace",
+			mutate: func(_ map[string]any, exception map[string]any) {
+				exception["approved_by"] = " security@example.com "
+			},
+			wantErr: "leading or trailing whitespace",
+		},
+		{
+			name: "future creation",
+			mutate: func(_ map[string]any, exception map[string]any) {
+				exception["created_at"] = now.Add(time.Hour).Format(time.RFC3339)
+				exception["expires_at"] = now.Add(2 * time.Hour).Format(time.RFC3339)
+			},
+			wantErr: "must not be in the future",
+		},
+		{
+			name: "expired",
+			mutate: func(_ map[string]any, exception map[string]any) {
+				exception["created_at"] = now.Add(-48 * time.Hour).Format(time.RFC3339)
+				exception["expires_at"] = now.Add(-24 * time.Hour).Format(time.RFC3339)
+			},
+			wantErr: "is expired",
+		},
+		{
+			name: "lifetime over 30 days",
+			mutate: func(_ map[string]any, exception map[string]any) {
+				exception["created_at"] = now.Add(-time.Hour).Format(time.RFC3339)
+				exception["expires_at"] = now.Add(31 * 24 * time.Hour).Format(time.RFC3339)
+			},
+			wantErr: "lifetime exceeds",
+		},
+		{
+			name: "same organization",
+			mutate: func(_ map[string]any, exception map[string]any) {
+				exception["source"].(map[string]any)["owner_id"] = "268749784"
+			},
+			wantErr: "owner IDs must differ",
+		},
+		{
+			name: "invalid permission",
+			mutate: func(_ map[string]any, exception map[string]any) {
+				exception["permission_ceiling"] = map[string]any{"made_up": "write"}
+			},
+			wantErr: "invalid permission",
+		},
+		{
+			name: "duplicate ID",
+			mutate: func(config map[string]any, exception map[string]any) {
+				config["cross_org_exceptions"] = []any{exception, exception}
+			},
+			wantErr: "duplicate exception_id",
+		},
+		{
+			name: "duplicate context",
+			mutate: func(config map[string]any, exception map[string]any) {
+				duplicate := make(map[string]any, len(exception))
+				for key, value := range exception {
+					duplicate[key] = value
+				}
+				duplicate["exception_id"] = "xorg-002"
+				config["cross_org_exceptions"] = []any{exception, duplicate}
+			},
+			wantErr: "duplicate source/target/app/identity context",
+		},
+		{
+			name: "organization-wide grant",
+			mutate: func(config map[string]any, _ map[string]any) {
+				config["org_wide_grants"] = []any{map[string]any{"grant_id": "not-yet-supported"}}
+			},
+			wantErr: "must remain empty",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, config, exception := validEnterpriseExceptionData(now)
+			if tt.mutate != nil {
+				tt.mutate(config, exception)
+			}
+			err := validateEnterprisePolicyData(data, now)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error = %v, want substring %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestEngine_FiltersExpiredAdmittedExceptions(t *testing.T) {
+	now := time.Now().UTC()
+	engine := &Engine{crossOrgExceptions: []admittedCrossOrgException{
+		{input: InputCrossOrgException{ExceptionID: "expired"}, expiresAt: now.Add(-time.Second)},
+		{input: InputCrossOrgException{ExceptionID: "active"}, expiresAt: now.Add(time.Second)},
+	}}
+	active := engine.activeCrossOrgExceptions(now)
+	if len(active) != 1 || active[0].ExceptionID != "active" {
+		t.Fatalf("active exceptions = %+v, want only active", active)
+	}
+}
+
+func TestEngine_RejectsVirtualEnterpriseConfig(t *testing.T) {
+	tarb := buildTarball(t, map[string]string{
+		"/policies/config.rego": `package sts.enterprise_config
+import rego.v1
+v1 := {"contract_version": "v1", "cross_org_exceptions": [], "org_wide_grants": []}
+`,
+		"/policies/decision.rego": `package sts.enterprise.test
+import rego.v1
+decision := {"allow": false, "reasons": ["deny"]}
+`,
+	})
+	_, err := NewEngine(context.Background(), tarb)
+	if err == nil || !strings.Contains(err.Error(), "reserved enterprise data namespace") {
+		t.Fatalf("error = %v, want reserved namespace rejection", err)
+	}
+}
+
+func TestEngine_InjectsOnlyActiveAdmittedExceptions(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	data, _, _ := validEnterpriseExceptionData(now)
+	dataJSON, err := json.Marshal(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rego := `package sts.enterprise.exception_input_test
+import rego.v1
+default decision := {"allow": false, "reasons": ["no active exception"]}
+decision := {
+  "allow": true,
+  "reasons": ["active exception"],
+  "exception_id": input.authorization.cross_org_exceptions[0].exception_id,
+} if {
+  count(input.authorization.cross_org_exceptions) == 1
+}
+`
+	engine, err := NewEngine(context.Background(), buildTarball(t, map[string]string{
+		"/policies/decision.rego": rego,
+		"/data.json":              string(dataJSON),
+	}))
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+
+	decision, err := engine.Eval(context.Background(), Input{
+		Authorization: &InputAuthorization{CrossOrgExceptions: []InputCrossOrgException{{ExceptionID: "caller-injected"}}},
+	})
+	if err != nil {
+		t.Fatalf("Eval active: %v", err)
+	}
+	if !decision.Allow || len(decision.Packages) != 1 || decision.Packages[0].ExceptionID != "xorg-001" {
+		t.Fatalf("engine did not replace caller exceptions with admitted data: %+v", decision)
+	}
+
+	engine.crossOrgExceptions[0].expiresAt = now.Add(-time.Second)
+	decision, err = engine.Eval(context.Background(), Input{})
+	if err != nil {
+		t.Fatalf("Eval expired: %v", err)
+	}
+	if decision.Allow {
+		t.Fatalf("expired exception remained active: %+v", decision)
+	}
+}
+
+func validEnterpriseExceptionData(now time.Time) (map[string]any, map[string]any, map[string]any) {
+	exception := map[string]any{
+		"exception_id": "xorg-001",
+		"rule_id":      "sts.relationship.cross_org",
+		"source":       map[string]any{"owner_id": "9001", "repository_id": "9002"},
+		"target":       map[string]any{"owner_id": "268749784", "repository_id": "1198676434"},
+		"app":          "depthmark-release-bot",
+		"identity":     "release",
+		"permission_ceiling": map[string]any{
+			"contents": "read",
+		},
+		"owner":       "platform@example.com",
+		"approved_by": "security@example.com",
+		"reason":      "temporary migration",
+		"created_at":  now.Add(-time.Hour).Format(time.RFC3339),
+		"expires_at":  now.Add(24 * time.Hour).Format(time.RFC3339),
+	}
+	config := map[string]any{
+		"contract_version":     "v1",
+		"cross_org_exceptions": []any{exception},
+		"org_wide_grants":      []any{},
+	}
+	data := map[string]any{
+		"sts": map[string]any{
+			"enterprise_config": map[string]any{"v1": config},
+		},
+	}
+	return data, config, exception
 }

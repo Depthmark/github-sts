@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/depthmark/github-sts/internal/config"
 	"github.com/depthmark/github-sts/internal/handler"
 )
 
@@ -209,5 +210,62 @@ func TestRoutePattern(t *testing.T) {
 		if got := routePattern(req); got != tt.want {
 			t.Errorf("routePattern(%q) = %q, want %q", tt.path, got, tt.want)
 		}
+	}
+}
+
+func TestYAMLOnlyAuthorizationPossible(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  config.Settings
+		want bool
+	}{
+		{
+			name: "optional no bundles",
+			cfg: config.Settings{
+				BundleEnforcement: config.BundleEnforcementOptional,
+				Apps:              map[string]config.AppConfig{"app": {}},
+			},
+			want: true,
+		},
+		{
+			name: "optional partial coverage",
+			cfg: config.Settings{
+				BundleEnforcement: config.BundleEnforcementOptional,
+				Apps:              map[string]config.AppConfig{"covered": {}, "uncovered": {}},
+				Bundles:           []config.BundleConfig{{Apps: []string{"covered"}}},
+			},
+			want: true,
+		},
+		{
+			name: "optional complete scoped coverage",
+			cfg: config.Settings{
+				BundleEnforcement: config.BundleEnforcementOptional,
+				Apps:              map[string]config.AppConfig{"one": {}, "two": {}},
+				Bundles:           []config.BundleConfig{{Apps: []string{"one", "two"}}},
+			},
+		},
+		{
+			name: "optional global coverage",
+			cfg: config.Settings{
+				BundleEnforcement: config.BundleEnforcementOptional,
+				Apps:              map[string]config.AppConfig{"one": {}, "two": {}},
+				Bundles:           []config.BundleConfig{{Apps: nil}},
+			},
+		},
+		{
+			name: "required",
+			cfg: config.Settings{
+				BundleEnforcement: config.BundleEnforcementRequired,
+				Apps:              map[string]config.AppConfig{"app": {}},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := yamlOnlyAuthorizationPossible(&tt.cfg); got != tt.want {
+				t.Fatalf("yamlOnlyAuthorizationPossible() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

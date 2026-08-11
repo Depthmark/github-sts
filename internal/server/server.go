@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -171,6 +172,26 @@ func New(cfg *config.Settings, slogger *slog.Logger) (*Server, error) {
 
 	// Register metrics.
 	metrics.Register()
+	if cfg.RequireImmutableSubjectClaims() {
+		metrics.ImmutableSubjectClaimsRequired.Set(1)
+	} else {
+		metrics.ImmutableSubjectClaimsRequired.Set(0)
+		slogger.Warn("immutable GitHub subject claims are not required",
+			"setting", "oidc.require_immutable_subject_claims",
+			"risk", "legacy subject format is vulnerable to repository namespace reuse",
+		)
+	}
+	yamlOnlyAuthorization := yamlOnlyAuthorizationPossible(cfg)
+	if cfg.BundleEnforcement == config.BundleEnforcementRequired {
+		metrics.BundleEnforcementRequired.Set(1)
+	} else {
+		metrics.BundleEnforcementRequired.Set(0)
+		slogger.Warn("enterprise bundle enforcement is explicitly optional",
+			"setting", "bundle_enforcement",
+			"yaml_only_authorization", yamlOnlyAuthorization,
+			"risk", "token exchange does not require enterprise policy participation",
+		)
+	}
 
 	// Initialize bundle manager. When bundle.enabled=false the handler
 	// receives the no-op Disabled manager and skips the engine call
@@ -190,6 +211,7 @@ func New(cfg *config.Settings, slogger *slog.Logger) (*Server, error) {
 		appProviders,
 		cfg.AllowedIssuers(),
 		cfg.RequiredAudience(),
+		cfg.RequireImmutableSubjectClaims(),
 		s.auditLogger,
 		slogger,
 		cfg.Server.TrustForwardedHeaders,
@@ -219,7 +241,13 @@ func New(cfg *config.Settings, slogger *slog.Logger) (*Server, error) {
 	if liveBundleMgr != nil {
 		bundleReporter = liveBundleMgr
 	}
-	mux.HandleFunc("GET /health", handler.HealthHandler(bundleReporter))
+	mux.HandleFunc("GET /health", handler.HealthHandler(bundleReporter, handler.SecurityPosture{
+		RequireImmutableSubjectClaims: cfg.RequireImmutableSubjectClaims(),
+		LegacySubjectOptOut:           !cfg.RequireImmutableSubjectClaims(),
+		BundleEnforcement:             cfg.BundleEnforcement,
+		EnterprisePolicyRequired:      cfg.BundleEnforcement == config.BundleEnforcementRequired,
+		YAMLOnlyAuthorization:         yamlOnlyAuthorization,
+	}))
 	mux.HandleFunc("GET /ready", handler.ReadinessHandler(&s.ready))
 	if cfg.Metrics.Enabled {
 		mux.Handle("GET /metrics", handler.MetricsHandler(cfg.Metrics.AuthToken))
@@ -242,6 +270,25 @@ func New(cfg *config.Settings, slogger *slog.Logger) (*Server, error) {
 	}
 
 	return s, nil
+}
+
+func yamlOnlyAuthorizationPossible(cfg *config.Settings) bool {
+	if cfg.BundleEnforcement == config.BundleEnforcementRequired {
+		return false
+	}
+	for app := range cfg.Apps {
+		covered := false
+		for _, configuredBundle := range cfg.Bundles {
+			if len(configuredBundle.Apps) == 0 || slices.Contains(configuredBundle.Apps, app) {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			return true
+		}
+	}
+	return false
 }
 
 // ListenAndServe starts the server and blocks until the context is cancelled.
@@ -382,6 +429,8 @@ func initBundleManager(cfg *config.Settings, slogger *slog.Logger) (bundle.Manag
 		}
 		mgr := bundle.NewLiveManager(loader, src, verify, slogger.With("bundle", bc.Name), bundle.LiveOpts{
 			Name:         bc.Name,
+			Apps:         bc.Apps,
+			Mandatory:    cfg.BundleEnforcement == config.BundleEnforcementRequired && len(bc.Apps) == 0,
 			PollInterval: bc.PollInterval,
 			MaxStaleness: bc.MaxStaleness,
 			FailMode:     bc.FailMode,
@@ -396,13 +445,14 @@ func initBundleManager(cfg *config.Settings, slogger *slog.Logger) (bundle.Manag
 		slogger.Info("bundle integration enabled",
 			"bundle", bc.Name,
 			"source", bc.Ref,
+			"apps", bc.Apps,
 			"digest", mgr.Digest(),
 			"poll_interval", bc.PollInterval,
 			"max_staleness", bc.MaxStaleness,
 			"fail_mode", bc.FailMode,
 		)
 	}
-	mgr := bundle.NewMultiManager(children)
+	mgr := bundle.NewMultiManager(children, cfg.BundleEnforcement)
 	return mgr, mgr, nil
 }
 

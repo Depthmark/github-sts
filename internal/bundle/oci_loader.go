@@ -25,6 +25,11 @@ import (
 // tarball is the compressed OPA bundle layer as produced by `opa build`.
 type OCILoader struct{}
 
+type verificationError struct{ err error }
+
+func (e *verificationError) Error() string { return e.err.Error() }
+func (e *verificationError) Unwrap() error { return e.err }
+
 func (OCILoader) Fetch(ctx context.Context, src Source, verify VerifyConfig) (Fetch, error) {
 	if src.Scheme() != "oci" {
 		return Fetch{}, fmt.Errorf("bundle oci loader: unsupported source scheme %q", src.Scheme())
@@ -41,20 +46,27 @@ func (OCILoader) Fetch(ctx context.Context, src Source, verify VerifyConfig) (Fe
 	if err != nil {
 		return Fetch{}, err
 	}
+	resolvedRef, expectedDigest, err := resolveOCIReference(ref, opts)
+	if err != nil {
+		return Fetch{}, fmt.Errorf("bundle oci loader: resolving %q: %w", src.Raw, err)
+	}
 
 	if !verify.SkipVerification {
-		if err := verifyCosignSignature(ctx, ref, verify, opts); err != nil {
-			return Fetch{}, err
+		if err := verifyCosignSignature(ctx, resolvedRef, verify, opts); err != nil {
+			return Fetch{}, &verificationError{err: err}
 		}
 	}
 
-	img, err := remote.Image(ref, opts...)
+	img, err := remote.Image(resolvedRef, opts...)
 	if err != nil {
 		return Fetch{}, fmt.Errorf("bundle oci loader: pulling %q: %w", src.Raw, err)
 	}
 	digest, err := img.Digest()
 	if err != nil {
 		return Fetch{}, fmt.Errorf("bundle oci loader: resolving digest for %q: %w", src.Raw, err)
+	}
+	if digest.String() != expectedDigest {
+		return Fetch{}, fmt.Errorf("bundle oci loader: resolved digest changed: expected %s, got %s", expectedDigest, digest.String())
 	}
 	layer, err := selectBundleLayer(img)
 	if err != nil {
@@ -73,6 +85,18 @@ func (OCILoader) Fetch(ctx context.Context, src Source, verify VerifyConfig) (Fe
 		return Fetch{}, fmt.Errorf("bundle oci loader: selected bundle layer is empty")
 	}
 	return Fetch{Tarball: data, Digest: digest.String()}, nil
+}
+
+func resolveOCIReference(ref name.Reference, opts []remote.Option) (name.Reference, string, error) {
+	if digest, ok := ref.(name.Digest); ok {
+		return digest, digest.DigestStr(), nil
+	}
+	descriptor, err := remote.Get(ref, opts...)
+	if err != nil {
+		return nil, "", err
+	}
+	digest := descriptor.Digest.String()
+	return ref.Context().Digest(digest), digest, nil
 }
 
 func registryRemoteOptions(ctx context.Context, auth RegistryAuthConfig) ([]remote.Option, error) {
