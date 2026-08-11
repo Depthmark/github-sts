@@ -5,13 +5,13 @@
 # Pinned by multi-arch index digest so a registry-side retag cannot swap base.
 # Refresh with: docker buildx imagetools inspect cgr.dev/chainguard/go:latest
 # ─────────────────────────────────────────────────────────────────────────────
-FROM cgr.dev/chainguard/go:latest@sha256:1510dafa083aa9b16b61b605d1364eca861ae14e3f141f4619bbd3e38b18cf16 AS builder
+FROM cgr.dev/chainguard/go:latest@sha256:6d5010125095720198390ab38a3b5d174f1c748a122d5deda3a17590c8f3f9a7 AS builder
 
 WORKDIR /build
 
 # Pin module/build cache to fixed paths so BuildKit cache mounts are stable
 # regardless of the base image's GOPATH/HOME defaults.
-ENV GOMODCACHE=/cache/mod GOCACHE=/cache/build
+ENV GOMODCACHE=/cache/mod GOCACHE=/cache/build GOTOOLCHAIN=local
 
 COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/cache/mod,sharing=locked \
@@ -37,7 +37,7 @@ RUN --mount=type=cache,target=/cache/mod,sharing=locked \
 # nonroot uid 65532 by default. Pinned by multi-arch index digest.
 # Refresh with: docker buildx imagetools inspect cgr.dev/chainguard/static:latest
 # ─────────────────────────────────────────────────────────────────────────────
-FROM cgr.dev/chainguard/static:latest@sha256:77d8b8925dc27970ec2f48243f44c7a260d52c49cd778288e4ee97566e0cb75b
+FROM cgr.dev/chainguard/static:latest@sha256:399c8cb4858f05aaa33f43f02a2e75f28d40f016c0f86e5ba6075769e3303791
 
 LABEL org.opencontainers.image.source="https://github.com/Depthmark/github-sts"
 LABEL org.opencontainers.image.description="GitHub Security Token Service (STS) - OIDC to GitHub token exchange"

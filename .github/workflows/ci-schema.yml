@@ -8,6 +8,7 @@ on:
       - 'internal/policy/yaml/schema_v1.json'
       - 'config/examples/*.sts.yaml'
       - '.github/sts/**/*.sts.yaml'
+      - 'go.mod'
       - 'policies/**'
       - '.github/workflows/ci-schema.yml'
   push:
@@ -16,6 +17,7 @@ on:
       - 'internal/policy/yaml/schema_v1.json'
       - 'config/examples/*.sts.yaml'
       - '.github/sts/**/*.sts.yaml'
+      - 'go.mod'
       - 'policies/**'
       - '.github/workflows/ci-schema.yml'
   workflow_call: {}
@@ -36,6 +38,11 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
 
       - name: Install check-jsonschema
         run: pipx install check-jsonschema
