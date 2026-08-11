@@ -497,32 +497,26 @@ func TestExchange_BundleInputShape(t *testing.T) {
 	}
 }
 
-func TestExchange_CheckedInBaselineConformance(t *testing.T) {
-	manager := checkedInPolicyManager(t)
+func TestExchange_ExamplePolicyRegoConformance(t *testing.T) {
+	manager := examplePolicyManager(t)
 	app := &mockExchangeApp{target: github.TargetIdentity{
-		Scope: "Depthmark/github-sts", Owner: "Depthmark", OwnerID: "268749784",
-		Repository: "github-sts", RepositoryID: "1198676434",
+		Scope: "example-org/example-repo", Owner: "example-org", OwnerID: "123456",
+		Repository: "example-repo", RepositoryID: "456789",
 	}}
-	subject := "repo:Depthmark@268749784/github-sts@1198676434:ref:refs/heads/main"
-	pol := &policy.TrustPolicy{
-		Issuer: oidc.GitHubActionsIssuer, Audience: "github-sts",
-		ClaimPattern: map[string]string{
-			"ref":          "refs/heads/main",
-			"workflow_ref": `[^/]+/[^/]+/\.github/workflows/release-please\.yml@refs/heads/main`,
-		},
-		Permissions: map[string]string{
-			"contents": "write", "checks": "write", "pull_requests": "write",
-		},
-		GitHub: &policy.GitHubPolicy{
-			Sources: []policy.GitHubRepository{{OwnerID: "268749784", RepositoryID: "1198676434"}},
-			Target:  policy.GitHubRepository{OwnerID: "268749784", RepositoryID: "1198676434"},
-		},
+	subject := "repo:example-org@123456/example-repo@456789:ref:refs/heads/main"
+	rawPolicy, err := os.ReadFile("../../config/examples/ci.sts.yaml")
+	if err != nil {
+		t.Fatalf("read CI example trust policy: %v", err)
+	}
+	pol, err := policy.ParsePolicy(rawPolicy)
+	if err != nil {
+		t.Fatalf("parse CI example trust policy: %v", err)
 	}
 	al := &recordingAuditLogger{}
 	h := &ExchangeHandler{
 		jtiCache:                      &mockJTICache{isNew: true},
 		policyLoader:                  &mockPolicyLoader{pol: pol},
-		appProviders:                  map[string]github.ExchangeApp{"depthmark-release-bot": app},
+		appProviders:                  map[string]github.ExchangeApp{"default": app},
 		allowedIssuers:                []string{oidc.GitHubActionsIssuer},
 		requireImmutableSubjectClaims: true,
 		auditLogger:                   al,
@@ -530,14 +524,14 @@ func TestExchange_CheckedInBaselineConformance(t *testing.T) {
 		bundleManager:                 manager,
 		validator: func(_ context.Context, _ string, _ []string) (oidc.Claims, error) {
 			return oidc.Claims{
-				"iss": oidc.GitHubActionsIssuer, "sub": subject, "aud": "github-sts", "jti": "rego-conformance",
-				"ref": "refs/heads/main", "workflow_ref": "Depthmark/github-sts/.github/workflows/release-please.yml@refs/heads/main",
-				"repository": "Depthmark/github-sts", "repository_owner": "Depthmark",
-				"repository_id": "1198676434", "repository_owner_id": "268749784",
+				"iss": oidc.GitHubActionsIssuer, "sub": subject, "aud": "https://sts.example.com", "jti": "rego-example-conformance",
+				"ref":        "refs/heads/main",
+				"repository": "example-org/example-repo", "repository_owner": "example-org",
+				"repository_id": "456789", "repository_owner_id": "123456",
 			}, nil
 		},
 	}
-	req := httptest.NewRequest(http.MethodGet, "/sts/exchange?scope=Depthmark/github-sts&identity=release&app=depthmark-release-bot", nil)
+	req := httptest.NewRequest(http.MethodGet, "/sts/exchange?scope=example-org/example-repo&identity=ci&app=default", nil)
 	req.Header.Set("Authorization", "Bearer accepted")
 	w := httptest.NewRecorder()
 
@@ -546,7 +540,7 @@ func TestExchange_CheckedInBaselineConformance(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
 	}
-	if app.mintCalls != 1 || app.lastTarget.RepositoryID != "1198676434" {
+	if app.mintCalls != 1 || app.lastTarget.RepositoryID != "456789" {
 		t.Fatalf("immutable target was not minted exactly once: calls=%d target=%+v", app.mintCalls, app.lastTarget)
 	}
 	event := al.lastEvent()
@@ -556,31 +550,31 @@ func TestExchange_CheckedInBaselineConformance(t *testing.T) {
 	if event.OrgDecision == nil || !event.OrgDecision.Applicable || !event.OrgDecision.Evaluated || !event.OrgDecision.Allow {
 		t.Fatalf("org decision does not prove mandatory participation: %+v", event.OrgDecision)
 	}
-	if len(event.BundleDecisions) != 1 || event.BundleDecisions[0].BundleName != "enterprise-baseline" || event.BundleDecisions[0].Digest == "" {
+	if len(event.BundleDecisions) != 1 || event.BundleDecisions[0].BundleName != "example-enterprise-baseline" || event.BundleDecisions[0].Digest == "" {
 		t.Fatalf("bundle decisions missing exact participant: %+v", event.BundleDecisions)
 	}
-	if event.BundleDigest != "enterprise-baseline="+event.BundleDecisions[0].Digest {
+	if event.BundleDigest != "example-enterprise-baseline="+event.BundleDecisions[0].Digest {
 		t.Fatalf("bundle_digest = %q, package digest = %q", event.BundleDigest, event.BundleDecisions[0].Digest)
 	}
 }
 
-func checkedInPolicyManager(t *testing.T) bundle.Manager {
+func examplePolicyManager(t *testing.T) bundle.Manager {
 	t.Helper()
-	rego, err := os.ReadFile("../../policies/depthmark_lab_baseline.rego")
+	rego, err := os.ReadFile("../../policies/example_enterprise_baseline.rego")
 	if err != nil {
-		t.Fatalf("read baseline: %v", err)
+		t.Fatalf("read example baseline: %v", err)
 	}
-	data, err := os.ReadFile("../../policies/data.json")
+	data, err := os.ReadFile("../../policies/example_data.json")
 	if err != nil {
-		t.Fatalf("read baseline data: %v", err)
+		t.Fatalf("read example baseline data: %v", err)
 	}
 
 	var buffer bytes.Buffer
 	gzipWriter := gzip.NewWriter(&buffer)
 	tarWriter := tar.NewWriter(gzipWriter)
 	for name, content := range map[string][]byte{
-		"policies/depthmark_lab_baseline.rego": rego,
-		"data.json":                            data,
+		"policies/example_enterprise_baseline.rego": rego,
+		"data.json": data,
 	} {
 		if err := tarWriter.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: int64(len(content))}); err != nil {
 			t.Fatalf("write bundle header: %v", err)
@@ -597,14 +591,14 @@ func checkedInPolicyManager(t *testing.T) bundle.Manager {
 	}
 	path := t.TempDir() + "/bundle.tar.gz"
 	if err := os.WriteFile(path, buffer.Bytes(), 0o600); err != nil {
-		t.Fatalf("write checked-in baseline bundle: %v", err)
+		t.Fatalf("write example baseline bundle: %v", err)
 	}
 	live := bundle.NewLiveManager(
 		bundle.FilesystemLoader{}, bundle.Source{Raw: "file://" + path}, bundle.VerifyConfig{}, discardSlogger(),
-		bundle.LiveOpts{Name: "enterprise-baseline", Mandatory: true},
+		bundle.LiveOpts{Name: "example-enterprise-baseline", Mandatory: true},
 	)
 	if err := live.Init(context.Background()); err != nil {
-		t.Fatalf("initialize checked-in mandatory baseline: %v", err)
+		t.Fatalf("initialize example mandatory baseline: %v", err)
 	}
 	return bundle.NewMultiManager([]bundle.LifecycleManager{live}, bundle.EnforcementRequired)
 }

@@ -62,21 +62,10 @@ func TestLiveManager_InitSuccess(t *testing.T) {
 	}
 }
 
-func TestLiveManager_MandatoryAdmissionAndStatus(t *testing.T) {
-	regoSource, err := os.ReadFile("../../policies/depthmark_lab_baseline.rego")
-	if err != nil {
-		t.Fatalf("read baseline: %v", err)
-	}
-	data, err := os.ReadFile("../../policies/data.json")
-	if err != nil {
-		t.Fatalf("read baseline data: %v", err)
-	}
+func TestLiveManager_ExampleMandatoryAdmissionAndStatus(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bundle.tar.gz")
-	if err := os.WriteFile(path, buildTarball(t, map[string]string{
-		"/policies/depthmark_lab_baseline.rego": string(regoSource),
-		"/data.json":                            string(data),
-	}), 0o600); err != nil {
+	if err := os.WriteFile(path, exampleBaselineTarball(t), 0o600); err != nil {
 		t.Fatalf("writing fixture: %v", err)
 	}
 
@@ -88,7 +77,7 @@ func TestLiveManager_MandatoryAdmissionAndStatus(t *testing.T) {
 		t.Fatalf("Init mandatory baseline: %v", err)
 	}
 	statuses := mgr.BundleStatuses()
-	if len(statuses) != 1 || !statuses[0].Mandatory || statuses[0].PolicyRevision != "2026-08-11.1" {
+	if len(statuses) != 1 || !statuses[0].Mandatory || statuses[0].PolicyRevision != "example-v1" {
 		t.Fatalf("mandatory status = %+v", statuses)
 	}
 	decision, err := mgr.Eval(context.Background(), Input{})

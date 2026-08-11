@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	trustpolicy "github.com/depthmark/github-sts/internal/policy"
 )
 
 // buildTarball builds an OPA-style bundle tarball in memory from a map
@@ -41,6 +43,35 @@ func buildTarball(t *testing.T, files map[string]string) []byte {
 		t.Fatalf("gz close: %v", err)
 	}
 	return buf.Bytes()
+}
+
+func exampleBaselineTarball(t *testing.T) []byte {
+	t.Helper()
+	regoSource, err := os.ReadFile("../../policies/example_enterprise_baseline.rego")
+	if err != nil {
+		t.Fatalf("read example baseline: %v", err)
+	}
+	data, err := os.ReadFile("../../policies/example_data.json")
+	if err != nil {
+		t.Fatalf("read example baseline data: %v", err)
+	}
+	return buildTarball(t, map[string]string{
+		"/policies/example_enterprise_baseline.rego": string(regoSource),
+		"/data.json": string(data),
+	})
+}
+
+func loadExampleTrustPolicy(t *testing.T, name string) *trustpolicy.TrustPolicy {
+	t.Helper()
+	raw, err := os.ReadFile("../../config/examples/" + name + ".sts.yaml")
+	if err != nil {
+		t.Fatalf("read example trust policy %q: %v", name, err)
+	}
+	parsed, err := trustpolicy.ParsePolicy(raw)
+	if err != nil {
+		t.Fatalf("parse example trust policy %q: %v", name, err)
+	}
+	return parsed
 }
 
 // TestEngine_DefaultDenyOnEmptyBundle counter-validates that a bundle
@@ -250,7 +281,7 @@ inventory contains {
   "exception_id": "EXC-001",
   "rule_id": "ENT-001",
   "owner": "platform-team",
-  "reason": "release automation",
+  "reason": "example automation",
   "approved_by": "security-team",
   "created_at": "2026-06-01T00:00:00Z",
   "expires_at": "2099-12-31T23:59:59Z"
@@ -278,61 +309,39 @@ inventory contains {
 	}
 }
 
-func TestEngine_CheckedInBaselineContract(t *testing.T) {
-	rego, err := os.ReadFile("../../policies/depthmark_lab_baseline.rego")
-	if err != nil {
-		t.Fatalf("read baseline: %v", err)
-	}
-	data, err := os.ReadFile("../../policies/data.json")
-	if err != nil {
-		t.Fatalf("read baseline data: %v", err)
-	}
-	eng, err := NewEngine(context.Background(), buildTarball(t, map[string]string{
-		"/policies/depthmark_lab_baseline.rego": string(rego),
-		"/data.json":                            string(data),
-	}))
+func TestEngine_ExampleTrustPoliciesConformToBaseline(t *testing.T) {
+	eng, err := NewEngine(context.Background(), exampleBaselineTarball(t))
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
 	}
 
-	input := Input{
-		Mode: ModeExchange,
-		Request: InputRequest{
-			Scope: "Depthmark/github-sts", App: "depthmark-release-bot", Identity: "release",
-		},
-		SourceIdentity: &InputSourceIdentity{
-			Version: SourceIdentityVersionV1, Issuer: "https://token.actions.githubusercontent.com",
-			RepositoryOwner: "Depthmark", RepositoryOwnerID: "268749784",
-			Repository: "Depthmark/github-sts", RepositoryID: "1198676434",
-		},
-		TargetIdentity: &InputTargetIdentity{
-			Version: TargetIdentityVersionV1, Scope: "Depthmark/github-sts",
-			RepositoryOwner: "Depthmark", RepositoryOwnerID: "268749784",
-			Repository: "Depthmark/github-sts", RepositoryID: "1198676434",
-		},
-		YAMLPolicy: InputYAMLPolicy{GitHub: &InputGitHubPolicy{
-			Sources: []InputGitHubRepository{{OwnerID: "268749784", RepositoryID: "1198676434"}},
-			Target:  InputGitHubRepository{OwnerID: "268749784", RepositoryID: "1198676434"},
-		}},
-		Requested: &InputRequested{
-			Permissions: map[string]string{
-				"contents": "write", "checks": "write", "pull_requests": "write",
-			},
-			Repositories: []string{"github-sts"}, RepositoryIDs: []string{"1198676434"},
-			OrganizationWide: false,
-		},
+	tests := []struct {
+		policy   string
+		scope    string
+		identity string
+		source   string
+		target   string
+	}{
+		{policy: "ci", scope: "example-org/example-repo", identity: "ci", source: "example-org/example-repo", target: "example-repo"},
+		{policy: "deploy", scope: "example-org/example-repo", identity: "deploy", source: "example-org/example-repo", target: "example-repo"},
+		{policy: "cross-repo-ci", scope: "example-org/backend", identity: "cross-repo-ci", source: "example-org/example-repo", target: "backend"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.policy, func(t *testing.T) {
+			input := examplePolicyInput(loadExampleTrustPolicy(t, tt.policy), tt.scope, tt.identity, tt.source, tt.target)
+			decision, err := eng.Eval(context.Background(), input)
+			if err != nil {
+				t.Fatalf("Eval example policy: %v", err)
+			}
+			if !decision.Allow {
+				t.Fatalf("baseline denied %s example: %+v", tt.policy, decision)
+			}
+		})
 	}
 
-	decision, err := eng.Eval(context.Background(), input)
-	if err != nil {
-		t.Fatalf("Eval allow fixture: %v", err)
-	}
-	if !decision.Allow {
-		t.Fatalf("baseline denied valid release input: %+v", decision)
-	}
-
+	input := examplePolicyInput(loadExampleTrustPolicy(t, "ci"), "example-org/example-repo", "ci", "example-org/example-repo", "example-repo")
 	input.Requested.Permissions = map[string]string{"contents": "admin"}
-	decision, err = eng.Eval(context.Background(), input)
+	decision, err := eng.Eval(context.Background(), input)
 	if err != nil {
 		t.Fatalf("Eval deny fixture: %v", err)
 	}
@@ -341,24 +350,38 @@ func TestEngine_CheckedInBaselineContract(t *testing.T) {
 	}
 }
 
-func TestMandatoryEngine_CheckedInBaselineAdmission(t *testing.T) {
-	regoSource, err := os.ReadFile("../../policies/depthmark_lab_baseline.rego")
-	if err != nil {
-		t.Fatalf("read baseline: %v", err)
+func examplePolicyInput(p *trustpolicy.TrustPolicy, scope, identity, sourceRepository, targetRepository string) Input {
+	source := p.GitHub.Sources[0]
+	target := p.GitHub.Target
+	return Input{
+		Mode:    ModeExchange,
+		Request: InputRequest{Scope: scope, App: "default", Identity: identity},
+		SourceIdentity: &InputSourceIdentity{
+			Version: SourceIdentityVersionV1, Issuer: "https://token.actions.githubusercontent.com",
+			RepositoryOwner: "example-org", RepositoryOwnerID: string(source.OwnerID),
+			Repository: sourceRepository, RepositoryID: string(source.RepositoryID),
+			ImmutableSubject: true, ImmutableSubjectRequired: true,
+		},
+		TargetIdentity: &InputTargetIdentity{
+			Version: TargetIdentityVersionV1, Scope: scope,
+			RepositoryOwner: "example-org", RepositoryOwnerID: string(target.OwnerID),
+			Repository: scope, RepositoryID: string(target.RepositoryID),
+		},
+		YAMLPolicy: FromPolicy(p),
+		Requested: &InputRequested{
+			Permissions: p.Permissions, Repositories: []string{targetRepository},
+			RepositoryIDs: []string{string(target.RepositoryID)},
+		},
 	}
-	data, err := os.ReadFile("../../policies/data.json")
-	if err != nil {
-		t.Fatalf("read baseline data: %v", err)
-	}
-	eng, err := NewMandatoryEngine(context.Background(), buildTarball(t, map[string]string{
-		"/policies/depthmark_lab_baseline.rego": string(regoSource),
-		"/data.json":                            string(data),
-	}))
+}
+
+func TestMandatoryEngine_ExampleBaselineAdmission(t *testing.T) {
+	eng, err := NewMandatoryEngine(context.Background(), exampleBaselineTarball(t))
 	if err != nil {
 		t.Fatalf("NewMandatoryEngine: %v", err)
 	}
 	metadata := eng.Metadata()
-	if metadata.ContractVersion != "v1" || metadata.PolicyRevision != "2026-08-11.1" {
+	if metadata.ContractVersion != "v1" || metadata.PolicyRevision != "example-v1" {
 		t.Fatalf("mandatory metadata = %+v", metadata)
 	}
 	if len(eng.decisions) != 1 || eng.decisions[0].Query != mandatoryEntrypoint {
@@ -372,10 +395,10 @@ func TestMandatoryEngine_AdmissionRejectsIncompleteBundles(t *testing.T) {
   "policy_revision": "test-1",
   "controls": ["immutable_identity", "permission_boundary"],
 	"admission": {
-	  "app": "depthmark-release-bot",
-	  "identity": "release",
-	  "source": {"owner_id": "268749784", "repository_id": "1198676434"},
-	  "target": {"owner_id": "268749784", "repository_id": "1198676434"},
+	  "app": "default",
+	  "identity": "ci",
+	  "source": {"owner_id": "123456", "repository_id": "456789"},
+	  "target": {"owner_id": "123456", "repository_id": "456789"},
 	  "permissions": {"contents": "read"},
 	},
 }`
@@ -414,7 +437,7 @@ decision := {"allow": true, "reasons": ["allow all"]}
 import rego.v1
 default decision := {"allow": false, "reasons": ["deny"]}
 decision := {"allow": true, "reasons": ["app only"]} if {
-  input.request.app == "depthmark-release-bot"
+  input.request.app == "default"
 }
 ` + metadata,
 			wantErr: "allowed a broker-generated negative probe",
@@ -425,9 +448,9 @@ decision := {"allow": true, "reasons": ["app only"]} if {
 import rego.v1
 default decision := {"allow": false, "reasons": ["deny"]}
 decision := {"allow": true, "reasons": ["incomplete contract"]} if {
-  input.request.app == "depthmark-release-bot"
-  input.source_identity.repository_owner_id == "268749784"
-  input.source_identity.repository_id == "1198676434"
+  input.request.app == "default"
+  input.source_identity.repository_owner_id == "123456"
+  input.source_identity.repository_id == "456789"
   input.requested.permissions.contents == "read"
 }
 ` + metadata,
@@ -524,7 +547,7 @@ func TestValidateEnterprisePolicyData_Exceptions(t *testing.T) {
 		{
 			name: "same organization",
 			mutate: func(_ map[string]any, exception map[string]any) {
-				exception["source"].(map[string]any)["owner_id"] = "268749784"
+				exception["source"].(map[string]any)["owner_id"] = "123456"
 			},
 			wantErr: "owner IDs must differ",
 		},
@@ -663,9 +686,9 @@ func validEnterpriseExceptionData(now time.Time) (map[string]any, map[string]any
 		"exception_id": "xorg-001",
 		"rule_id":      "sts.relationship.cross_org",
 		"source":       map[string]any{"owner_id": "9001", "repository_id": "9002"},
-		"target":       map[string]any{"owner_id": "268749784", "repository_id": "1198676434"},
-		"app":          "depthmark-release-bot",
-		"identity":     "release",
+		"target":       map[string]any{"owner_id": "123456", "repository_id": "456789"},
+		"app":          "default",
+		"identity":     "ci",
 		"permission_ceiling": map[string]any{
 			"contents": "read",
 		},
