@@ -1,7 +1,8 @@
-.PHONY: build test test-race test-oci-cosign-local lint coverage vuln-check clean docker ci act act-lint act-test act-build validate-examples
+.PHONY: build test test-race test-rego test-oci-cosign-local lint coverage vuln-check clean docker ci act act-lint act-test act-build validate-examples
 
 SCHEMA       ?= internal/policy/yaml/schema_v1.json
 EXAMPLES_DIR ?= config/examples
+REGO_DIR     ?= policies
 
 # Build all packages
 build:
@@ -14,6 +15,13 @@ test:
 # Run tests with race detector
 test-race:
 	go test -race ./...
+
+# Format-check, compile, and test the enterprise Rego contract.
+test-rego:
+	@command -v opa >/dev/null 2>&1 || { echo "install OPA: https://www.openpolicyagent.org/docs/latest/#running-opa"; exit 1; }
+	opa fmt --fail $(REGO_DIR)/*.rego >/dev/null
+	opa check --strict $(REGO_DIR)
+	opa test $(REGO_DIR)
 
 # Run local OCI/cosign integration test using a throwaway Docker registry.
 # Requires docker, opa, and go. Uses cosign directly when installed, otherwise
@@ -54,10 +62,10 @@ clean:
 # that don't conform.
 validate-examples:
 	@command -v check-jsonschema >/dev/null 2>&1 || { echo "install: pipx install check-jsonschema"; exit 1; }
-	check-jsonschema --schemafile $(SCHEMA) $(EXAMPLES_DIR)/*.sts.yaml
+	check-jsonschema --schemafile $(SCHEMA) $(EXAMPLES_DIR)/*.sts.yaml .github/sts/depthmark-release-bot/release.sts.yaml
 
 # Run all checks (CI)
-ci: lint test-race vuln-check build bin/github-sts validate-examples
+ci: lint test-race test-rego vuln-check build bin/github-sts validate-examples
 
 # Run all CI jobs locally with act
 act:
