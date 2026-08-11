@@ -1,8 +1,9 @@
-.PHONY: build test test-race test-rego test-oci-cosign-local lint coverage vuln-check clean docker ci act act-lint act-test act-build validate-examples
+.PHONY: build test test-race test-rego test-oci-cosign-local lint coverage vuln-check clean docker ci act act-lint act-test act-build validate-examples validate-repository-policies
 
 SCHEMA       ?= internal/policy/yaml/schema_v1.json
 EXAMPLES_DIR ?= config/examples
 REGO_DIR     ?= policies
+REPOSITORY_POLICIES ?= $(wildcard .github/sts/*/*.sts.yaml)
 
 # Build all packages
 build:
@@ -62,7 +63,12 @@ clean:
 # that don't conform.
 validate-examples:
 	@command -v check-jsonschema >/dev/null 2>&1 || { echo "install: pipx install check-jsonschema"; exit 1; }
-	check-jsonschema --schemafile $(SCHEMA) $(EXAMPLES_DIR)/*.sts.yaml .github/sts/depthmark-release-bot/release.sts.yaml
+	check-jsonschema --schemafile $(SCHEMA) $(EXAMPLES_DIR)/*.sts.yaml
+
+# Validate repository-owned policies separately from synthetic examples.
+validate-repository-policies:
+	@command -v check-jsonschema >/dev/null 2>&1 || { echo "install: pipx install check-jsonschema"; exit 1; }
+	check-jsonschema --schemafile $(SCHEMA) $(REPOSITORY_POLICIES)
 
 # Run all checks (CI)
 ci: lint test-race test-rego vuln-check build bin/github-sts validate-examples

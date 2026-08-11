@@ -1,5 +1,5 @@
-# Trust policy for a CI identity.
-# https://github.com/Depthmark/github-sts
+# Synthetic trust policy used by schema and Rego conformance tests.
+# Example request: app=default, identity=ci, scope=example-org/example-repo.
 issuer: https://token.actions.githubusercontent.com
 claim_pattern:
   ref: refs/heads/main

@@ -7,7 +7,6 @@ on:
     paths:
       - 'internal/policy/yaml/schema_v1.json'
       - 'config/examples/*.sts.yaml'
-      - '.github/sts/**/*.sts.yaml'
       - 'go.mod'
       - 'policies/**'
       - '.github/workflows/ci-schema.yml'
@@ -16,7 +15,6 @@ on:
     paths:
       - 'internal/policy/yaml/schema_v1.json'
       - 'config/examples/*.sts.yaml'
-      - '.github/sts/**/*.sts.yaml'
       - 'go.mod'
       - 'policies/**'
       - '.github/workflows/ci-schema.yml'

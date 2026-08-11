@@ -1,6 +1,6 @@
-# Target-owned policy allowing two exact source repositories to request a
-# token for repository ID 456791. Call with scope=myorg/backend.
-# https://github.com/Depthmark/github-sts
+# Synthetic target-owned policy used by schema and Rego conformance tests.
+# It allows two example sources to request repository ID 456791 with
+# app=default, identity=cross-repo-ci, scope=example-org/backend.
 issuer: https://token.actions.githubusercontent.com
 claim_pattern:
   ref: 'refs/heads/.*'
