@@ -1,0 +1,78 @@
+---
+title: Variables d'environnement
+description: Toutes les variables d'environnement prises en charge, les valeurs valides, les valeurs par défaut et les notes de sécurité.
+weight: 3
+translationKey: environment-variables
+translationStatus: pending-review
+---
+
+Toutes les variables utilisent le préfixe `GITHUBSTS_`. Les variables par App suivent le modèle `GITHUBSTS_APP_{NAME}_{FIELD}`.
+
+## Paramètres du serveur
+
+| Variable | Par défaut | Description |
+|---|---|---|
+| `GITHUBSTS_CONFIG_PATH` | — | Chemin vers le fichier de configuration YAML |
+| `GITHUBSTS_SERVER_HOST` | `0.0.0.0` | Hôte d'écoute HTTP |
+| `GITHUBSTS_SERVER_PORT` | `8080` | Port d'écoute HTTP |
+| `GITHUBSTS_SERVER_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
+| `GITHUBSTS_SERVER_SUPPRESS_HEALTH_LOGS` | `true` | Supprimer les journaux d'accès des points de terminaison de santé |
+| `GITHUBSTS_SERVER_SHUTDOWN_TIMEOUT` | `10s` | Délai d'arrêt gracieux |
+| `GITHUBSTS_SERVER_TRUST_FORWARDED_HEADERS` | `false` | Faire confiance à `X-Forwarded-For` pour l'IP du client |
+
+## Paramètres de la GitHub App
+
+| Variable | Par défaut | Description |
+|---|---|---|
+| `GITHUBSTS_APP_{NAME}_APP_ID` | *obligatoire* | ID numérique de la GitHub App |
+| `GITHUBSTS_APP_{NAME}_PRIVATE_KEY` | *obligatoire* | Chaîne PEM (mutuellement exclusive avec `_PATH`) |
+| `GITHUBSTS_APP_{NAME}_PRIVATE_KEY_PATH` | — | Chemin vers le fichier PEM |
+| `GITHUBSTS_APP_{NAME}_ORG_POLICY_REPO` | — | Dépôt des politiques d'organisation (par ex. `.github`) |
+| `GITHUBSTS_APP_{NAME}_POLICY_RESOLUTION` | `org_first` | Mode de résolution : `org_first`, `repo_first` (obsolète) ou `org_only` |
+
+## Paramètres de politique et de sécurité
+
+| Variable | Par défaut | Description |
+|---|---|---|
+| `GITHUBSTS_POLICY_BASE_PATH` | `.github/sts` | Chemin de base dans les dépôts pour les politiques de confiance |
+| `GITHUBSTS_POLICY_CACHE_TTL` | `60s` | TTL du cache de politique (`0` pour désactiver) |
+| `GITHUBSTS_OIDC_ALLOWED_ISSUERS` | — | Liste d'autorisation d'émetteurs séparée par des virgules. Obligatoire ; une liste vide est une erreur de validation. |
+| `GITHUBSTS_OIDC_REQUIRED_AUDIENCE` | — | Revendication `aud` obligatoire au niveau du serveur. Lorsqu'elle est définie, chaque jeton doit porter cette valeur (défense en profondeur en plus du champ `audience:` par politique). |
+| `GITHUBSTS_JTI_BACKEND` | `memory` | `memory` ou `redis` |
+| `GITHUBSTS_JTI_REDIS_URL` | — | URL de connexion Redis (lorsque backend=`redis`) |
+| `GITHUBSTS_JTI_TTL` | `1h` | Fenêtre de protection contre le rejeu JTI |
+
+## Paramètres d'audit
+
+| Variable | Par défaut | Description |
+|---|---|---|
+| `GITHUBSTS_AUDIT_FILE_ENABLED` | `true` | Activer la journalisation d'audit par fichier |
+| `GITHUBSTS_AUDIT_FILE_PATH` | `/var/log/github-sts/audit.json` | Chemin du fichier de journal d'audit |
+| `GITHUBSTS_AUDIT_BUFFER_SIZE` | `1024` | Taille du tampon du canal d'audit |
+
+## Paramètres des métriques
+
+| Variable | Par défaut | Description |
+|---|---|---|
+| `GITHUBSTS_METRICS_ENABLED` | `true` | Activer les métriques Prometheus |
+| `GITHUBSTS_METRICS_AUTH_TOKEN` | — | Jeton Bearer pour le point de terminaison `/metrics` (vide = non authentifié) |
+| `GITHUBSTS_METRICS_RATE_LIMIT_POLL_ENABLED` | `true` | Interroger `GET /rate_limit` périodiquement |
+| `GITHUBSTS_METRICS_RATE_LIMIT_POLL_INTERVAL` | `60s` | Intervalle d'interrogation de la limite de débit |
+| `GITHUBSTS_METRICS_REACHABILITY_PROBE_ENABLED` | `true` | Sonder l'accessibilité de l'API GitHub |
+| `GITHUBSTS_METRICS_REACHABILITY_PROBE_INTERVAL` | `30s` | Intervalle de la sonde d'accessibilité |
+
+## Paramètres de limitation de débit
+
+| Variable | Par défaut | Description |
+|---|---|---|
+| `GITHUBSTS_RATE_LIMIT_ENABLED` | `false` | Activer la limitation de débit par IP sur `/sts/exchange` |
+| `GITHUBSTS_RATE_LIMIT_RATE` | `10` | Requêtes par seconde par IP |
+| `GITHUBSTS_RATE_LIMIT_BURST` | `20` | Taille maximale de rafale par IP |
+| `GITHUBSTS_RATE_LIMIT_EXEMPT_CIDRS` | — | Plages CIDR exemptées de la limitation de débit |
+
+## Notes de sécurité
+
+- **Clés privées :** Préférez `GITHUBSTS_APP_{NAME}_PRIVATE_KEY_PATH` à `_PRIVATE_KEY`. Les variables d'environnement apparaissent dans les listes de processus et les points de terminaison de débogage. Montez les clés comme fichiers depuis un magasin de secrets.
+- **Audience :** Définissez `GITHUBSTS_OIDC_REQUIRED_AUDIENCE` en production. C'est une défense en profondeur en plus du champ `audience:` par politique.
+- **Backend JTI :** Utilisez `redis` pour les déploiements multi-réplicas. Le backend `memory` est par instance et n'empêche pas le rejeu inter-réplicas.
+- **Liste d'autorisation d'émetteurs :** `GITHUBSTS_OIDC_ALLOWED_ISSUERS` est obligatoire. Une liste vide est une erreur de validation, pas un repli « accepter n'importe quel émetteur ».
