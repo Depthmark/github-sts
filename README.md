@@ -11,6 +11,7 @@
   <a href="https://github.com/Depthmark/github-sts/blob/main/LICENSE"><img src="https://img.shields.io/github/license/Depthmark/github-sts?style=flat-square" alt="License"></a>
   <a href="https://pkg.go.dev/github.com/depthmark/github-sts"><img src="https://img.shields.io/badge/Go-1.26+-00ADD8?style=flat-square&logo=go&logoColor=white" alt="Go"></a>
   <a href="https://github.com/Depthmark/github-sts/actions"><img src="https://img.shields.io/github/actions/workflow/status/Depthmark/github-sts/ci.yaml?branch=main&style=flat-square&label=CI" alt="CI"></a>
+  <a href="https://depthmark.github.io/github-sts/"><img src="https://img.shields.io/badge/View_site-GH_Pages-2ea44f?style=flat-square" alt="Documentation"></a>
 </p>
 
 ---
@@ -23,13 +24,13 @@ Inspired by [octo-sts/app](https://github.com/octo-sts/app), which pioneered OID
 
 | | Feature | Description |
 |---|---|---|
-| **Zero-trust** | OIDC Federation | No stored credentials &mdash; identity verified via OIDC JWT validation |
+| **Zero-trust** | OIDC Federation | No stored credentials; identity verified via OIDC JWT validation |
 | **Least-privilege** | Policy-based Scoping | YAML trust policies define exact permissions per workload identity |
 | **Multi-app** | Multiple GitHub Apps | Route different workloads through different GitHub Apps |
 | **Org-scope** | Organization Tokens | Issue tokens scoped to an entire org or a subset of repositories |
 | **Observable** | Prometheus Metrics | Built-in metrics and structured audit logging |
 | **Replay-safe** | JTI Cache | Memory or Redis-backed JTI tracking prevents token replay attacks |
-| **Portable** | Distroless Container | Single static binary in a minimal container &mdash; runs anywhere |
+| **Portable** | Distroless Container | Single static binary in a minimal container; runs anywhere |
 
 ## Table of Contents
 
@@ -61,47 +62,41 @@ Inspired by [octo-sts/app](https://github.com/octo-sts/app), which pioneered OID
 
 ```mermaid
 flowchart LR
-    subgraph Workloads
-        A["GitHub Actions"]
-        B["Cloud Providers"]
-        C["Internal Tools"]
+    W["Workload<br/>GitHub Actions / Azure / GCP"]
+
+    IDP["OIDC<br/>Identity Provider"]
+
+    subgraph STS["github-sts"]
+        V["Verify workload identity"]
+        A["Authorize against<br/>trust policy"]
+        M["Mint least-privilege<br/>GitHub token"]
+        V --> A --> M
     end
 
-    subgraph github-sts
-        D["OIDC Validator"]
-        F["Token Issuer"]
-    end
+    GH["GitHub API"]
 
-    subgraph GitHub
-        E["Trust Policies\n.sts.yaml"]
-        G["GitHub API"]
-    end
+    W -- "1. Request OIDC identity" --> IDP
+    IDP -- "2. OIDC JWT" --> W
 
-    A -- "OIDC JWT" --> D
-    B -- "OIDC JWT" --> D
-    C -- "OIDC JWT" --> D
-    D -- "load & evaluate" --> E
-    E -- "approved scope + perms" --> F
-    F -- "create installation token" --> G
-    G -- "scoped token" --> F
-    F -- "short-lived token" --> A
-    F -- "short-lived token" --> B
-    F -- "short-lived token" --> C
+    W -- "3. Exchange OIDC JWT<br/>scope + identity + app" --> V
+
+    A -. "Load trust policy" .-> GH
+
+    M -- "4. GitHub App authentication" --> GH
+    GH -- "5. Scoped installation token" --> M
+
+    M -- "6. Short-lived token" --> W
 ```
+
+**OIDC proves who the workload is → policy determines what it may do → GitHub issues the credential.**
 
 ### How It Works
 
-1. A workload presents its **OIDC JWT** to the `/sts/exchange` endpoint
-2. github-sts **validates** the token signature, expiry, and issuer against JWKS
-3. The **trust policy** (stored in the target repo) is loaded and evaluated against the JWT claims
-4. If approved, github-sts requests a **scoped installation token** from the GitHub API
-5. The short-lived token is returned to the workload with only the permitted permissions
-
-```
-Workload ──OIDC JWT──> github-sts ──validates──> loads policy ──approved──> GitHub API
-                                                                              │
-Workload <──scoped token + permissions──────────────────────────────────────────
-```
+1. A workload requests an OIDC token from its identity provider
+2. The workload presents the OIDC JWT to `/sts/exchange` with `scope`, `identity`, and `app`
+3. github-sts validates the OIDC token (issuer, signature, expiry, audience, replay) and resolves the trust policy
+4. If the policy authorizes the workload, github-sts authenticates as the GitHub App and mints a scoped installation token
+5. The short-lived, least-privilege token is returned to the workload
 
 ### Project Structure
 
@@ -187,16 +182,24 @@ curl -H "Authorization: Bearer $OIDC_TOKEN" \
 ```go
 import "github.com/depthmark/github-sts/client"
 
-// Direct GitHub App token (requires private key)
-provider, _ := client.NewAppTokenProvider(appID, orgOrOwner, pemBytes)
-token, _ := provider.Token(ctx, "org/repo", "ci", permissions, nil)
+// Direct GitHub App token (requires the App private key)
+provider, err := client.NewAppTokenProvider(appID, pemData, "myorg", "https://api.github.com")
+if err != nil { /* handle */ }
+token, err := provider.Token(ctx)
 
-// STS token exchange (requires OIDC token + STS URL)
-stsProvider := client.NewSTSTokenProvider(stsURL, oidcTokenPath)
-token, _ := stsProvider.Token(ctx, "org/repo", "ci", "my-app", "")
+// STS token exchange (requires an OIDC token and the STS URL)
+stsProvider := &client.STSTokenProvider{
+    STSURL:     "https://sts.example.com",
+    Identity:   "ci",
+    Scope:      "myorg/myrepo",
+    App:        "default",
+    Audience:   "https://sts.example.com",
+    SATokenPath: client.DefaultSATokenPath,
+}
+token, err = stsProvider.Token(ctx)
 
 // Token revocation
-err := client.RevokeToken(ctx, token, "https://api.github.com")
+err = client.RevokeToken(ctx, token, "https://api.github.com")
 ```
 
 ## Trust Policies
@@ -217,7 +220,7 @@ For example, `app=my-app` and `identity=ci` resolves to:
 | `subject_pattern` | `regex` | OIDC `sub` claim (regex, used when `subject` is absent) |
 | `claim_pattern` | `map[string]regex` | Additional JWT claims to match |
 | `audience` | `string` | **Required.** Expected OIDC `aud` claim. A policy without it would accept tokens minted for any other relying party sharing the issuer (cross-RP token reuse) and is rejected at parse time. |
-| `repositories` | `list[string]` | Restrict org-scoped tokens to specific repos |
+| `repositories` | `list[string]` | Present in the schema but not applied in the exchange flow |
 | `permissions` | `map[string]string` | GitHub App permissions (`read` / `write` / `admin`) |
 
 ### Policy Examples
@@ -232,7 +235,7 @@ permissions:
   issues: write
 ```
 
-**Regex patterns (flexible &mdash; Azure example):**
+**Regex patterns (flexible; Azure example):**
 ```yaml
 issuer: https://login.microsoftonline.com/{tenant-id}/v2.0
 subject_pattern: "[a-f0-9-]+"
@@ -257,16 +260,12 @@ permissions:
 > **`audience` is mandatory.** Every policy must declare the OIDC audience it
 > trusts. The same value must be passed to `core.getIDToken(<audience>)` in
 > the workflow that requests the token. A missing `audience:` is rejected at
-> policy parse time — it would otherwise accept tokens minted for any other
+> policy parse time; it would otherwise accept tokens minted for any other
 > relying party that shares the issuer (cross-RP token reuse).
 
 ### Organization-Level Scope
 
-In addition to repo-level scope (`scope=org/repo`), github-sts supports **org-level scope** (`scope=myorg`):
-
-- **Org-wide tokens** &mdash; permissions across all repositories
-- **Repo-restricted org tokens** &mdash; scope to a subset via the `repositories` field
-- **Org-level permissions** &mdash; `organization_administration`, `members`, etc.
+In addition to repo-level scope (`scope=org/repo`), github-sts supports **org-level scope** (`scope=myorg`). A centralized org-level policy is scoped to the single repository derived from the OIDC `sub` claim; it does not grant org-wide access.
 
 Configure `org_policy_repo` to specify where org-level policies live:
 
@@ -290,10 +289,6 @@ export GITHUBSTS_APP_DEFAULT_ORG_POLICY_REPO=".github"
 issuer: https://token.actions.githubusercontent.com
 subject_pattern: "repo:myorg/.*"
 audience: https://sts.example.com
-repositories:
-  - frontend
-  - backend
-  - shared-libs
 permissions:
   contents: read
   pull_requests: write
@@ -356,9 +351,12 @@ All environment variables use the `GITHUBSTS_` prefix. Per-app variables use `GI
 | Variable | Default | Description |
 |---|---|---|
 | `GITHUBSTS_CONFIG_PATH` | &mdash; | Path to YAML config file |
-| `GITHUBSTS_PORT` | `8080` | HTTP listen port |
-| `GITHUBSTS_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
-| `GITHUBSTS_SUPPRESS_HEALTH_LOGS` | `true` | Suppress health endpoint access logs |
+| `GITHUBSTS_SERVER_HOST` | `0.0.0.0` | HTTP listen host |
+| `GITHUBSTS_SERVER_PORT` | `8080` | HTTP listen port |
+| `GITHUBSTS_SERVER_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
+| `GITHUBSTS_SERVER_SUPPRESS_HEALTH_LOGS` | `true` | Suppress health endpoint access logs |
+| `GITHUBSTS_SERVER_SHUTDOWN_TIMEOUT` | `10s` | Graceful shutdown grace period |
+| `GITHUBSTS_SERVER_TRUST_FORWARDED_HEADERS` | `false` | Trust `X-Forwarded-For` for client IP |
 | `GITHUBSTS_METRICS_ENABLED` | `true` | Enable Prometheus metrics |
 
 #### GitHub App Settings
@@ -377,7 +375,7 @@ All environment variables use the `GITHUBSTS_` prefix. Per-app variables use `GI
 |---|---|---|
 | `GITHUBSTS_POLICY_BASE_PATH` | `.github/sts` | Base path in repos for trust policies |
 | `GITHUBSTS_POLICY_CACHE_TTL` | `60s` | Policy cache TTL (`0` to disable) |
-| `GITHUBSTS_OIDC_ALLOWED_ISSUERS` | &mdash; | Comma-separated issuer allowlist (empty = any) |
+| `GITHUBSTS_OIDC_ALLOWED_ISSUERS` | &mdash; | Comma-separated issuer allowlist. Required; an empty list is a validation error. |
 | `GITHUBSTS_OIDC_REQUIRED_AUDIENCE` | &mdash; | Server-wide required `aud` claim. When set, every token must carry this value (defense-in-depth on top of the per-policy `audience:` field). |
 | `GITHUBSTS_JTI_BACKEND` | `memory` | `memory` or `redis` |
 | `GITHUBSTS_JTI_REDIS_URL` | &mdash; | Redis connection URL (when backend=`redis`) |
@@ -387,7 +385,8 @@ All environment variables use the `GITHUBSTS_` prefix. Per-app variables use `GI
 
 | Variable | Default | Description |
 |---|---|---|
-| `GITHUBSTS_AUDIT_FILE_PATH` | `./audit.log` | Audit log file path |
+| `GITHUBSTS_AUDIT_FILE_ENABLED` | `true` | Enable file-based audit logging |
+| `GITHUBSTS_AUDIT_FILE_PATH` | `/var/log/github-sts/audit.json` | Audit log file path |
 | `GITHUBSTS_AUDIT_BUFFER_SIZE` | `1024` | Audit channel buffer size |
 
 ## API Reference
@@ -401,7 +400,7 @@ Exchange an OIDC bearer token for a scoped GitHub installation token.
 | Parameter | Required | Description |
 |---|---|---|
 | `scope` | Yes | `org/repo` (repo-level) or `org` (org-level) |
-| `identity` | Yes | Policy selector &mdash; maps to `{base_path}/{app}/{identity}.sts.yaml` |
+| `identity` | Yes | Policy selector; maps to `{base_path}/{app}/{identity}.sts.yaml` |
 | `app` | No | App name (defaults to single configured app) |
 
 ```bash
@@ -480,7 +479,7 @@ err := client.RevokeToken(ctx, token, "https://api.github.com")
 | Endpoint | Method | Success | Failure |
 |---|---|---|---|
 | `/health` | `GET` | `200` `{"status":"ok"}` | &mdash; |
-| `/ready` | `GET` | `200` `{"status":"ready"}` | `503` `{"status":"not ready"}` |
+| `/ready` | `GET` | `200` `{"ready":true}` | `503` `{"ready":false}` |
 | `/metrics` | `GET` | Prometheus text format | &mdash; |
 
 ## Deployment
@@ -585,9 +584,9 @@ make act-build    # build only
 | **Health check fails** | Verify `GITHUBSTS_CONFIG_PATH` is set and the file exists |
 | **Exchange returns `401`** | Check OIDC token expiry, verify `allowed_issuers` includes the issuer, review server logs |
 | **Exchange returns `403`** with `code: "audience_mismatch"` | Token's `aud` does not match. Verify `core.getIDToken(<audience>)` in the workflow uses the same value as the policy's `audience:` field (and `oidc.required_audience` if configured server-side). |
-| **Exchange returns `403`** (any other code) | Look at `code` in the response body — it tells you which layer rejected the request (`oidc_invalid`, `app_unknown`, `policy_not_found`, `policy_denied`). Then grep server logs for the `trace_id` returned in the same response for the precise reason. See [Errors](#response) for the full table. |
-| **Exchange returns `404`** | Verify the trust policy exists at `{base_path}/{app}/{identity}.sts.yaml` in the target repo |
-| **Exchange returns `409`** | JTI replay &mdash; the OIDC token was already used. Obtain a fresh token |
+| **Exchange returns `403`** (any other code) | Look at `code` in the response body; it tells you which layer rejected the request (`oidc_invalid`, `app_unknown`, `policy_not_found`, `policy_denied`). Then grep server logs for the `trace_id` returned in the same response for the precise reason. See [Errors](#response) for the full table. |
+| **Exchange returns `403`** with `code: "policy_not_found"` | Verify the trust policy exists at `{base_path}/{app}/{identity}.sts.yaml` in the target repo. A wrong file path or a GitHub App that lacks read access to the policy file produces the same error. |
+| **Exchange returns `409`** | JTI replay; the OIDC token was already used. Obtain a fresh token |
 
 ## Contributing
 
@@ -601,11 +600,11 @@ Contributions are welcome! Areas of interest:
 
 ## License
 
-[MIT License](LICENSE) &mdash; Copyright (c) 2026 Alexandre Delisle
+[MIT License](LICENSE). Copyright (c) 2026 Alexandre Delisle
 
 ## Acknowledgments
 
-- [octo-sts/app](https://github.com/octo-sts/app) &mdash; Original Go implementation that pioneered OIDC-to-GitHub token exchange
+- [octo-sts/app](https://github.com/octo-sts/app). Original Go implementation that pioneered OIDC-to-GitHub token exchange
 - [GitHub OIDC Documentation](https://docs.github.com/en/actions/deployment/security-hardening-your-deployments/about-security-hardening-with-openid-connect)
 - [OpenID Connect Specification](https://openid.net/connect/)
 - [GitHub App Documentation](https://docs.github.com/en/apps)

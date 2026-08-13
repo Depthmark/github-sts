@@ -39,7 +39,22 @@ validation_local/
 scripts/
 .actrc
 
-# AIDLC
+# Hugo generated output
+docs/public/
+docs/.hugo_build.lock
+
+
+# Agents,  AIDLC
+.opencode
+.agents
+.opencode-sync-manifest
+.agents-tasks
+
 .aidlc-rule-details
 .claude
 aidlc-docs
+
+# Documentation
+
+.vale
+.vale.ini

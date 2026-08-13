@@ -1,4 +1,8 @@
-.PHONY: build test test-race lint coverage vuln-check clean docker ci act act-lint act-test act-build
+.PHONY: build test test-race lint coverage vuln-check clean docker ci act act-lint act-test act-build \
+        docs-serve docs-build docs-check docs-links docs-translate
+
+HUGO ?= hugo
+HUGO_SOURCE ?= docs
 
 # Build all packages
 build:
@@ -37,7 +41,7 @@ docker:
 
 # Clean build artifacts
 clean:
-	rm -rf bin/ coverage.out coverage.html
+	rm -rf bin/ coverage.out coverage.html docs/public/
 
 # Run all checks (CI)
 ci: lint test-race vuln-check build bin/github-sts
@@ -55,3 +59,31 @@ act-test:
 
 act-build:
 	act pull_request --workflows .github/workflows/ci.yml --job build
+
+# --- Documentation targets ---
+
+# Serve the documentation site locally
+docs-serve:
+	$(HUGO) server --source $(HUGO_SOURCE) --buildDrafts
+
+# Build the documentation site for production
+docs-build:
+	$(HUGO) --source $(HUGO_SOURCE) --gc --minify --panicOnWarning \
+		--baseURL https://depthmark.github.io/github-sts/
+
+# Validate documentation content, translation parity, and build
+docs-check:
+	python3 docs/scripts/check-translations.py || true
+	$(HUGO) --source $(HUGO_SOURCE) --gc --minify --panicOnWarning \
+		--baseURL https://depthmark.github.io/github-sts/
+	python3 docs/scripts/check-links.py --base docs/public --base-path /github-sts
+
+# Validate links in the generated site
+docs-links:
+	$(HUGO) --source $(HUGO_SOURCE) --gc --minify --panicOnWarning \
+		--baseURL https://depthmark.github.io/github-sts/
+	python3 docs/scripts/check-links.py --base docs/public --base-path /github-sts
+
+# Run the translation tool locally
+docs-translate:
+	python3 docs/scripts/translate-docs.py

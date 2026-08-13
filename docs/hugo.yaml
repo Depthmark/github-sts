@@ -1,0 +1,93 @@
+baseURL: http://localhost:1313/github-sts/
+locale: en-us
+title: github-sts
+enableRobotsTXT: true
+
+pluralizeListTitles: false
+
+defaultContentLanguage: en
+defaultContentLanguageInSubdir: false
+
+disablePathToLower: true
+
+module:
+  imports:
+    - path: github.com/imfing/hextra
+
+languages:
+  en:
+    label: English
+    locale: en
+    weight: 1
+    title: github-sts
+    contentDir: content/en
+    params:
+      description: Exchange OIDC tokens for short-lived, scoped GitHub installation tokens. No PATs. No long-lived secrets.
+  fr:
+    label: Français
+    locale: fr
+    weight: 2
+    title: github-sts
+    contentDir: content/fr
+    params:
+      description: Échangez des jetons OIDC pour des jetons d'installation GitHub temporaires et limités. Sans PAT. Sans secrets persistants.
+
+markup:
+  goldmark:
+    renderer:
+      unsafe: true
+  highlight:
+    noClasses: false
+
+params:
+  theme:
+    displayLogo: true
+    displayFooter: true
+    displayToc: true
+    displayBackToTop: true
+    displayBreadcrumb: true
+    displayPagination: true
+    displaySearch: true
+    displayDarkMode: true
+    displayCodeCopy: true
+    displayDate: false
+
+  editURL:
+    enable: true
+    base: https://github.com/Depthmark/github-sts/edit/main/docs
+
+  navbar:
+    displayTitle: false
+    displayLogo: true
+    logo:
+      path: images/logo.svg
+      width: 240
+      height: 56
+
+  footer:
+    enable: true
+    displayCopyright: true
+    displayPoweredBy: true
+    width: normal
+
+  mermaid:
+    enable: true
+    theme: default
+
+  page:
+    width: normal
+
+  search:
+    enable: true
+    type: flexsearch
+    flexsearch:
+      index: content
+      tokenize: forward
+
+  highlight:
+    copy:
+      enable: true
+
+  sideBar:
+    enable: true
+    auto: true

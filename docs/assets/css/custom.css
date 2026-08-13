@@ -1,0 +1,26 @@
+/* github-sts documentation custom styles */
+
+:root {
+  --github-sts-accent: #0969da;
+  --github-sts-accent-dark: #58a6ff;
+}
+
+.dark {
+  --github-sts-accent: #58a6ff;
+}
+
+/* Logo — responsive sizing */
+img[src*="logo.svg"] {
+  height: 2.25rem;
+  width: auto;
+}
+@media (min-width: 768px) {
+  img[src*="logo.svg"] {
+    height: 2.75rem;
+  }
+}
+@media (min-width: 1280px) {
+  img[src*="logo.svg"] {
+    height: 3.5rem;
+  }
+}
