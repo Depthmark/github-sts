@@ -37,6 +37,14 @@ Incluez :
 
 Nous suivons un processus de divulgation coordonnée. Nous vous demandons de ne pas divulguer publiquement la vulnérabilité tant que nous n'avons pas publié un correctif et que les utilisateurs n'ont pas eu le temps de mettre à niveau.
 
+## Score de sécurité de la chaîne d'approvisionnement
+
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/Depthmark/github-sts/badge)](https://scorecard.dev/viewer/?uri=github.com/Depthmark/github-sts)
+
+[OpenSSF Scorecard](https://github.com/ossf/scorecard) évalue les pratiques de sécurité de la chaîne d'approvisionnement du dépôt après l'arrivée de modifications sur `main` et selon une planification hebdomadaire. Les résultats publics deviennent disponibles dans le [visualiseur Scorecard](https://scorecard.dev/viewer/?uri=github.com/Depthmark/github-sts) après la première analyse réussie. Les mainteneurs disposant d'un accès en écriture au dépôt peuvent examiner les constats exploitables sous forme d'alertes d'analyse du code dans l'[onglet Sécurité](https://github.com/Depthmark/github-sts/security/code-scanning).
+
+Les contrôles Scorecard sont des heuristiques automatisées, et non une certification de sécurité. Examinez chaque contrôle et ses conseils de correction au lieu de vous fier uniquement au score global.
+
 ## Modèle de sécurité
 
 Pour le modèle de sécurité complet, consultez [Modèle de sécurité]({{< relref "/concepts/security-model" >}}).

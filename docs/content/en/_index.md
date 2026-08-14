@@ -10,6 +10,8 @@ Workloads with OIDC tokens (GitHub Actions, Azure, GCP, any IdP) present their i
 
 Inspired by [octo-sts/app](https://github.com/octo-sts/app), which pioneered OIDC federation for GitHub token exchange.
 
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/Depthmark/github-sts/badge)](https://scorecard.dev/viewer/?uri=github.com/Depthmark/github-sts)
+
 ## Highlights
 
 | | Feature | Description |
