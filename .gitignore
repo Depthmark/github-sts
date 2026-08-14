@@ -37,7 +37,6 @@ validation_local/
 
 # Local development files
 scripts/
-.actrc
 
 # Hugo generated output
 docs/public/

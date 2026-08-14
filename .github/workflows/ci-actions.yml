@@ -1,0 +1,25 @@
+---
+name: CI Actions
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/**"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/**"
+
+concurrency:
+  group: ci-actions-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  ci:
+    uses: Depthmark/reusable-workflows/.github/workflows/ci-actions.yml@b75184a59af82875f02abd547e57645ffcdcd91a # v1.0.1
+    with:
+      poutine-skip-rules: "github_action_from_unverified_creator_used"
+    permissions:
+      contents: read

@@ -570,11 +570,13 @@ go test -race -v -run TestExchange ./internal/handler/...  # specific test
 Run GitHub Actions workflows locally with [act](https://github.com/nektos/act):
 
 ```bash
-make act          # all CI jobs
-make act-lint     # lint only
-make act-test     # test only
-make act-build    # build only
+make act          # application CI
+make act-actions  # actionlint, zizmor, and poutine
+make hooks        # enable pre-commit workflow validation
 ```
+
+The versioned pre-commit hook runs `make act-actions` when files under
+`.github/workflows/` are staged.
 
 ## Troubleshooting
 

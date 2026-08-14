@@ -1,4 +1,4 @@
-.PHONY: build test test-race lint coverage vuln-check clean docker ci act act-lint act-test act-build \
+.PHONY: build test test-race lint coverage vuln-check clean docker ci act act-actions hooks \
         docs-serve docs-build docs-check docs-links docs-translate
 
 HUGO ?= hugo
@@ -50,15 +50,13 @@ ci: lint test-race vuln-check build bin/github-sts
 act:
 	act pull_request --workflows .github/workflows/ci.yml
 
-# Run individual CI jobs locally with act
-act-lint:
-	act pull_request --workflows .github/workflows/ci.yml --job lint
+# Validate GitHub Actions workflows locally with the shared CI workflow
+act-actions:
+	act pull_request --workflows .github/workflows/ci-actions.yml
 
-act-test:
-	act pull_request --workflows .github/workflows/ci.yml --job test
-
-act-build:
-	act pull_request --workflows .github/workflows/ci.yml --job build
+# Enable the repository's versioned Git hooks
+hooks:
+	git config core.hooksPath .githooks
 
 # --- Documentation targets ---
 

@@ -1,0 +1,4 @@
+--container-architecture=linux/amd64
+--rm
+-P ubuntu-latest=catthehacker/ubuntu:act-latest
+-P ubuntu-24.04=catthehacker/ubuntu:act-latest
