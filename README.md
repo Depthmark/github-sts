@@ -11,6 +11,7 @@
   <a href="https://github.com/Depthmark/github-sts/blob/main/LICENSE"><img src="https://img.shields.io/github/license/Depthmark/github-sts?style=flat-square" alt="License"></a>
   <a href="https://pkg.go.dev/github.com/depthmark/github-sts"><img src="https://img.shields.io/badge/Go-1.26+-00ADD8?style=flat-square&logo=go&logoColor=white" alt="Go"></a>
   <a href="https://github.com/Depthmark/github-sts/actions"><img src="https://img.shields.io/github/actions/workflow/status/Depthmark/github-sts/ci.yaml?branch=main&style=flat-square&label=CI" alt="CI"></a>
+  <a href="https://scorecard.dev/viewer/?uri=github.com/Depthmark/github-sts"><img src="https://api.scorecard.dev/projects/github.com/Depthmark/github-sts/badge" alt="OpenSSF Scorecard"></a>
   <a href="https://depthmark.github.io/github-sts/"><img src="https://img.shields.io/badge/View_site-GH_Pages-2ea44f?style=flat-square" alt="Documentation"></a>
 </p>
 

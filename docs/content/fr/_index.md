@@ -11,6 +11,8 @@ Les charges de travail avec des jetons OIDC (GitHub Actions, Azure, GCP, n'impor
 
 Inspiré par [octo-sts/app](https://github.com/octo-sts/app), pionnier de la fédération OIDC pour l'échange de jetons GitHub.
 
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/Depthmark/github-sts/badge)](https://scorecard.dev/viewer/?uri=github.com/Depthmark/github-sts)
+
 ## Points forts
 
 | | Fonctionnalité | Description |
