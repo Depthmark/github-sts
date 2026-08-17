@@ -50,6 +50,10 @@ vuln-check:
 bin/github-sts:
 	CGO_ENABLED=0 go build -ldflags="-s -w" -o bin/github-sts ./cmd/github-sts
 
+# Build the policy release/GitOps revision gate.
+bin/github-sts-bundle:
+	CGO_ENABLED=0 go build -ldflags="-s -w" -o bin/github-sts-bundle ./cmd/github-sts-bundle
+
 # Build Docker image
 docker:
 	docker build -t github-sts:local .

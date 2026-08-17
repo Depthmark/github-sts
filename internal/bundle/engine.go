@@ -24,6 +24,7 @@ type Engine struct {
 	exceptions         []preparedQuery
 	crossOrgExceptions []admittedCrossOrgException
 	metadata           Metadata
+	manifestRevision   string
 	// keep a write lock around prepared in case future reload work
 	// swaps it; Phase 1 never writes after construction.
 	mu sync.RWMutex
@@ -94,6 +95,14 @@ func newEngine(ctx context.Context, tarball []byte, mandatory bool) (*Engine, er
 	b, err := reader.Read()
 	if err != nil {
 		return nil, fmt.Errorf("bundle engine: reading tarball: %w", err)
+	}
+	manifestRevision := b.Manifest.Revision
+	if manifestRevision != "" {
+		if _, err := ParsePolicyRevision(manifestRevision); err != nil {
+			return nil, fmt.Errorf("bundle engine: manifest revision %q is invalid: %w", manifestRevision, err)
+		}
+	} else if mandatory {
+		return nil, fmt.Errorf("bundle engine: mandatory bundle manifest revision is required")
 	}
 	parsed := b.ParsedModules("sts-org")
 	for _, mod := range parsed {
@@ -168,7 +177,10 @@ func newEngine(ctx context.Context, tarball []byte, mandatory bool) (*Engine, er
 		return nil, fmt.Errorf("bundle engine: no packages expose a decision document")
 	}
 
-	eng := &Engine{decisions: decisionQueries, exceptions: exceptionQueries, crossOrgExceptions: crossOrgExceptions}
+	eng := &Engine{
+		decisions: decisionQueries, exceptions: exceptionQueries, crossOrgExceptions: crossOrgExceptions,
+		manifestRevision: manifestRevision,
+	}
 	if mandatory {
 		metadataQuery, err := prepareBundleQuery(ctx, &b, mandatoryPackage, mandatoryMetadata)
 		if err != nil {
@@ -179,6 +191,9 @@ func newEngine(ctx context.Context, tarball []byte, mandatory bool) (*Engine, er
 			return nil, fmt.Errorf("bundle engine: mandatory metadata admission: %w", err)
 		}
 		eng.metadata = metadata
+		if metadata.PolicyRevision != manifestRevision {
+			return nil, fmt.Errorf("bundle engine: mandatory metadata policy_revision %q does not match manifest revision %q", metadata.PolicyRevision, manifestRevision)
+		}
 		if err := eng.runMandatoryAdmissionProbes(ctx, b.Data); err != nil {
 			return nil, fmt.Errorf("bundle engine: mandatory negative admission: %w", err)
 		}
@@ -206,6 +221,15 @@ func (e *Engine) Metadata() Metadata {
 	return e.metadata
 }
 
+// ManifestRevision returns the authoritative signed revision from .manifest.
+// Legacy optional bundles without a manifest revision return an empty string.
+func (e *Engine) ManifestRevision() string {
+	if e == nil {
+		return ""
+	}
+	return e.manifestRevision
+}
+
 func admitMandatoryMetadata(ctx context.Context, q preparedQuery) (Metadata, error) {
 	rs, err := q.Prepared.Eval(ctx)
 	if err != nil {
@@ -223,8 +247,11 @@ func admitMandatoryMetadata(ctx context.Context, q preparedQuery) (Metadata, err
 		return Metadata{}, fmt.Errorf("contract_version must be %q", "v1")
 	}
 	policyRevision, ok := raw["policy_revision"].(string)
-	if !ok || strings.TrimSpace(policyRevision) == "" || policyRevision != strings.TrimSpace(policyRevision) {
-		return Metadata{}, fmt.Errorf("policy_revision must be a non-empty trimmed string")
+	if !ok {
+		return Metadata{}, fmt.Errorf("policy_revision must be a canonical positive base-10 uint64 string")
+	}
+	if _, err := ParsePolicyRevision(policyRevision); err != nil {
+		return Metadata{}, fmt.Errorf("policy_revision must be a canonical positive base-10 uint64 string: %w", err)
 	}
 	rawControls, ok := raw["controls"].([]any)
 	if !ok {

@@ -224,8 +224,8 @@ var (
 
 	BundlePolicyRevisionInfo = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "githubsts_bundle_policy_revision_info",
-		Help: "1 for the active Rego policy digest by bundle.",
-	}, []string{"bundle", "digest"})
+		Help: "1 for the active signed Rego policy digest and revision by bundle.",
+	}, []string{"bundle", "digest", "policy_revision"})
 
 	BundlePolicyRevisionChangesTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "githubsts_bundle_policy_revision_changes_total",

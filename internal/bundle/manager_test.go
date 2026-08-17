@@ -71,13 +71,13 @@ func TestLiveManager_ExampleMandatoryAdmissionAndStatus(t *testing.T) {
 
 	mgr := NewLiveManager(
 		FilesystemLoader{}, Source{Raw: "file://" + path}, VerifyConfig{}, nil,
-		LiveOpts{Name: "enterprise-baseline", Mandatory: true},
+		LiveOpts{Name: "enterprise-baseline", Mandatory: true, ExpectedPolicyRevision: "1"},
 	)
 	if err := mgr.Init(context.Background()); err != nil {
 		t.Fatalf("Init mandatory baseline: %v", err)
 	}
 	statuses := mgr.BundleStatuses()
-	if len(statuses) != 1 || !statuses[0].Mandatory || statuses[0].PolicyRevision != "example-v1" {
+	if len(statuses) != 1 || !statuses[0].Mandatory || statuses[0].PolicyRevision != "1" {
 		t.Fatalf("mandatory status = %+v", statuses)
 	}
 	decision, err := mgr.Eval(context.Background(), Input{})
@@ -86,6 +86,91 @@ func TestLiveManager_ExampleMandatoryAdmissionAndStatus(t *testing.T) {
 	}
 	if !decision.Applicable || !decision.Evaluated || decision.Allow {
 		t.Fatalf("mandatory malformed-input decision = %+v", decision)
+	}
+}
+
+func revisionBundle(t *testing.T, revision, reason string) []byte {
+	t.Helper()
+	files := map[string]string{
+		"/policies/revision.rego": `package sts.enterprise.revision
+import rego.v1
+decision := {"allow": false, "reasons": ["` + reason + `"]}
+`,
+	}
+	if revision != "" {
+		files["/.manifest"] = `{"revision":"` + revision + `"}`
+	}
+	return buildTarball(t, files)
+}
+
+func TestLiveManager_ExpectedPolicyRevision(t *testing.T) {
+	tests := []struct {
+		name     string
+		revision string
+		expected string
+		wantErr  string
+	}{
+		{name: "matching tuple", revision: "7", expected: "7"},
+		{name: "mismatch", revision: "7", expected: "8", wantErr: "does not match"},
+		{name: "missing manifest", expected: "8", wantErr: "manifest revision is missing"},
+		{name: "invalid expected revision", revision: "7", expected: "07", wantErr: "is invalid"},
+		{name: "optional legacy compatibility"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			loader := &alternatingLoader{versions: []Fetch{{
+				Tarball: revisionBundle(t, tt.revision, "candidate"), Digest: "sha256:candidate",
+			}}}
+			mgr := NewLiveManager(loader, Source{Raw: "file:///unused"}, VerifyConfig{}, nil, LiveOpts{
+				Name: "revision", ExpectedPolicyRevision: tt.expected,
+			})
+			err := mgr.Init(context.Background())
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("Init error = %v, want substring %q", err, tt.wantErr)
+				}
+				if mgr.Enabled() || mgr.Digest() != "" || mgr.BundleStatuses()[0].PolicyRevision != "" {
+					t.Fatalf("failed init installed a partial tuple: %+v", mgr.BundleStatuses())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			statuses := mgr.BundleStatuses()
+			if !mgr.Enabled() || mgr.Digest() != "sha256:candidate" || len(statuses) != 1 || statuses[0].PolicyRevision != tt.revision {
+				t.Fatalf("installed tuple = digest %q statuses %+v", mgr.Digest(), statuses)
+			}
+		})
+	}
+}
+
+func TestLiveManager_MismatchedReloadRetainsEngineDigestRevisionTuple(t *testing.T) {
+	loader := &alternatingLoader{versions: []Fetch{
+		{Tarball: revisionBundle(t, "1", "version-1"), Digest: "sha256:version-1"},
+		{Tarball: revisionBundle(t, "2", "version-2"), Digest: "sha256:version-2"},
+	}}
+	mgr := NewLiveManager(loader, Source{Raw: "file:///unused"}, VerifyConfig{}, nil, LiveOpts{
+		Name: "revision", ExpectedPolicyRevision: "1",
+	})
+	if err := mgr.Init(context.Background()); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	beforeEngine := mgr.engine
+
+	if _, err := mgr.Reload(context.Background()); err == nil || !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("Reload error = %v, want revision mismatch", err)
+	}
+	status := mgr.BundleStatuses()[0]
+	if mgr.engine != beforeEngine || mgr.Digest() != "sha256:version-1" || status.PolicyRevision != "1" {
+		t.Fatalf("failed reload changed tuple: engine=%p digest=%q status=%+v", mgr.engine, mgr.Digest(), status)
+	}
+	decision, err := mgr.Eval(context.Background(), Input{})
+	if err != nil {
+		t.Fatalf("Eval after failed reload: %v", err)
+	}
+	if len(decision.Reasons) != 1 || decision.Reasons[0] != "version-1" || decision.Packages[0].Digest != "sha256:version-1" {
+		t.Fatalf("Eval used a mixed or replacement tuple: %+v", decision)
 	}
 }
 
@@ -408,18 +493,12 @@ func (l *alternatingLoader) Fetch(context.Context, Source, VerifyConfig) (Fetch,
 func TestLiveManager_ConcurrentReloadKeepsEngineDigestSnapshot(t *testing.T) {
 	loader := &alternatingLoader{versions: []Fetch{
 		{
-			Tarball: buildTarball(t, map[string]string{"/policies/v.rego": `package sts.enterprise.snapshot
-import rego.v1
-decision := {"allow": false, "reasons": ["version-1"]}
-`}),
-			Digest: "sha256:version-1",
+			Tarball: revisionBundle(t, "1", "version-1"),
+			Digest:  "sha256:version-1",
 		},
 		{
-			Tarball: buildTarball(t, map[string]string{"/policies/v.rego": `package sts.enterprise.snapshot
-import rego.v1
-decision := {"allow": false, "reasons": ["version-2"]}
-`}),
-			Digest: "sha256:version-2",
+			Tarball: revisionBundle(t, "2", "version-2"),
+			Digest:  "sha256:version-2",
 		},
 	}}
 	mgr := NewLiveManager(loader, Source{Raw: "file:///unused"}, VerifyConfig{}, nil, LiveOpts{Name: "snapshot"})
@@ -457,6 +536,11 @@ decision := {"allow": false, "reasons": ["version-2"]}
 			wantDigest := "sha256:" + decision.Reasons[0]
 			if decision.Packages[0].Digest != wantDigest {
 				errCh <- errors.New("engine and attributed digest came from different snapshots")
+				return
+			}
+			wantRevision := strings.TrimPrefix(decision.Reasons[0], "version-")
+			if decision.Packages[0].PolicyRevision != wantRevision {
+				errCh <- errors.New("engine and attributed policy revision came from different snapshots")
 				return
 			}
 		}

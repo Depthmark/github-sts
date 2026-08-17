@@ -248,6 +248,7 @@ oidc:
 bundles:
   - name: enterprise
     ref: "`+testPinnedBundleRef+`"
+    expected_policy_revision: "1"
     cosign:
       public_key_ref: cosign.pub
 `)
@@ -382,8 +383,9 @@ func validDefaults() *Settings {
 
 func validRequiredBundle(name string) BundleConfig {
 	return BundleConfig{
-		Name: name,
-		Ref:  testPinnedBundleRef,
+		Name:                   name,
+		Ref:                    testPinnedBundleRef,
+		ExpectedPolicyRevision: "1",
 		Cosign: CosignConfig{
 			PublicKeyRef: "cosign.pub",
 		},
@@ -414,6 +416,52 @@ func TestValidate_BundleEnforcementRequiredRejectsNoBundles(t *testing.T) {
 	err := cfg.Validate()
 	if err == nil || !contains(err.Error(), "at least one bundle") {
 		t.Fatalf("expected required bundle error, got: %v", err)
+	}
+}
+
+func TestValidate_BundleExpectedPolicyRevision(t *testing.T) {
+	t.Run("required rejects missing global revision", func(t *testing.T) {
+		cfg := validDefaults()
+		cfg.BundleEnforcement = BundleEnforcementRequired
+		bundle := validRequiredBundle("enterprise")
+		bundle.ExpectedPolicyRevision = ""
+		cfg.Bundles = []BundleConfig{bundle}
+		if err := cfg.Validate(); err == nil || !contains(err.Error(), "expected_policy_revision is required") {
+			t.Fatalf("error = %v, want required expected revision", err)
+		}
+	})
+
+	t.Run("required rejects missing additive revision", func(t *testing.T) {
+		cfg := validDefaults()
+		cfg.BundleEnforcement = BundleEnforcementRequired
+		additive := validRequiredBundle("additive")
+		additive.Apps = []string{"test"}
+		additive.ExpectedPolicyRevision = ""
+		cfg.Bundles = []BundleConfig{validRequiredBundle("enterprise"), additive}
+		if err := cfg.Validate(); err == nil || !contains(err.Error(), "bundles[1].expected_policy_revision is required") {
+			t.Fatalf("error = %v, want additive expected revision requirement", err)
+		}
+	})
+
+	t.Run("optional permits omitted revision", func(t *testing.T) {
+		cfg := validDefaults()
+		cfg.Bundles = []BundleConfig{{Name: "legacy", Ref: "file:///tmp/bundle.tar.gz"}}
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("Validate: %v", err)
+		}
+	})
+
+	for _, revision := range []string{"0", "00", "01", "+1", "-1", " 1", "1 ", "one", "18446744073709551616"} {
+		revision := revision
+		t.Run("optional rejects invalid "+revision, func(t *testing.T) {
+			cfg := validDefaults()
+			cfg.Bundles = []BundleConfig{{
+				Name: "revision", Ref: "file:///tmp/bundle.tar.gz", ExpectedPolicyRevision: revision,
+			}}
+			if err := cfg.Validate(); err == nil || !contains(err.Error(), "expected_policy_revision is invalid") {
+				t.Fatalf("error = %v, want invalid expected revision", err)
+			}
+		})
 	}
 }
 

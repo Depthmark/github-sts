@@ -124,6 +124,16 @@ func TestFileLogger_OmitEmptyFields(t *testing.T) {
 	}
 }
 
+func TestFromBundleDecisionPreservesSignedRevision(t *testing.T) {
+	decisions := FromBundleDecision(bundle.Decision{Packages: []bundle.PackageDecision{{
+		BundleName: "enterprise", Digest: "sha256:test", PolicyRevision: "42",
+		Package: "sts.enterprise.v1", Query: "data.sts.enterprise.v1.decision", Allow: true,
+	}}})
+	if len(decisions) != 1 || decisions[0].PolicyRevision != "42" || decisions[0].Digest != "sha256:test" {
+		t.Fatalf("bundle decisions = %+v", decisions)
+	}
+}
+
 func TestFileLogger_NonBlockingOnFullChannel(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "audit.json")
 	// Buffer size of 1 — second event should be dropped without blocking.

@@ -69,9 +69,16 @@ curl -s http://localhost:8080/metrics | grep githubsts_bundle_enforcement_requir
 Production should report `bundle_enforcement: "required"`,
 `enterprise_policy_required: true`, `yaml_only_authorization: false`, and metric
 value `1`. Per-bundle health should identify exactly one `mandatory: true`
-baseline with a nonempty `policy_revision`. Audit events always carry
+baseline whose `policy_revision` matches its configured
+`expected_policy_revision`. Audit events always carry
 `bundle_enforcement`; when evaluation runs, use `org_decision.applicable` and
-`org_decision.evaluated` to distinguish participation from a fault.
+`org_decision.evaluated` to distinguish participation from a fault. Evaluated
+`bundle_decisions[]` entries include the signed revision and digest.
+
+If startup or reload reports a revision mismatch, compare the deployed
+`expected_policy_revision` with `.manifest.revision` from the cosign-verified
+artifact and with mandatory Rego `metadata.policy_revision`. Do not bypass the
+check or retag the image; promote a matching digest/revision tuple.
 
 ## Where to look next
 

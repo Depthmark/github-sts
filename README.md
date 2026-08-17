@@ -42,6 +42,7 @@ Inspired by [octo-sts/app](https://github.com/octo-sts/app), which pioneered OID
   - [Policy Schema](#policy-schema)
   - [Policy Examples](#policy-examples)
   - [Organization-Level Scope](#organization-level-scope)
+  - [Enterprise Rego Bundles](#enterprise-rego-bundles)
 - [Configuration](#configuration)
   - [YAML Configuration](#yaml-configuration)
   - [Environment Variables](#environment-variables)
@@ -343,12 +344,19 @@ of mode.
 
 ### Enterprise Rego Bundles
 
-Operators can add one or more enterprise OPA/Rego bundles in server config. Bundles are evaluated after the YAML trust policy allows and before GitHub token minting. Deny wins across all configured bundles and all Rego packages.
+Operators can add one or more enterprise OPA/Rego bundles in server config.
+Bundles are evaluated after the YAML trust policy allows and before GitHub token
+minting. Deny wins across all configured bundles and Rego packages.
 
 ```yaml
+bundle_enforcement: required
+
 bundles:
   - name: enterprise-baseline
-    ref: oci://ghcr.io/example/github-sts-policy:2026-06-01
+    apps: []
+    # Replace both placeholders with one reviewed release tuple.
+    ref: oci://ghcr.io/example/github-sts-policy@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    expected_policy_revision: "42"
     poll_interval: 5m
     max_staleness: 10m
     fail_mode: closed
@@ -357,7 +365,15 @@ bundles:
       certificate_oidc_issuer: https://token.actions.githubusercontent.com
 ```
 
-Each Rego package that participates exposes `decision` with `allow`, optional `reasons`, and optional `rule_id`, `rule_name`, or `exception_id`. Repository or organization bypasses must be implemented as Rego exceptions before deny rules match; the broker does not override a deny after it is emitted.
+The placeholder digest is not a deployable artifact. Required bundles must be
+cosign verified and digest pinned, and their signed `.manifest.revision` must
+match `expected_policy_revision`. The mandatory Rego metadata revision must
+match it as well.
+
+Each participating Rego package exposes `decision` with `allow`, optional
+`reasons`, and optional `rule_id`, `rule_name`, or `exception_id`. Repository or
+organization bypasses must be implemented as Rego exceptions before deny rules
+match; the broker does not override a deny after it is emitted.
 
 See [Configuration](docs/configuration.md#enterprise-rego-bundles) for the complete bundle contract and exception inventory format.
 
@@ -576,7 +592,7 @@ All metrics are exposed at `GET /metrics` in Prometheus text format with the `gi
 | `githubsts_jti_replay_attempts_total` | Counter | JTI replay attacks detected |
 | `githubsts_audit_events_dropped_total` | Counter | Audit events dropped (full buffer) |
 | `githubsts_ready` | Gauge | Instance readiness (1/0) |
-| `githubsts_bundle_policy_revision_info` | Gauge | Active Rego bundle digest by bundle |
+| `githubsts_bundle_policy_revision_info` | Gauge | Active signed Rego bundle tuple by bundle, digest, and policy revision |
 | `githubsts_bundle_policy_revision_changes_total` | Counter | Policy revision reload outcomes by bundle |
 | `githubsts_bundle_policy_decisions_total` | Counter | Rego decision impact by app, bundle, digest, and result |
 | `githubsts_bundle_policy_rule_decisions_total` | Counter | Rego decisions by bounded enterprise rule ID |

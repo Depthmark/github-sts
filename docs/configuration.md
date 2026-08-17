@@ -117,7 +117,17 @@ same authorization.
 
 ### Examples
 
-**Exact immutable source and target with a branch selector:**
+Every `github.sources[]` and `github.target` entry is looked up by numeric
+`owner_id` / `repository_id`; see
+[OIDC Issuers → Getting the immutable owner and repository IDs](oidc-issuers.md#getting-the-immutable-owner-and-repository-ids)
+for how to find those values with the GitHub API before writing the policy
+below.
+
+**Repo A → repo A (same repository, exact immutable source and target with a branch selector):**
+
+The most common case: a workflow in a repository requesting a token scoped
+back to that same repository. `source` and `target` carry identical
+`owner_id`/`repository_id`.
 
 ```yaml
 issuer: https://token.actions.githubusercontent.com
@@ -135,6 +145,98 @@ permissions:
   contents: read
   issues: write
 ```
+
+**Repo A → repo B (cross-repository, same organization):**
+
+This policy file lives **in repo B** (`.github/sts/{app}/{identity}.sts.yaml`
+of the target repo) and lists repo A as an allowed source. Same `owner_id` on
+both sides means this authorizes purely on the trust policy — no enterprise
+bundle exception is required regardless of `bundle_enforcement` posture,
+because the `sts.enterprise.v1` baseline's `same_owner` rule allows it
+directly. `github.sources[]` accepts multiple entries, so repo B can trust
+several source repos at once:
+
+```yaml
+# stored at repoB/.github/sts/default/cross-repo-ci.sts.yaml
+issuer: https://token.actions.githubusercontent.com
+claim_pattern:
+  ref: 'refs/heads/.*'
+audience: https://sts.example.com
+github:
+  sources:
+    - owner_id: "123456"      # repo A's owner_id (same org as repo B)
+      repository_id: "456789" # repo A
+  target:
+    owner_id: "123456"
+    repository_id: "456791"   # repo B
+permissions:
+  contents: read
+  pull_requests: write
+```
+
+See [`config/examples/cross-repo-ci.sts.yaml`](https://github.com/Depthmark/github-sts/blob/main/config/examples/cross-repo-ci.sts.yaml)
+for a runnable version with two trusted sources.
+
+**Repo A → repo B (cross-organization):**
+
+`owner_id` differs between `source` and `target`, so this is a
+cross-organization relationship. The trust policy alone is enough under
+`bundle_enforcement: optional` (YAML-only authorization). Under `required`
+mode the mandatory `sts.enterprise.v1` baseline's `same_owner` check fails and
+the exchange is denied with `rule_id: sts.relationship.cross_org` **unless**
+the enterprise bundle's data document also carries a matching, unexpired
+`cross_org_exceptions` entry for this exact source/target/app/identity — see
+[Enterprise Rego bundles](#enterprise-rego-bundles) below.
+
+```yaml
+# stored at repoB/.github/sts/default/deploy.sts.yaml (target: org-b/repo-b)
+issuer: https://token.actions.githubusercontent.com
+claim_pattern:
+  ref: 'refs/heads/.*'
+audience: https://sts.example.com
+github:
+  sources:
+    - owner_id: "9001"        # org-a's owner_id (different org)
+      repository_id: "9002"   # org-a/repo-a
+  target:
+    owner_id: "123456"        # org-b's owner_id
+    repository_id: "456789"   # org-b/repo-b
+permissions:
+  contents: read
+  deployments: write
+  statuses: write
+```
+
+Required mode also needs the corresponding enterprise data entry (illustrated
+in full under [Enterprise Rego bundles](#enterprise-rego-bundles)):
+
+```json
+{
+  "exception_id": "xorg-deploy-2026-08",
+  "rule_id": "sts.relationship.cross_org",
+  "source": {"owner_id": "9001", "repository_id": "9002"},
+  "target": {"owner_id": "123456", "repository_id": "456789"},
+  "app": "default",
+  "identity": "deploy",
+  "permission_ceiling": {
+    "contents": "read",
+    "deployments": "write",
+    "statuses": "write"
+  },
+  "owner": "platform@example.com",
+  "approved_by": "security@example.com",
+  "reason": "org-a deploy workflow publishes releases into org-b/repo-b",
+  "created_at": "2026-08-01T00:00:00Z",
+  "expires_at": "2026-08-20T00:00:00Z"
+}
+```
+
+`owner` and `approved_by` must be distinct identities, `expires_at` must be
+within 30 days of `created_at`, and the exception is filtered out once
+expired even if the bundle otherwise fails to refresh. The granted
+permissions can never exceed `permission_ceiling` here, which itself cannot
+exceed the app/target/identity ceilings described under
+[Enterprise Rego bundles](#enterprise-rego-bundles).
 
 **Regex patterns (Azure example):**
 
@@ -224,7 +326,8 @@ applicable additive bundles.
 Required mode needs exactly one globally applicable baseline, represented by
 `apps: []`. Every configured bundle in required mode must be an OCI reference
 pinned exactly to `@sha256:<64 lowercase hex>` and must use cosign keyless or
-public-key verification. The global baseline must use `fail_mode: closed`.
+public-key verification. It must also declare the signed revision expected in
+that digest. The global baseline must use `fail_mode: closed`.
 
 ```yaml
 bundle_enforcement: required
@@ -234,6 +337,7 @@ bundles:
     apps: []
     # Placeholder digest: replace it with the promoted bundle digest.
     ref: oci://ghcr.io/depthmark/github-sts-policy@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    expected_policy_revision: "42"
     poll_interval: 5m
     max_staleness: 10m
     fail_mode: closed
@@ -245,14 +349,27 @@ bundles:
 An app-scoped bundle has a nonempty list such as `apps: [release]`. It is
 additive: the global baseline still evaluates for that app, and every applicable
 bundle must allow. Required-mode pinning and verification rules apply to these
-additive bundles too.
+additive bundles too, including `expected_policy_revision`.
+
+`expected_policy_revision` is a quoted positive base-10 `uint64` string. Zero,
+signs, whitespace, leading zeroes, non-digits, and overflow are rejected. The
+bundle must be built with the same authoritative OPA manifest revision:
+
+```bash
+opa build --revision 42 -b policy -o bundle.tar.gz
+```
+
+The cosign signature covers the OCI artifact containing `.manifest`. The broker
+compares that manifest revision with `expected_policy_revision` before swapping
+the runtime snapshot. A mismatch or missing revision fails initial installation;
+on reload, the previous engine, digest, and revision remain active.
 
 The mandatory baseline exposes the fixed documents
 `data.sts.enterprise.v1.decision` and
 `data.sts.enterprise.v1.metadata`. Metadata must be an object with:
 
 - `contract_version: v1`
-- A nonempty, trimmed `policy_revision`
+- `policy_revision` exactly matching the canonical `.manifest.revision`
 - A `controls` array containing `immutable_identity` and `permission_boundary`
 - An `admission` object containing a known-good `app`, `identity`, exact
   `source` and `target` owner/repository ID pairs, and a nonempty bounded
@@ -276,6 +393,74 @@ Cross-org exception admission rejects unknown/missing fields, malformed IDs or
 permissions, duplicate contexts, identical owner/approver identities, future
 creation, expired records, and lifetimes over 30 days. Expired records are
 filtered at evaluation time even if bundle refresh fails.
+
+`cross_org_exceptions` is a field on the enterprise bundle's own data
+document (`data.sts.enterprise_config.v1`, built into the OCI bundle
+alongside the Rego, not something a caller passes at request time). A full
+document — the shape of
+[`policies/example_data.json`](https://github.com/Depthmark/github-sts/blob/main/policies/example_data.json)
+used by the enterprise baseline's conformance tests — looks like this:
+
+```json
+{
+  "sts": {
+    "enterprise_config": {
+      "v1": {
+        "contract_version": "v1",
+        "approved_source_owner_ids": {"123456": true, "9001": true},
+        "approved_target_owner_ids": {"123456": true},
+        "apps": {
+          "default": {
+            "permission_ceiling": {"contents": "write", "deployments": "write", "statuses": "write"},
+            "targets": {
+              "123456": {
+                "repositories": {
+                  "456789": {
+                    "permission_ceiling": {"contents": "write", "deployments": "write", "statuses": "write"},
+                    "identities": {
+                      "deploy": {"permission_ceiling": {"contents": "write", "deployments": "write", "statuses": "write"}}
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "cross_org_exceptions": [
+          {
+            "exception_id": "xorg-deploy-2026-08",
+            "rule_id": "sts.relationship.cross_org",
+            "source": {"owner_id": "9001", "repository_id": "9002"},
+            "target": {"owner_id": "123456", "repository_id": "456789"},
+            "app": "default",
+            "identity": "deploy",
+            "permission_ceiling": {"contents": "read", "deployments": "write", "statuses": "write"},
+            "owner": "platform@example.com",
+            "approved_by": "security@example.com",
+            "reason": "org-a deploy workflow publishes releases into org-b/repo-b",
+            "created_at": "2026-08-01T00:00:00Z",
+            "expires_at": "2026-08-20T00:00:00Z"
+          }
+        ],
+        "org_wide_grants": []
+      }
+    }
+  }
+}
+```
+
+Every source owner ID and target owner ID that appears anywhere in
+`cross_org_exceptions` must also be listed (`true`) in
+`approved_source_owner_ids` / `approved_target_owner_ids`, or the enterprise
+baseline denies with `sts.context.unknown` before it even reaches the
+cross-org rule. `org_wide_grants` must stay an empty array — see
+[Organization-level scope](#organization-level-scope): the broker rejects it
+non-empty at startup until organization-wide grants are covered by mandatory
+enterprise policy. This data document is authored and reviewed by whoever
+owns the enterprise policy bundle (typically a platform/security team), built
+into the signed OCI bundle, and is the "organization level" of authorization
+— individual repo trust policies cannot grant cross-organization access on
+their own once `bundle_enforcement: required` is in effect.
 
 ### Explicit optional development example
 
@@ -307,6 +492,41 @@ development only and are rejected in required mode. Digest-pinned optional OCI
 refs must not set `allow_mutable_ref`; mutable tags must set it to `true`.
 Mutable tags are resolved once to a digest before verification and pull so the
 verified artifact is the artifact compiled and evaluated.
+
+Optional bundles may omit both `expected_policy_revision` and manifest revision
+for legacy development use. If either value is present it must use the canonical
+format, and a configured expectation must match the manifest.
+
+### Revision promotion checks
+
+The broker is intentionally stateless and does not persist a highest-seen
+revision. Release and deployment CI must compare the candidate against the tuple
+from a trusted release or protected base branch. Set `BROKER_VERSION` to a
+reviewed broker release or commit:
+
+```bash
+go run github.com/depthmark/github-sts/cmd/github-sts-bundle@${BROKER_VERSION} check-promotion \
+  --mode=deployment \
+  --current-revision="$CURRENT_REVISION" \
+  --current-digest="$CURRENT_DIGEST" \
+  --candidate-revision="$CANDIDATE_REVISION" \
+  --candidate-digest="$CANDIDATE_DIGEST"
+```
+
+`release` mode requires a higher revision. `deployment` mode also accepts the
+exact same revision/digest tuple as a no-op. Both modes reject a lower revision,
+the same revision with different bytes, or one digest claiming two revisions.
+Digests passed to this command are raw OCI manifest digests in canonical
+`sha256:<64 lowercase hex>` form. Never derive the trusted current tuple from
+candidate pull-request content. This command compares supplied tuples; CI must
+first verify the candidate signature and confirm that its manifest and rendered
+`expected_policy_revision` produce the supplied candidate tuple.
+
+The first policy publication has no prior tuple to compare. Establish revision
+`1` through the same protected review and signature process, then require the
+comparison for every later release and deployment change.
+
+### Optional posture signals
 
 Optional posture is deliberately visible:
 

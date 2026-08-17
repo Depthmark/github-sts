@@ -43,11 +43,12 @@ type LiveManager struct {
 	verify  VerifyConfig
 	slogger *slog.Logger
 
-	pollInterval time.Duration
-	maxStaleness time.Duration
-	failMode     string
-	apps         map[string]struct{}
-	mandatory    bool
+	pollInterval           time.Duration
+	maxStaleness           time.Duration
+	failMode               string
+	apps                   map[string]struct{}
+	mandatory              bool
+	expectedPolicyRevision string
 
 	reloadMu       sync.Mutex
 	mu             sync.RWMutex
@@ -74,13 +75,15 @@ type LiveManager struct {
 //     demand via SIGHUP).
 //   - MaxStaleness == 0 → staleness check disabled; Eval ignores age.
 //   - FailMode == "" → defaults to "closed" when MaxStaleness > 0.
+//   - ExpectedPolicyRevision == "" → no revision pin (optional legacy only).
 type LiveOpts struct {
-	Name         string
-	Apps         []string
-	Mandatory    bool
-	PollInterval time.Duration
-	MaxStaleness time.Duration
-	FailMode     string
+	Name                   string
+	Apps                   []string
+	Mandatory              bool
+	ExpectedPolicyRevision string
+	PollInterval           time.Duration
+	MaxStaleness           time.Duration
+	FailMode               string
 }
 
 // NewLiveManager constructs a manager but does not pull anything. Call
@@ -104,16 +107,17 @@ func NewLiveManager(loader Loader, source Source, verify VerifyConfig, slogger *
 		apps[app] = struct{}{}
 	}
 	return &LiveManager{
-		name:         name,
-		loader:       loader,
-		source:       source,
-		verify:       verify,
-		slogger:      slogger,
-		pollInterval: opts.PollInterval,
-		maxStaleness: opts.MaxStaleness,
-		failMode:     failMode,
-		apps:         apps,
-		mandatory:    opts.Mandatory,
+		name:                   name,
+		loader:                 loader,
+		source:                 source,
+		verify:                 verify,
+		slogger:                slogger,
+		pollInterval:           opts.PollInterval,
+		maxStaleness:           opts.MaxStaleness,
+		failMode:               failMode,
+		apps:                   apps,
+		mandatory:              opts.Mandatory,
+		expectedPolicyRevision: opts.ExpectedPolicyRevision,
 	}
 }
 
@@ -129,10 +133,12 @@ func (m *LiveManager) Init(ctx context.Context) error {
 	}
 	m.mu.RLock()
 	digest := m.digest
+	policyRevision := m.policyRevision
 	loadedAt := m.loadedAt
 	m.mu.RUnlock()
 	m.slogger.Info("bundle init: ready",
 		"digest", digest,
+		"policy_revision", policyRevision,
 		"loaded_at", loadedAt.Format(time.RFC3339),
 	)
 	return nil
@@ -190,6 +196,11 @@ func (m *LiveManager) Reload(ctx context.Context) (string, error) {
 // compile, atomic swap. Caller is responsible for any digest-comparison
 // logic and for setting/clearing lastPullErr around the call.
 func (m *LiveManager) fetchAndInstall(ctx context.Context, kind string) error {
+	if m.expectedPolicyRevision != "" {
+		if _, err := ParsePolicyRevision(m.expectedPolicyRevision); err != nil {
+			return fmt.Errorf("bundle %s: expected policy revision %q is invalid: %w", kind, m.expectedPolicyRevision, err)
+		}
+	}
 	scheme := m.source.Scheme()
 	if scheme == "" {
 		scheme = "file"
@@ -235,6 +246,13 @@ func (m *LiveManager) fetchAndInstall(ctx context.Context, kind string) error {
 	if err != nil {
 		return fmt.Errorf("bundle %s: compile: %w", kind, err)
 	}
+	manifestRevision := eng.ManifestRevision()
+	if m.expectedPolicyRevision != "" && manifestRevision != m.expectedPolicyRevision {
+		if manifestRevision == "" {
+			return fmt.Errorf("bundle %s: expected policy revision %q but bundle manifest revision is missing", kind, m.expectedPolicyRevision)
+		}
+		return fmt.Errorf("bundle %s: expected policy revision %q does not match bundle manifest revision %q", kind, m.expectedPolicyRevision, manifestRevision)
+	}
 	exceptions, err := eng.Exceptions(ctx)
 	if err != nil {
 		return fmt.Errorf("bundle %s: exception inventory: %w", kind, err)
@@ -247,23 +265,24 @@ func (m *LiveManager) fetchAndInstall(ctx context.Context, kind string) error {
 	now := time.Now()
 	m.mu.Lock()
 	previousDigest := m.digest
+	previousRevision := m.policyRevision
 	m.engine = eng
 	m.digest = fetch.Digest
 	m.loadedAt = now
 	m.tarball = fetch.Tarball
 	m.exceptions = exceptions
-	m.policyRevision = eng.Metadata().PolicyRevision
+	m.policyRevision = manifestRevision
 	m.mu.Unlock()
 
-	if previousDigest != "" && previousDigest != fetch.Digest {
+	if previousDigest != "" && (previousDigest != fetch.Digest || previousRevision != manifestRevision) {
 		// Drop the gauge for the old digest so dashboards don't show
 		// two simultaneously-loaded bundles. The new digest's gauge is
 		// set below.
 		metrics.BundleLoadedDigestInfo.DeleteLabelValues(m.name, previousDigest)
-		metrics.BundlePolicyRevisionInfo.DeleteLabelValues(m.name, previousDigest)
+		metrics.BundlePolicyRevisionInfo.DeleteLabelValues(m.name, previousDigest, previousRevision)
 	}
 	metrics.BundleLoadedDigestInfo.WithLabelValues(m.name, fetch.Digest).Set(1)
-	metrics.BundlePolicyRevisionInfo.WithLabelValues(m.name, fetch.Digest).Set(1)
+	metrics.BundlePolicyRevisionInfo.WithLabelValues(m.name, fetch.Digest, manifestRevision).Set(1)
 	metrics.BundleAgeSeconds.WithLabelValues(m.name).Set(0)
 	m.updateExceptionMetrics(fetch.Digest, exceptions)
 	return nil
@@ -399,6 +418,7 @@ func (m *LiveManager) Eval(ctx context.Context, input Input) (Decision, error) {
 	eng := m.engine
 	loadedAt := m.loadedAt
 	digest := m.digest
+	policyRevision := m.policyRevision
 	m.mu.RUnlock()
 
 	if eng == nil {
@@ -429,6 +449,7 @@ func (m *LiveManager) Eval(ctx context.Context, input Input) (Decision, error) {
 	for i := range d.Packages {
 		d.Packages[i].BundleName = m.name
 		d.Packages[i].Digest = digest
+		d.Packages[i].PolicyRevision = policyRevision
 	}
 	for i := range d.Exceptions {
 		d.Exceptions[i].BundleName = m.name

@@ -6,7 +6,7 @@ config := data.sts.enterprise_config.v1
 
 metadata := {
 	"contract_version": "v1",
-	"policy_revision": "example-v1",
+	"policy_revision": "1",
 	"controls": ["immutable_identity", "permission_boundary"],
 	"admission": {
 		"app": "default",

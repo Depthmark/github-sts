@@ -15,9 +15,8 @@ import (
 )
 
 // buildTarball builds an OPA-style bundle tarball in memory from a map
-// of file paths to contents. No signing, no manifest — the engine
-// constructor uses WithSkipBundleVerification(true) so an unsigned
-// fixture is acceptable for tests.
+// of file paths to contents. The engine constructor skips signature
+// verification, so unsigned fixtures are acceptable for tests.
 func buildTarball(t *testing.T, files map[string]string) []byte {
 	t.Helper()
 	var buf bytes.Buffer
@@ -58,6 +57,7 @@ func exampleBaselineTarball(t *testing.T) []byte {
 	return buildTarball(t, map[string]string{
 		"/policies/example_enterprise_baseline.rego": string(regoSource),
 		"/data.json": string(data),
+		"/.manifest": `{"revision":"1"}`,
 	})
 }
 
@@ -190,6 +190,73 @@ func TestEngine_RejectsEmptyTarball(t *testing.T) {
 	}
 	if _, err := NewEngine(context.Background(), []byte{}); err == nil {
 		t.Fatalf("expected error on empty tarball, got nil")
+	}
+}
+
+func TestParsePolicyRevision(t *testing.T) {
+	valid := map[string]uint64{
+		"1":                    1,
+		"2":                    2,
+		"18446744073709551615": ^uint64(0),
+	}
+	for revision, want := range valid {
+		revision, want := revision, want
+		t.Run("valid_"+revision, func(t *testing.T) {
+			got, err := ParsePolicyRevision(revision)
+			if err != nil || got != want {
+				t.Fatalf("ParsePolicyRevision(%q) = %d, %v; want %d, nil", revision, got, err, want)
+			}
+		})
+	}
+	for _, revision := range []string{"", "0", "00", "01", "+1", "-1", " 1", "1 ", "1\n", "1.0", "one", "18446744073709551616"} {
+		revision := revision
+		t.Run("invalid_"+revision, func(t *testing.T) {
+			if _, err := ParsePolicyRevision(revision); err == nil {
+				t.Fatalf("ParsePolicyRevision(%q) succeeded, want error", revision)
+			}
+		})
+	}
+}
+
+func TestEngine_ManifestRevision(t *testing.T) {
+	rego := `package sts.enterprise.revision
+import rego.v1
+decision := {"allow": false, "reasons": ["deny"]}
+`
+	t.Run("valid revision retained", func(t *testing.T) {
+		eng, err := NewEngine(context.Background(), buildTarball(t, map[string]string{
+			"/policies/policy.rego": rego,
+			"/.manifest":            `{"revision":"18446744073709551615"}`,
+		}))
+		if err != nil {
+			t.Fatalf("NewEngine: %v", err)
+		}
+		if got := eng.ManifestRevision(); got != "18446744073709551615" {
+			t.Fatalf("ManifestRevision() = %q", got)
+		}
+	})
+	t.Run("legacy missing revision allowed", func(t *testing.T) {
+		eng, err := NewEngine(context.Background(), buildTarball(t, map[string]string{
+			"/policies/policy.rego": rego,
+		}))
+		if err != nil {
+			t.Fatalf("NewEngine: %v", err)
+		}
+		if got := eng.ManifestRevision(); got != "" {
+			t.Fatalf("ManifestRevision() = %q, want empty", got)
+		}
+	})
+	for _, revision := range []string{"0", "01", "+1", " 1", "x", "18446744073709551616"} {
+		revision := revision
+		t.Run("invalid_"+revision, func(t *testing.T) {
+			_, err := NewEngine(context.Background(), buildTarball(t, map[string]string{
+				"/policies/policy.rego": rego,
+				"/.manifest":            `{"revision":"` + revision + `"}`,
+			}))
+			if err == nil || !strings.Contains(err.Error(), "manifest revision") {
+				t.Fatalf("error = %v, want invalid manifest revision", err)
+			}
+		})
 	}
 }
 
@@ -381,7 +448,7 @@ func TestMandatoryEngine_ExampleBaselineAdmission(t *testing.T) {
 		t.Fatalf("NewMandatoryEngine: %v", err)
 	}
 	metadata := eng.Metadata()
-	if metadata.ContractVersion != "v1" || metadata.PolicyRevision != "example-v1" {
+	if metadata.ContractVersion != "v1" || metadata.PolicyRevision != "1" || eng.ManifestRevision() != "1" {
 		t.Fatalf("mandatory metadata = %+v", metadata)
 	}
 	if len(eng.decisions) != 1 || eng.decisions[0].Query != mandatoryEntrypoint {
@@ -392,7 +459,7 @@ func TestMandatoryEngine_ExampleBaselineAdmission(t *testing.T) {
 func TestMandatoryEngine_AdmissionRejectsIncompleteBundles(t *testing.T) {
 	metadata := `metadata := {
   "contract_version": "v1",
-  "policy_revision": "test-1",
+  "policy_revision": "1",
   "controls": ["immutable_identity", "permission_boundary"],
 	"admission": {
 	  "app": "default",
@@ -471,7 +538,7 @@ import rego.v1
 decision := {"allow": false, "reasons": ["deny"]}
 metadata := {
   "contract_version": "v1",
-  "policy_revision": "test-1",
+  "policy_revision": "1",
   "controls": ["immutable_identity"],
 }
 `,
@@ -483,7 +550,47 @@ metadata := {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := NewMandatoryEngine(context.Background(), buildTarball(t, map[string]string{
 				"/policies/policy.rego": tt.rego,
+				"/.manifest":            `{"revision":"1"}`,
 			}))
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error = %v, want substring %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestMandatoryEngine_RequiresMatchingManifestRevision(t *testing.T) {
+	rego := `package sts.enterprise.v1
+import rego.v1
+default decision := {"allow": false, "reasons": ["deny"]}
+metadata := {
+  "contract_version": "v1",
+  "policy_revision": "1",
+  "controls": ["immutable_identity", "permission_boundary"],
+  "admission": {
+    "app": "default",
+    "identity": "ci",
+    "source": {"owner_id": "123456", "repository_id": "456789"},
+    "target": {"owner_id": "123456", "repository_id": "456789"},
+    "permissions": {"contents": "read"},
+  },
+}
+`
+	tests := []struct {
+		name     string
+		manifest string
+		wantErr  string
+	}{
+		{name: "missing manifest revision", wantErr: "manifest revision is required"},
+		{name: "metadata mismatch", manifest: `{"revision":"2"}`, wantErr: "does not match manifest revision"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			files := map[string]string{"/policies/policy.rego": rego}
+			if tt.manifest != "" {
+				files["/.manifest"] = tt.manifest
+			}
+			_, err := NewMandatoryEngine(context.Background(), buildTarball(t, files))
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 				t.Fatalf("error = %v, want substring %q", err, tt.wantErr)
 			}

@@ -175,9 +175,12 @@ readiness probes and load balancer health checks.
 
 When bundles are configured, `/health` includes aggregate bundle state and a
 `bundles` array. Per-bundle status includes `name`, `enabled`, `mandatory`,
-`digest`, admitted `policy_revision`, `age_seconds`, and optional
+`digest`, authoritative signed manifest `policy_revision`, `age_seconds`, and optional
 `last_pull_error`. Bundle pull failures do not change liveness; exchange-time
 behavior follows each bundle's `fail_mode` and required-participation contract.
+
+Completed exchange audit events include `policy_revision` in each
+`bundle_decisions[]` entry alongside the exact evaluated digest.
 
 ## Go Client Library
 

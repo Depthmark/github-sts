@@ -575,6 +575,7 @@ func examplePolicyManager(t *testing.T) bundle.Manager {
 	for name, content := range map[string][]byte{
 		"policies/example_enterprise_baseline.rego": rego,
 		"data.json": data,
+		".manifest": []byte(`{"revision":"1"}`),
 	} {
 		if err := tarWriter.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: int64(len(content))}); err != nil {
 			t.Fatalf("write bundle header: %v", err)
@@ -595,7 +596,7 @@ func examplePolicyManager(t *testing.T) bundle.Manager {
 	}
 	live := bundle.NewLiveManager(
 		bundle.FilesystemLoader{}, bundle.Source{Raw: "file://" + path}, bundle.VerifyConfig{}, discardSlogger(),
-		bundle.LiveOpts{Name: "example-enterprise-baseline", Mandatory: true},
+		bundle.LiveOpts{Name: "example-enterprise-baseline", Mandatory: true, ExpectedPolicyRevision: "1"},
 	)
 	if err := live.Init(context.Background()); err != nil {
 		t.Fatalf("initialize example mandatory baseline: %v", err)

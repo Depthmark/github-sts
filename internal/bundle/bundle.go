@@ -152,19 +152,20 @@ type Decision struct {
 	Exceptions      []Exception       `json:"exceptions,omitempty"`
 }
 
-// PackageDecision captures one package-level decision document. BundleName
-// and Digest are filled by managers; Engine fills Package, Query, Allow,
-// Reasons, and optional rule/exception metadata returned by Rego.
+// PackageDecision captures one package-level decision document. BundleName,
+// Digest, and PolicyRevision are filled by managers; Engine fills Package,
+// Query, Allow, Reasons, and optional rule/exception metadata returned by Rego.
 type PackageDecision struct {
-	BundleName  string   `json:"bundle_name,omitempty"`
-	Digest      string   `json:"digest,omitempty"`
-	Package     string   `json:"package"`
-	Query       string   `json:"query"`
-	Allow       bool     `json:"allow"`
-	Reasons     []string `json:"reasons,omitempty"`
-	RuleID      string   `json:"rule_id,omitempty"`
-	RuleName    string   `json:"rule_name,omitempty"`
-	ExceptionID string   `json:"exception_id,omitempty"`
+	BundleName     string   `json:"bundle_name,omitempty"`
+	Digest         string   `json:"digest,omitempty"`
+	PolicyRevision string   `json:"policy_revision,omitempty"`
+	Package        string   `json:"package"`
+	Query          string   `json:"query"`
+	Allow          bool     `json:"allow"`
+	Reasons        []string `json:"reasons,omitempty"`
+	RuleID         string   `json:"rule_id,omitempty"`
+	RuleName       string   `json:"rule_name,omitempty"`
+	ExceptionID    string   `json:"exception_id,omitempty"`
 }
 
 // Exception is inventory metadata exported by Rego bundles so operators can

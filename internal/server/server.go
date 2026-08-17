@@ -428,12 +428,13 @@ func initBundleManager(cfg *config.Settings, slogger *slog.Logger) (bundle.Manag
 			},
 		}
 		mgr := bundle.NewLiveManager(loader, src, verify, slogger.With("bundle", bc.Name), bundle.LiveOpts{
-			Name:         bc.Name,
-			Apps:         bc.Apps,
-			Mandatory:    cfg.BundleEnforcement == config.BundleEnforcementRequired && len(bc.Apps) == 0,
-			PollInterval: bc.PollInterval,
-			MaxStaleness: bc.MaxStaleness,
-			FailMode:     bc.FailMode,
+			Name:                   bc.Name,
+			Apps:                   bc.Apps,
+			Mandatory:              cfg.BundleEnforcement == config.BundleEnforcementRequired && len(bc.Apps) == 0,
+			ExpectedPolicyRevision: bc.ExpectedPolicyRevision,
+			PollInterval:           bc.PollInterval,
+			MaxStaleness:           bc.MaxStaleness,
+			FailMode:               bc.FailMode,
 		})
 		initCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		if err := mgr.Init(initCtx); err != nil {

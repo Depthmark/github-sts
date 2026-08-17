@@ -50,9 +50,34 @@ helm install github-sts depthmark/github-sts \
 ```
 
 The rendered server config must include `bundle_enforcement: required`, exactly
-one global `apps: []` baseline, and its digest-pinned OCI/cosign settings. Exact
+one global `apps: []` baseline, and its digest-pinned OCI/cosign settings. Every
+bundle must pair that digest with its signed `expected_policy_revision`. Exact
 chart values keys may evolve; check the chart repo's `values.yaml` for the
 authoritative mapping.
+
+Promotion automation must update digest and expected revision together. It must
+compare against the tuple from the protected base branch, not candidate content.
+Set `BROKER_VERSION` to a reviewed broker release or commit:
+
+```bash
+go run github.com/depthmark/github-sts/cmd/github-sts-bundle@${BROKER_VERSION} check-promotion \
+  --mode=deployment \
+  --current-revision="$CURRENT_REVISION" \
+  --current-digest="$CURRENT_DIGEST" \
+  --candidate-revision="$CANDIDATE_REVISION" \
+  --candidate-digest="$CANDIDATE_DIGEST"
+```
+
+The broker verifies tuple equality at installation but deliberately stores no
+revision high-water mark. Branch protection must require this GitOps check.
+Roll back policy semantics by publishing the previous content as a new, higher
+signed revision rather than selecting an older revision.
+
+The comparison command does not pull or verify an artifact. Before invoking it,
+CI must cosign-verify the candidate digest, extract its signed manifest revision,
+and confirm that the rendered deployment uses the same expected revision.
+Bootstrap the first signed policy as reviewed revision `1`; require tuple
+comparison for every subsequent release and deployment change.
 
 ### Immutable subject rollout
 
@@ -86,6 +111,8 @@ Before exposing github-sts publicly:
 - [ ] Top-level `bundle_enforcement` is `required`; the `GITHUBSTS_BUNDLE_ENFORCEMENT` override cannot downgrade production unexpectedly.
 - [ ] Exactly one global baseline has `apps: []` and `fail_mode: closed`; app-scoped bundles are additive.
 - [ ] Every bundle ref is trusted OCI pinned to `@sha256:<64 lowercase hex>`. File refs and mutable tags are not used.
+- [ ] Every bundle has a canonical `expected_policy_revision` matching its signed `.manifest.revision`; mandatory Rego metadata matches it too.
+- [ ] Policy release and deployment CI reject lower revisions and reused revision/digest values using a protected current tuple.
 - [ ] Every bundle is cosign verified with keyless signer/issuer constraints for `Depthmark/github-sts-policy` or an explicitly managed `public_key_ref`; verification is never skipped.
 - [ ] The mandatory baseline passes the fixed `sts.enterprise.v1` metadata and negative-probe admission contract before rollout.
 - [ ] Alerts are configured for bundle pull failures, stale bundles, policy revision changes, and expiring exceptions.
@@ -104,7 +131,8 @@ exchange would fail closed.
 
 Exchange audit events include `bundle_enforcement`. Once the bundle path is
 reached, they add `bundle_digest` and `org_decision.applicable` /
-`org_decision.evaluated`; completed evaluations add `bundle_decisions`.
+`org_decision.evaluated`; completed evaluations add `bundle_decisions`, whose
+entries include the exact evaluated `digest` and `policy_revision`.
 Preserve these fields in the SIEM so an evaluated `403 org_policy_denied`
 remains distinguishable from the bundle-related `503` errors.
 
@@ -135,7 +163,7 @@ remains distinguishable from the bundle-related `503` errors.
 | `githubsts_bundle_age_seconds` | Gauge | Seconds since last successful bundle pull by bundle |
 | `githubsts_bundle_reload_total` | Counter | Bundle reload attempts by bundle and result |
 | `githubsts_bundle_stale_evals_total` | Counter | Exchanges evaluated with stale bundles by bundle and fail mode |
-| `githubsts_bundle_policy_revision_info` | Gauge | Active Rego policy digest by bundle |
+| `githubsts_bundle_policy_revision_info` | Gauge | Active signed Rego tuple by bundle, digest, and policy revision |
 | `githubsts_bundle_policy_revision_changes_total` | Counter | Policy revision reload outcomes by bundle |
 | `githubsts_bundle_policy_decisions_total` | Counter | Aggregate Rego decision impact by app, bundle, digest, and result |
 | `githubsts_bundle_policy_rule_decisions_total` | Counter | Rego decisions by bounded enterprise rule ID |

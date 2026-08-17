@@ -23,14 +23,47 @@ import (
 // should use keyless identity/issuer verification; public-key verification is
 // supported for local/offline testing and explicitly managed keys. The returned
 // tarball is the compressed OPA bundle layer as produced by `opa build`.
-type OCILoader struct{}
+//
+// The zero value uses the production registry and cosign operations.
+type OCILoader struct {
+	operations *ociLoaderOperations
+}
+
+// ociLoaderOperations is a per-loader seam for deterministic tests of the
+// resolve-verify-pull sequence. Keeping it unexported prevents production
+// callers from replacing security-sensitive operations.
+type ociLoaderOperations struct {
+	resolveTag      func(name.Reference, []remote.Option) (v1.Hash, error)
+	verifySignature func(context.Context, name.Reference, VerifyConfig, []remote.Option) error
+	pullImage       func(name.Reference, []remote.Option) (v1.Image, error)
+}
 
 type verificationError struct{ err error }
 
 func (e *verificationError) Error() string { return e.err.Error() }
 func (e *verificationError) Unwrap() error { return e.err }
 
-func (OCILoader) Fetch(ctx context.Context, src Source, verify VerifyConfig) (Fetch, error) {
+type resolveError struct{ err error }
+
+func (e *resolveError) Error() string { return e.err.Error() }
+func (e *resolveError) Unwrap() error { return e.err }
+
+type pullError struct{ err error }
+
+func (e *pullError) Error() string { return e.err.Error() }
+func (e *pullError) Unwrap() error { return e.err }
+
+type digestMismatchError struct{ err error }
+
+func (e *digestMismatchError) Error() string { return e.err.Error() }
+func (e *digestMismatchError) Unwrap() error { return e.err }
+
+type layerError struct{ err error }
+
+func (e *layerError) Error() string { return e.err.Error() }
+func (e *layerError) Unwrap() error { return e.err }
+
+func (l OCILoader) Fetch(ctx context.Context, src Source, verify VerifyConfig) (Fetch, error) {
 	if src.Scheme() != "oci" {
 		return Fetch{}, fmt.Errorf("bundle oci loader: unsupported source scheme %q", src.Scheme())
 	}
@@ -46,57 +79,86 @@ func (OCILoader) Fetch(ctx context.Context, src Source, verify VerifyConfig) (Fe
 	if err != nil {
 		return Fetch{}, err
 	}
-	resolvedRef, expectedDigest, err := resolveOCIReference(ref, opts)
+	operations := l.operationsOrDefault()
+	resolvedRef, expectedDigest, err := resolveOCIReferenceWith(ref, opts, operations.resolveTag)
 	if err != nil {
-		return Fetch{}, fmt.Errorf("bundle oci loader: resolving %q: %w", src.Raw, err)
+		return Fetch{}, &resolveError{err: fmt.Errorf("bundle oci loader: resolving %q: %w", src.Raw, err)}
 	}
 
 	if !verify.SkipVerification {
-		if err := verifyCosignSignature(ctx, resolvedRef, verify, opts); err != nil {
+		if err := operations.verifySignature(ctx, resolvedRef, verify, opts); err != nil {
 			return Fetch{}, &verificationError{err: err}
 		}
 	}
 
-	img, err := remote.Image(resolvedRef, opts...)
+	img, err := operations.pullImage(resolvedRef, opts)
 	if err != nil {
-		return Fetch{}, fmt.Errorf("bundle oci loader: pulling %q: %w", src.Raw, err)
+		return Fetch{}, &pullError{err: fmt.Errorf("bundle oci loader: pulling %q: %w", src.Raw, err)}
 	}
 	digest, err := img.Digest()
 	if err != nil {
-		return Fetch{}, fmt.Errorf("bundle oci loader: resolving digest for %q: %w", src.Raw, err)
+		return Fetch{}, &pullError{err: fmt.Errorf("bundle oci loader: resolving digest for %q: %w", src.Raw, err)}
 	}
 	if digest.String() != expectedDigest {
-		return Fetch{}, fmt.Errorf("bundle oci loader: resolved digest changed: expected %s, got %s", expectedDigest, digest.String())
+		return Fetch{}, &digestMismatchError{err: fmt.Errorf("bundle oci loader: resolved digest changed: expected %s, got %s", expectedDigest, digest.String())}
 	}
 	layer, err := selectBundleLayer(img)
 	if err != nil {
-		return Fetch{}, fmt.Errorf("bundle oci loader: selecting bundle layer for %q: %w", src.Raw, err)
+		return Fetch{}, &layerError{err: fmt.Errorf("bundle oci loader: selecting bundle layer for %q: %w", src.Raw, err)}
 	}
 	r, err := layer.Compressed()
 	if err != nil {
-		return Fetch{}, fmt.Errorf("bundle oci loader: opening compressed bundle layer: %w", err)
+		return Fetch{}, &layerError{err: fmt.Errorf("bundle oci loader: opening compressed bundle layer: %w", err)}
 	}
 	defer func() { _ = r.Close() }()
 	data, err := io.ReadAll(r)
 	if err != nil {
-		return Fetch{}, fmt.Errorf("bundle oci loader: reading compressed bundle layer: %w", err)
+		return Fetch{}, &layerError{err: fmt.Errorf("bundle oci loader: reading compressed bundle layer: %w", err)}
 	}
 	if len(data) == 0 {
-		return Fetch{}, fmt.Errorf("bundle oci loader: selected bundle layer is empty")
+		return Fetch{}, &layerError{err: fmt.Errorf("bundle oci loader: selected bundle layer is empty")}
 	}
 	return Fetch{Tarball: data, Digest: digest.String()}, nil
 }
 
-func resolveOCIReference(ref name.Reference, opts []remote.Option) (name.Reference, string, error) {
+func (l OCILoader) operationsOrDefault() ociLoaderOperations {
+	var operations ociLoaderOperations
+	if l.operations != nil {
+		operations = *l.operations
+	}
+	if operations.resolveTag == nil {
+		operations.resolveTag = resolveOCITag
+	}
+	if operations.verifySignature == nil {
+		operations.verifySignature = verifyCosignSignature
+	}
+	if operations.pullImage == nil {
+		operations.pullImage = pullOCIImage
+	}
+	return operations
+}
+
+func resolveOCIReferenceWith(ref name.Reference, opts []remote.Option, resolveTag func(name.Reference, []remote.Option) (v1.Hash, error)) (name.Reference, string, error) {
 	if digest, ok := ref.(name.Digest); ok {
 		return digest, digest.DigestStr(), nil
 	}
-	descriptor, err := remote.Get(ref, opts...)
+	digest, err := resolveTag(ref, opts)
 	if err != nil {
 		return nil, "", err
 	}
-	digest := descriptor.Digest.String()
-	return ref.Context().Digest(digest), digest, nil
+	return ref.Context().Digest(digest.String()), digest.String(), nil
+}
+
+func resolveOCITag(ref name.Reference, opts []remote.Option) (v1.Hash, error) {
+	descriptor, err := remote.Get(ref, opts...)
+	if err != nil {
+		return v1.Hash{}, err
+	}
+	return descriptor.Digest, nil
+}
+
+func pullOCIImage(ref name.Reference, opts []remote.Option) (v1.Image, error) {
+	return remote.Image(ref, opts...)
 }
 
 func registryRemoteOptions(ctx context.Context, auth RegistryAuthConfig) ([]remote.Option, error) {

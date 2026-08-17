@@ -1,11 +1,17 @@
 package server
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/depthmark/github-sts/internal/config"
 	"github.com/depthmark/github-sts/internal/handler"
@@ -267,5 +273,61 @@ func TestYAMLOnlyAuthorizationPossible(t *testing.T) {
 				t.Fatalf("yamlOnlyAuthorizationPossible() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestInitBundleManager_WiresExpectedPolicyRevision(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bundle.tar.gz")
+	writeServerTestBundle(t, path, "3")
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	cfg := &config.Settings{
+		BundleEnforcement: config.BundleEnforcementOptional,
+		Bundles: []config.BundleConfig{{
+			Name: "revision", Ref: "file://" + path, ExpectedPolicyRevision: "4",
+			PollInterval: time.Minute, MaxStaleness: time.Minute, FailMode: config.BundleFailModeClosed,
+		}},
+	}
+	_, lifecycle, err := initBundleManager(cfg, logger)
+	if lifecycle != nil {
+		lifecycle.Stop()
+	}
+	if err == nil || !bytes.Contains([]byte(err.Error()), []byte("expected policy revision \"4\" does not match bundle manifest revision \"3\"")) {
+		t.Fatalf("initBundleManager error = %v, want wired revision mismatch", err)
+	}
+}
+
+func writeServerTestBundle(t *testing.T, path, revision string) {
+	t.Helper()
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gzipWriter := gzip.NewWriter(file)
+	tarWriter := tar.NewWriter(gzipWriter)
+	files := map[string]string{
+		"policies/policy.rego": `package sts.enterprise.server_test
+import rego.v1
+decision := {"allow": false, "reasons": ["deny"]}
+`,
+		".manifest": `{"revision":"` + revision + `"}`,
+	}
+	for name, body := range files {
+		if err := tarWriter.WriteHeader(&tar.Header{Name: name, Mode: 0o600, Size: int64(len(body))}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tarWriter.Write([]byte(body)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tarWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gzipWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
 	}
 }

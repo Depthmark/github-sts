@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/depthmark/github-sts/internal/bundle"
 	"github.com/depthmark/github-sts/internal/policy"
 	"github.com/depthmark/github-sts/internal/yamlstrict"
 	"gopkg.in/yaml.v3"
@@ -126,15 +127,16 @@ type MetricsConfig struct {
 // defaults are conservative: a 5 minute poll, a 10 minute staleness ceiling,
 // and fail-closed when stale.
 type BundleConfig struct {
-	Name            string         `yaml:"name"`
-	Ref             string         `yaml:"ref"`
-	Apps            []string       `yaml:"apps"`
-	AllowMutableRef bool           `yaml:"allow_mutable_ref"`
-	Cosign          CosignConfig   `yaml:"cosign"`
-	Registry        RegistryConfig `yaml:"registry"`
-	PollInterval    time.Duration  `yaml:"poll_interval"`
-	MaxStaleness    time.Duration  `yaml:"max_staleness"`
-	FailMode        string         `yaml:"fail_mode"`
+	Name                   string         `yaml:"name"`
+	Ref                    string         `yaml:"ref"`
+	Apps                   []string       `yaml:"apps"`
+	ExpectedPolicyRevision string         `yaml:"expected_policy_revision"`
+	AllowMutableRef        bool           `yaml:"allow_mutable_ref"`
+	Cosign                 CosignConfig   `yaml:"cosign"`
+	Registry               RegistryConfig `yaml:"registry"`
+	PollInterval           time.Duration  `yaml:"poll_interval"`
+	MaxStaleness           time.Duration  `yaml:"max_staleness"`
+	FailMode               string         `yaml:"fail_mode"`
 }
 
 // Bundle enforcement modes.
@@ -385,6 +387,13 @@ func (s *Settings) validateBundles() error {
 		seen[b.Name] = struct{}{}
 		if b.Ref == "" {
 			return fmt.Errorf("%s.ref is required", prefix)
+		}
+		if b.ExpectedPolicyRevision == "" {
+			if s.BundleEnforcement == BundleEnforcementRequired {
+				return fmt.Errorf("%s.expected_policy_revision is required when bundle_enforcement is %q", prefix, BundleEnforcementRequired)
+			}
+		} else if _, err := bundle.ParsePolicyRevision(b.ExpectedPolicyRevision); err != nil {
+			return fmt.Errorf("%s.expected_policy_revision is invalid: %w", prefix, err)
 		}
 		if err := s.validateBundleApps(prefix, b.Apps); err != nil {
 			return err

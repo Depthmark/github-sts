@@ -87,9 +87,10 @@ type OrgDecision struct {
 }
 
 type BundleDecision struct {
-	BundleName string            `json:"bundle_name"`
-	Digest     string            `json:"digest"`
-	Packages   []PackageDecision `json:"packages,omitempty"`
+	BundleName     string            `json:"bundle_name"`
+	Digest         string            `json:"digest"`
+	PolicyRevision string            `json:"policy_revision,omitempty"`
+	Packages       []PackageDecision `json:"packages,omitempty"`
 }
 
 type PackageDecision struct {
@@ -112,7 +113,7 @@ func FromBundleDecision(d bundle.Decision) []BundleDecision {
 		}
 		bd, ok := byBundle[name]
 		if !ok {
-			bd = &BundleDecision{BundleName: name, Digest: pd.Digest}
+			bd = &BundleDecision{BundleName: name, Digest: pd.Digest, PolicyRevision: pd.PolicyRevision}
 			byBundle[name] = bd
 			order = append(order, name)
 		}
