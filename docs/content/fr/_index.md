@@ -5,80 +5,74 @@ translationKey: home
 translationStatus: pending-review
 ---
 
-Échangez des jetons OIDC pour des jetons d'installation GitHub temporaires et limités. Sans PAT. Sans secrets persistants.
+<section class="gg-hero">
+  <div class="gg-hero__badges">
+    <span class="gg-badge gg-badge--security">Go</span>
+    <span class="gg-badge gg-badge--core">OIDC</span>
+    <span class="gg-badge gg-badge--suite">Zero-Trust</span>
+  </div>
+  <h1 class="gg-hero__title">Des jetons GitHub temporaires.<br>Aucun secret stocké.</h1>
+  <p class="gg-hero__subtitle">Échangez un jeton OIDC contre un jeton d'installation GitHub limité et temporaire. Sans PAT, sans identifiants persistants à faire tourner ou à divulguer.</p>
+  <div class="gg-hero__actions">
+    <a class="gg-btn gg-btn--primary" href="get-started/quickstart-local/">Démarrer en 15 minutes →</a>
+    <a class="gg-btn gg-btn--secondary" href="https://github.com/Depthmark/github-sts">Voir sur GitHub</a>
+  </div>
+  <p class="gg-hero__shields">
+    <a href="https://github.com/Depthmark/github-sts/blob/main/LICENSE"><img src="https://img.shields.io/github/license/Depthmark/github-sts?style=flat-square" alt="Licence"></a>
+    <a href="https://pkg.go.dev/github.com/depthmark/github-sts"><img src="https://img.shields.io/badge/Go-1.26+-00ADD8?style=flat-square&logo=go&logoColor=white" alt="Go"></a>
+    <a href="https://scorecard.dev/viewer/?uri=github.com/Depthmark/github-sts"><img src="https://api.scorecard.dev/projects/github.com/Depthmark/github-sts/badge" alt="Score OpenSSF"></a>
+  </p>
+</section>
 
-Les charges de travail avec des jetons OIDC (GitHub Actions, Azure, GCP, n'importe quel IdP) présentent leur identité et reçoivent un **jeton GitHub à privilège minimal** limité exactement aux dépôts et autorisations dont elles ont besoin. Prend en charge **plusieurs GitHub Apps** avec une configuration YAML, idéal pour les ConfigMaps Kubernetes.
+<section class="gg-section gg-section--band">
+  <div class="gg-eyebrow">Démarrage</div>
+  <h2 class="gg-section__title">De zéro à votre premier échange de jeton</h2>
+  <div class="gg-steps">
+    <div class="gg-step">
+      <div class="gg-step__num">1</div>
+      <div class="gg-step__title">Configurer une GitHub App</div>
+      <div class="gg-step__desc">Créez l'App, définissez ses permissions, générez une clé privée.</div>
+    </div>
+    <div class="gg-step">
+      <div class="gg-step__num">2</div>
+      <div class="gg-step__title">Installer l'App</div>
+      <div class="gg-step__desc">Installez-la sur l'organisation ou les dépôts que le jeton doit toucher.</div>
+    </div>
+    <div class="gg-step">
+      <div class="gg-step__num">3</div>
+      <div class="gg-step__title">Générer un jeton</div>
+      <div class="gg-step__desc">Écrivez une politique de confiance, appelez <code>/sts/exchange</code> avec un jeton OIDC.</div>
+    </div>
+    <div class="gg-step">
+      <div class="gg-step__num">4</div>
+      <div class="gg-step__title">Surveiller l'utilisation</div>
+      <div class="gg-step__desc">Consultez les métriques Prometheus et le journal d'audit des échanges.</div>
+    </div>
+  </div>
+</section>
 
-Inspiré par [octo-sts/app](https://github.com/octo-sts/app), pionnier de la fédération OIDC pour l'échange de jetons GitHub.
+<section class="gg-section">
+  <h2 class="gg-section__title">Pourquoi github-sts</h2>
+  <div class="gg-features">
+    <div class="gg-feature">
+      <div class="gg-feature__tag gg-feature__tag--core">Zero-trust</div>
+      <div class="gg-feature__title">Fédération OIDC</div>
+      <div class="gg-feature__desc">Aucune donnée d'identification stockée, identité vérifiée par validation JWT OIDC.</div>
+    </div>
+    <div class="gg-feature">
+      <div class="gg-feature__tag gg-feature__tag--security">Privilège minimal</div>
+      <div class="gg-feature__title">Portée basée sur les politiques</div>
+      <div class="gg-feature__desc">Des politiques de confiance YAML définissent des autorisations exactes par identité de charge de travail.</div>
+    </div>
+    <div class="gg-feature">
+      <div class="gg-feature__tag gg-feature__tag--suite">Multi-app</div>
+      <div class="gg-feature__title">Plusieurs GitHub Apps</div>
+      <div class="gg-feature__desc">Aiguillez différentes charges de travail via différentes GitHub Apps.</div>
+    </div>
+  </div>
+</section>
 
-[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/Depthmark/github-sts/badge)](https://scorecard.dev/viewer/?uri=github.com/Depthmark/github-sts)
-
-## Points forts
-
-| | Fonctionnalité | Description |
-|---|---|---|
-| **Zero-trust** | Fédération OIDC | Aucune donnée d'identification stockée: identité vérifiée par validation JWT OIDC |
-| **Privilège minimal** | Portée basée sur les politiques | Les politiques de confiance YAML définissent des autorisations exactes par identité de charge de travail |
-| **Multi-app** | Plusieurs GitHub Apps | Aiguiller différentes charges de travail via différentes GitHub Apps |
-| **Portée d'organisation** | Jetons d'organisation | Émettre des jetons limités à une organisation entière ou à un sous-ensemble de dépôts |
-| **Observable** | Métriques Prometheus | Métriques intégrées et journalisation d'audit structurée |
-| **Anti-rejeu** | Cache JTI | Suivi JTI en mémoire ou Redis pour empêcher les attaques par rejeu de jetons |
-| **Portable** | Conteneur Distroless | Binaire statique unique dans un conteneur minimal: fonctionne partout |
-
-## Architecture
-
-```mermaid
-flowchart LR
-    W["Workload<br/>GitHub Actions / Azure / GCP"]
-
-    IDP["OIDC<br/>Identity Provider"]
-
-    subgraph STS["github-sts"]
-        V["Verify workload identity"]
-        A["Authorize against<br/>trust policy"]
-        M["Mint least-privilege<br/>GitHub token"]
-        V --> A --> M
-    end
-
-    GH["GitHub API"]
-
-    W -- "1. Request OIDC identity" --> IDP
-    IDP -- "2. OIDC JWT" --> W
-
-    W -- "3. Exchange OIDC JWT<br/>scope + identity + app" --> V
-
-    A -. "Load trust policy" .-> GH
-
-    M -- "4. GitHub App authentication" --> GH
-    GH -- "5. Scoped installation token" --> M
-
-    M -- "6. Short-lived token" --> W
-```
-
-**OIDC prouve qui est la charge de travail → la politique détermine ce qu'elle peut faire → GitHub émet le crédentiel.**
-
-## Choisissez votre parcours
-
-{{< cards >}}
-  {{< card link="learn/getting-started" title="Développeurs" icon="code" subtitle="Commencez à échanger des jetons en quelques minutes" >}}
-  {{< card link="operations/deployment" title="Opérateurs de plateforme" icon="server" subtitle="Déployez et exploitez github-sts" >}}
-  {{< card link="concepts/security-model" title="Administrateurs sécurité" icon="shield-check" subtitle="Comprenez le modèle de sécurité" >}}
-{{< /cards >}}
-
-## Démarrage rapide
-
-```bash
-# 1. Configure credentials
-export GITHUBSTS_APP_DEFAULT_APP_ID="123456"
-export GITHUBSTS_APP_DEFAULT_PRIVATE_KEY="$(cat /path/to/private-key.pem)"
-
-# 2. Run the server
-go build -o github-sts ./cmd/github-sts
-./github-sts
-
-# 3. Exchange a token
-curl -H "Authorization: Bearer $OIDC_TOKEN" \
-  "http://localhost:8080/sts/exchange?scope=org/repo&app=default&identity=ci"
-```
-
-Consultez le guide complet [Démarrage rapide](learn/getting-started) pour les prérequis, la création de politique et la vérification.
+<footer class="gg-landing__footer">
+  <span>© 2026 Depthmark · Licence MIT</span>
+  <span>Fait partie de la famille Depthmark GitHub Governance</span>
+</footer>

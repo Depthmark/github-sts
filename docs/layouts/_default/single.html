@@ -12,6 +12,7 @@
             {{ partial "components/page-context-menu" . }}
           </div>
           {{ end }}
+          {{ partial "environment-banner.html" . }}
           {{ .Content }}
         </div>
         {{ partial "components/last-updated.html" . }}

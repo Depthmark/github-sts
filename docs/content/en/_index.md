@@ -4,80 +4,74 @@ description: Exchange OIDC tokens for short-lived, scoped GitHub installation to
 translationKey: home
 ---
 
-Exchange OIDC tokens for short-lived, scoped GitHub installation tokens. No PATs. No long-lived secrets.
+<section class="gg-hero">
+  <div class="gg-hero__badges">
+    <span class="gg-badge gg-badge--security">Go</span>
+    <span class="gg-badge gg-badge--core">OIDC</span>
+    <span class="gg-badge gg-badge--suite">Zero-Trust</span>
+  </div>
+  <h1 class="gg-hero__title">Short-lived GitHub tokens.<br>No stored secrets.</h1>
+  <p class="gg-hero__subtitle">Exchange an OIDC token for a scoped, short-lived GitHub installation token. No PATs, no long-lived credentials to rotate or leak.</p>
+  <div class="gg-hero__actions">
+    <a class="gg-btn gg-btn--primary" href="get-started/quickstart-local/">Kickstart in 15 minutes →</a>
+    <a class="gg-btn gg-btn--secondary" href="https://github.com/Depthmark/github-sts">View on GitHub</a>
+  </div>
+  <p class="gg-hero__shields">
+    <a href="https://github.com/Depthmark/github-sts/blob/main/LICENSE"><img src="https://img.shields.io/github/license/Depthmark/github-sts?style=flat-square" alt="License"></a>
+    <a href="https://pkg.go.dev/github.com/depthmark/github-sts"><img src="https://img.shields.io/badge/Go-1.26+-00ADD8?style=flat-square&logo=go&logoColor=white" alt="Go"></a>
+    <a href="https://scorecard.dev/viewer/?uri=github.com/Depthmark/github-sts"><img src="https://api.scorecard.dev/projects/github.com/Depthmark/github-sts/badge" alt="OpenSSF Scorecard"></a>
+  </p>
+</section>
 
-Workloads with OIDC tokens (GitHub Actions, Azure, GCP, any IdP) present their identity and receive a **least-privilege GitHub token** scoped to exactly the repositories and permissions they need. Supports **multiple GitHub Apps** with YAML-based configuration, making it ideal for Kubernetes ConfigMaps.
+<section class="gg-section gg-section--band">
+  <div class="gg-eyebrow">Get started</div>
+  <h2 class="gg-section__title">From zero to your first token exchange</h2>
+  <div class="gg-steps">
+    <div class="gg-step">
+      <div class="gg-step__num">1</div>
+      <div class="gg-step__title">Configure a GitHub App</div>
+      <div class="gg-step__desc">Create the App, set permissions, generate a private key.</div>
+    </div>
+    <div class="gg-step">
+      <div class="gg-step__num">2</div>
+      <div class="gg-step__title">Install the App</div>
+      <div class="gg-step__desc">Install on the org or repos the token should ever touch.</div>
+    </div>
+    <div class="gg-step">
+      <div class="gg-step__num">3</div>
+      <div class="gg-step__title">Generate a token</div>
+      <div class="gg-step__desc">Write a trust policy, call <code>/sts/exchange</code> with an OIDC token.</div>
+    </div>
+    <div class="gg-step">
+      <div class="gg-step__num">4</div>
+      <div class="gg-step__title">Monitor usage</div>
+      <div class="gg-step__desc">Watch Prometheus metrics and audit logs for exchanges.</div>
+    </div>
+  </div>
+</section>
 
-Inspired by [octo-sts/app](https://github.com/octo-sts/app), which pioneered OIDC federation for GitHub token exchange.
+<section class="gg-section">
+  <h2 class="gg-section__title">Why github-sts</h2>
+  <div class="gg-features">
+    <div class="gg-feature">
+      <div class="gg-feature__tag gg-feature__tag--core">Zero-trust</div>
+      <div class="gg-feature__title">OIDC Federation</div>
+      <div class="gg-feature__desc">No stored credentials, identity verified via OIDC JWT validation.</div>
+    </div>
+    <div class="gg-feature">
+      <div class="gg-feature__tag gg-feature__tag--security">Least-privilege</div>
+      <div class="gg-feature__title">Policy-based Scoping</div>
+      <div class="gg-feature__desc">YAML trust policies define exact permissions per workload identity.</div>
+    </div>
+    <div class="gg-feature">
+      <div class="gg-feature__tag gg-feature__tag--suite">Multi-app</div>
+      <div class="gg-feature__title">Multiple GitHub Apps</div>
+      <div class="gg-feature__desc">Route different workloads through different GitHub Apps.</div>
+    </div>
+  </div>
+</section>
 
-[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/Depthmark/github-sts/badge)](https://scorecard.dev/viewer/?uri=github.com/Depthmark/github-sts)
-
-## Highlights
-
-| | Feature | Description |
-|---|---|---|
-| **Zero-trust** | OIDC Federation | No stored credentials: identity verified via OIDC JWT validation |
-| **Least-privilege** | Policy-based Scoping | YAML trust policies define exact permissions per workload identity |
-| **Multi-app** | Multiple GitHub Apps | Route different workloads through different GitHub Apps |
-| **Org-scope** | Organization Tokens | Issue tokens scoped to an entire org or a subset of repositories |
-| **Observable** | Prometheus Metrics | Built-in metrics and structured audit logging |
-| **Replay-safe** | JTI Cache | Memory or Redis-backed JTI tracking prevents token replay attacks |
-| **Portable** | Distroless Container | Single static binary in a minimal container: runs anywhere |
-
-## Architecture
-
-```mermaid
-flowchart LR
-    W["Workload<br/>GitHub Actions / Azure / GCP"]
-
-    IDP["OIDC<br/>Identity Provider"]
-
-    subgraph STS["github-sts"]
-        V["Verify workload identity"]
-        A["Authorize against<br/>trust policy"]
-        M["Mint least-privilege<br/>GitHub token"]
-        V --> A --> M
-    end
-
-    GH["GitHub API"]
-
-    W -- "1. Request OIDC identity" --> IDP
-    IDP -- "2. OIDC JWT" --> W
-
-    W -- "3. Exchange OIDC JWT<br/>scope + identity + app" --> V
-
-    A -. "Load trust policy" .-> GH
-
-    M -- "4. GitHub App authentication" --> GH
-    GH -- "5. Scoped installation token" --> M
-
-    M -- "6. Short-lived token" --> W
-```
-
-**OIDC proves who the workload is → policy determines what it may do → GitHub issues the credential.**
-
-## Choose your path
-
-{{< cards >}}
-  {{< card link="learn/getting-started" title="Developers" icon="code" subtitle="Start exchanging tokens in minutes" >}}
-  {{< card link="operations/deployment" title="Platform Operators" icon="server" subtitle="Deploy and operate github-sts" >}}
-  {{< card link="concepts/security-model" title="Security Administrators" icon="shield-check" subtitle="Understand the security model" >}}
-{{< /cards >}}
-
-## Quick start
-
-```bash
-# 1. Configure credentials
-export GITHUBSTS_APP_DEFAULT_APP_ID="123456"
-export GITHUBSTS_APP_DEFAULT_PRIVATE_KEY="$(cat /path/to/private-key.pem)"
-
-# 2. Run the server
-go build -o github-sts ./cmd/github-sts
-./github-sts
-
-# 3. Exchange a token
-curl -H "Authorization: Bearer $OIDC_TOKEN" \
-  "http://localhost:8080/sts/exchange?scope=org/repo&app=default&identity=ci"
-```
-
-See the complete [Getting Started](learn/getting-started) guide for prerequisites, policy creation, and verification.
+<footer class="gg-landing__footer">
+  <span>© 2026 Depthmark · MIT License</span>
+  <span>Part of the Depthmark GitHub Governance family</span>
+</footer>

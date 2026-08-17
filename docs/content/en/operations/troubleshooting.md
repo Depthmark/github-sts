@@ -31,7 +31,7 @@ grep abc-123 /var/log/github-sts.log
 |---|---|
 | **Exchange returns `401`** | Missing or malformed `Authorization: Bearer` header. Check the workflow actually requested an OIDC token (`id-token: write` permission). |
 | **Exchange returns `403`** with `code: "oidc_invalid"` | OIDC token rejected. Check token expiry, verify `oidc.allowed_issuers` includes the issuer, confirm `kid` is present, review server logs at `trace_id`. |
-| **JWKS host rejected** in logs | Issuer's `jwks_uri` host differs from the issuer host. Add it to `oidc.trusted_jwks_hosts` (see [OIDC Issuers]({{< relref "/learn/oidc-issuers" >}})). |
+| **JWKS host rejected** in logs | Issuer's `jwks_uri` host differs from the issuer host. Add it to `oidc.trusted_jwks_hosts` (see [OIDC Issuers]({{< relref "/oidc-issuers" >}})). |
 
 ### Audience
 
@@ -91,6 +91,6 @@ grep abc-123 /var/log/github-sts.log
 
 - [API Reference]({{< relref "/reference/api#error-responses" >}}): full error code table.
 - [Configuration]({{< relref "/reference/configuration" >}}): every YAML/env knob.
-- [OIDC Issuers]({{< relref "/learn/oidc-issuers" >}}): per-provider issuer/JWKS setup.
+- [OIDC Issuers]({{< relref "/oidc-issuers" >}}): per-provider issuer/JWKS setup.
 - [Architecture]({{< relref "/concepts/architecture#authorization-pipeline" >}}): exact order of checks.
 - Open an issue: <https://github.com/Depthmark/github-sts/issues>

@@ -1,23 +1,12 @@
 ---
 title: Kubernetes
-description: Installation Helm, sondes, montage de secrets, terminaison TLS, configuration Redis et comportement multi-réplicas.
+description: Sondes, montage de secrets, terminaison TLS et comportement multi-réplicas une fois github-sts en service dans un cluster.
 weight: 2
 translationKey: kubernetes
 translationStatus: pending-review
 ---
 
-Un chart Helm est maintenu dans le dépôt [github-sts-helm](https://github.com/Depthmark/github-sts-helm).
-
-## Installation
-
-```bash
-helm repo add depthmark https://depthmark.github.io/charts
-helm install github-sts depthmark/github-sts \
-  --namespace github-sts --create-namespace \
-  --set apps.default.appId=123456 \
-  --set-file apps.default.privateKey=/path/to/private-key.pem \
-  --set oidc.requiredAudience=https://sts.example.com
-```
+Un chart Helm est maintenu dans le dépôt [github-sts-helm](https://github.com/Depthmark/github-sts-helm). Pour installer le chart, voir [Déployer avec Helm]({{< relref "/integrations/deploy-with-helm" >}}). Cette page couvre le comportement de github-sts une fois en service dans un cluster : sondes, montage de secrets, terminaison TLS et cache multi-réplicas.
 
 ## Sondes
 
@@ -66,24 +55,9 @@ extraVolumeMounts:
 
 ## Terminaison TLS
 
-Le modèle recommandé est de terminer le TLS à l'ingress/Gateway et de conserver le pod en HTTP simple. L'API Gateway est conçue pour la terminaison TLS frontale :
+Le modèle recommandé est de terminer le TLS à l'ingress/Gateway et de conserver le pod en HTTP simple ; voir le bloc `ingress` dans [Déployer avec Helm]({{< relref "/integrations/deploy-with-helm" >}}) pour un exemple complet.
 
-```yaml
-ingress:
-  enabled: true
-  annotations:
-    cert-manager.io/cluster-issuer: letsencrypt-prod
-  hosts:
-    - host: sts.example.com
-      paths:
-        - path: /
-  tls:
-    - secretName: sts-tls
-      hosts:
-        - sts.example.com
-```
-
-Pour les déploiements exigeant un TLS de bout en bout, github-sts peut également servir HTTPS directement. C'est utile pour les clusters renforcés qui re-chiffrent le trafic Gateway→backend (`BackendTLSPolicy` de Gateway API avec `ServerOnly` ou `ClientAndServer`), ou pour les déploiements autonomes/VM sans ingress. Activez-le via la configuration du serveur :
+Pour les déploiements exigeant un TLS de bout en bout, github-sts peut également servir HTTPS directement. C'est utile pour les clusters renforcés qui rechiffrent le trafic entre la Gateway et le backend (`BackendTLSPolicy` de Gateway API avec `ServerOnly` ou `ClientAndServer`), ou pour les déploiements autonomes/VM sans ingress. Activez-le via la configuration du serveur :
 
 ```yaml
 server:
@@ -107,25 +81,14 @@ extraVolumeMounts:
     readOnly: true
 ```
 
-> **Avertissement — les certificats auto-signés sont réservés au développement local.** Ne déployez jamais un certificat auto-signé en production. Obtenez toujours des certificats auprès d'une CA de confiance (`cert-manager`/Let's Encrypt, une PKI interne ou un service géré). Un certificat auto-signé force chaque client à installer et à faire confiance à votre CA, ce qui est un anti-modèle de sécurité et annule l'objectif d'authentification du TLS.
-
-## Redis pour le JTI multi-réplicas
-
-Lorsque vous exécutez plus d'un réplica, utilisez Redis pour la protection partagée contre le rejeu JTI :
-
-```yaml
-jti:
-  backend: redis
-  redisUrl: redis://redis-master:6379/0
-  ttl: 1h
-```
-
-Avec le backend `memory`, un attaquant qui atteint un autre réplica peut rejouer un jeton OIDC.
+> **Avertissement : les certificats auto-signés sont réservés au développement local.** Ne déployez jamais un certificat auto-signé en production. Obtenez toujours des certificats auprès d'une CA de confiance (`cert-manager`/Let's Encrypt, une PKI interne ou un service géré). Un certificat auto-signé force chaque client à installer et à faire confiance à votre CA, ce qui est un anti-modèle de sécurité et annule l'objectif d'authentification du TLS.
 
 ## Comportement multi-réplicas
 
-- **Cache JTI :** Utilisez Redis (voir ci-dessus). Chaque instance partage l'ensemble de rejeu.
-- **Cache des politiques de confiance :** Par instance, TTL `60s`. Les instances peuvent brièvement servir des politiques différentes après une modification de `.sts.yaml`.
-- **Sondes :** Chaque réplica sert son propre point de terminaison `/ready`.
+L'exécution de plus d'un réplica change le comportement de deux éléments :
 
-Consultez le dépôt [github-sts-helm](https://github.com/Depthmark/github-sts-helm) pour la référence complète des valeurs et les options d'installation.
+- **Cache JTI.** Avec le backend `memory`, chaque réplica a son propre ensemble de rejeu, donc un attaquant qui atteint un autre réplica peut rejouer un jeton OIDC. Utilisez `jti.backend: redis` (voir [Déployer avec Helm]({{< relref "/integrations/deploy-with-helm" >}}) pour les valeurs) pour que chaque instance partage le même ensemble de rejeu.
+- **Cache des politiques de confiance.** Par instance, TTL `60s`. Les instances peuvent brièvement servir des politiques différentes après une modification de `.sts.yaml`.
+- **Sondes.** Chaque réplica sert son propre point de terminaison `/ready`.
+
+Consultez le dépôt [github-sts-helm](https://github.com/Depthmark/github-sts-helm) pour la référence complète des valeurs.

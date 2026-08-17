@@ -107,4 +107,4 @@ For the complete input/output reference, see the [github-sts-action README](http
 
 - [End-to-End on Kubernetes]({{< relref "/integrations/end-to-end-github-actions-on-kubernetes" >}}): complete walkthrough
 - [Compatibility]({{< relref "/integrations/compatibility" >}}): verified component combinations
-- [Trust Policies]({{< relref "/learn/trust-policies" >}}): policy concepts and examples
+- [Trust Policies]({{< relref "/concepts/trust-policies" >}}): policy concepts and examples

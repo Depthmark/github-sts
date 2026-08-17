@@ -108,4 +108,4 @@ Pour la référence complète des entrées/sorties, consultez le [README de gith
 
 - [De bout en bout sur Kubernetes]({{< relref "/integrations/end-to-end-github-actions-on-kubernetes" >}}): procédure complète
 - [Compatibilité]({{< relref "/integrations/compatibility" >}}): combinaisons de composants vérifiées
-- [Politiques de confiance]({{< relref "/learn/trust-policies" >}}): concepts et exemples de politique
+- [Politiques de confiance]({{< relref "/concepts/trust-policies" >}}): concepts et exemples de politique

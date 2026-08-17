@@ -1,22 +1,11 @@
 ---
 title: Kubernetes
-description: Helm installation, probes, secret mounting, TLS termination, Redis setup, and multi-replica behavior.
+description: Probes, secret mounting, TLS termination, and multi-replica behavior once github-sts is running in a cluster.
 weight: 2
 translationKey: kubernetes
 ---
 
-A Helm chart is maintained in the [github-sts-helm](https://github.com/Depthmark/github-sts-helm) repository.
-
-## Installation
-
-```bash
-helm repo add depthmark https://depthmark.github.io/charts
-helm install github-sts depthmark/github-sts \
-  --namespace github-sts --create-namespace \
-  --set apps.default.appId=123456 \
-  --set-file apps.default.privateKey=/path/to/private-key.pem \
-  --set oidc.requiredAudience=https://sts.example.com
-```
+A Helm chart is maintained in the [github-sts-helm](https://github.com/Depthmark/github-sts-helm) repository. For installing the chart, see [Deploy with Helm]({{< relref "/integrations/deploy-with-helm" >}}). This page covers how github-sts behaves once it is running in a cluster: probes, secret mounting, TLS termination, and multi-replica caching.
 
 ## Probes
 
@@ -65,24 +54,9 @@ extraVolumeMounts:
 
 ## TLS termination
 
-The recommended model is to terminate TLS at the ingress/Gateway and keep the pod on plain HTTP. The Gateway API is designed for frontend TLS termination:
+The recommended model is to terminate TLS at the ingress/Gateway and keep the pod on plain HTTP; see the `ingress` block in [Deploy with Helm]({{< relref "/integrations/deploy-with-helm" >}}) for a working example.
 
-```yaml
-ingress:
-  enabled: true
-  annotations:
-    cert-manager.io/cluster-issuer: letsencrypt-prod
-  hosts:
-    - host: sts.example.com
-      paths:
-        - path: /
-  tls:
-    - secretName: sts-tls
-      hosts:
-        - sts.example.com
-```
-
-For deployments that require end-to-end TLS, github-sts can also serve HTTPS directly. This is useful for hardened clusters that re-encrypt Gateway→backend traffic (Gateway API `BackendTLSPolicy` with `ServerOnly` or `ClientAndServer`), or for standalone/VM deployments without an ingress. Enable it via the server configuration:
+For deployments that require end-to-end TLS, github-sts can also serve HTTPS directly. This is useful for hardened clusters that re-encrypt Gateway to backend traffic (Gateway API `BackendTLSPolicy` with `ServerOnly` or `ClientAndServer`), or for standalone/VM deployments without an ingress. Enable it via the server configuration:
 
 ```yaml
 server:
@@ -106,25 +80,14 @@ extraVolumeMounts:
     readOnly: true
 ```
 
-> **Warning — self-signed certificates are for local development only.** Never deploy a self-signed certificate in production. Always obtain certificates from a trusted CA (`cert-manager`/Let's Encrypt, an internal PKI, or a managed service). A self-signed certificate forces every client to install and trust your CA, which is a security anti-pattern and defeats the purpose of TLS authentication.
-
-## Redis for multi-replica JTI
-
-When running more than one replica, use Redis for shared JTI replay protection:
-
-```yaml
-jti:
-  backend: redis
-  redisUrl: redis://redis-master:6379/0
-  ttl: 1h
-```
-
-With the `memory` backend, an attacker who reaches a different replica can replay an OIDC token.
+> **Warning: self-signed certificates are for local development only.** Never deploy a self-signed certificate in production. Always obtain certificates from a trusted CA (`cert-manager`/Let's Encrypt, an internal PKI, or a managed service). A self-signed certificate forces every client to install and trust your CA, which is a security anti-pattern and defeats the purpose of TLS authentication.
 
 ## Multi-replica behavior
 
-- **JTI cache:** Use Redis (see above). Each instance shares the replay set.
-- **Trust policy cache:** Per-instance, TTL `60s`. Instances may briefly serve different policies after a `.sts.yaml` change.
-- **Probes:** Each replica serves its own `/ready` endpoint.
+Running more than one replica changes how two things behave:
 
-See the [github-sts-helm](https://github.com/Depthmark/github-sts-helm) repository for the complete values reference and installation options.
+- **JTI cache.** With the `memory` backend, each replica has its own replay set, so an attacker who reaches a different replica can replay an OIDC token. Use `jti.backend: redis` (see [Deploy with Helm]({{< relref "/integrations/deploy-with-helm" >}}) for the values) so every instance shares the same replay set.
+- **Trust policy cache.** Per-instance, TTL `60s`. Instances may briefly serve different policies after a `.sts.yaml` change.
+- **Probes.** Each replica serves its own `/ready` endpoint.
+
+See the [github-sts-helm](https://github.com/Depthmark/github-sts-helm) repository for the complete values reference.
