@@ -90,4 +90,4 @@ Les politiques de confiance sont des fichiers YAML stockés **dans le dépôt ci
 
 Le chemin de base est configurable via `GITHUBSTS_POLICY_BASE_PATH` (par défaut `.github/sts`).
 
-Consultez le guide [Politiques de confiance]({{< relref "/learn/trust-policies" >}}) pour le schéma complet de politique, les exemples et les conseils de sécurité.
+Consultez le guide [Politiques de confiance]({{< relref "/concepts/trust-policies" >}}) pour le schéma complet de politique, les exemples et les conseils de sécurité.

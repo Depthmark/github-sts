@@ -1,0 +1,23 @@
+# Section labels
+[sectionGetStarted]
+other = "Get Started"
+[sectionConcepts]
+other = "Concepts"
+[sectionIntegrations]
+other = "Integrations"
+[sectionIssuers]
+other = "OIDC Issuers"
+[sectionOperations]
+other = "Operations"
+[sectionReference]
+other = "Reference"
+[sectionResources]
+other = "Resources"
+
+# Environment banner
+[envLocalTitle]
+other = "Local development only, not for production"
+[envLocalBody]
+other = "This page configures github-sts for speed of setup, not for safety. TLS is off and replay protection does not survive a restart."
+[envLocalLink]
+other = "See how to deploy for production →"

@@ -64,6 +64,10 @@ The following terms must use consistent translations. The authoritative glossary
 | `bundle` | `bundle` | Keep English in Rego context |
 | `token exchange` | `échange de jeton` | |
 | `installation token` | `jeton d'installation` | |
+| `subject` (literal claim key, e.g. `subject:` in a trust policy) | `subject` | Never translate as a YAML/JWT key; `subject` as prose may still read naturally in French |
+| `subject_pattern` (literal claim key) | `subject_pattern` | Never translate |
+| `audience` (literal claim key, e.g. `audience:`) | `audience` | Never translate as a YAML/JWT key |
+| `issuer` (literal claim key, e.g. `issuer:`) | `issuer` | Never translate as a YAML/JWT key; `issuer` as prose translates to `émetteur` |
 
 ## Writing Style
 

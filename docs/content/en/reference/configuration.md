@@ -89,4 +89,4 @@ Trust policies are YAML files stored **in the target repository** that define wh
 
 The base path is configurable via `GITHUBSTS_POLICY_BASE_PATH` (default `.github/sts`).
 
-See the [Trust Policies]({{< relref "/learn/trust-policies" >}}) guide for the full policy schema, examples, and security guidance.
+See the [Trust Policies]({{< relref "/concepts/trust-policies" >}}) guide for the full policy schema, examples, and security guidance.

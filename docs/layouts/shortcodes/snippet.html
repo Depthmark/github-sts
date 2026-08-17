@@ -1,0 +1,8 @@
+{{/* {{< snippet "helm-install" >}} — renders content/shared/snippets/<name>.md, language-neutral */}}
+{{- $name := .Get 0 -}}
+{{- $path := printf "shared/snippets/%s.md" $name -}}
+{{- with .Site.GetPage $path -}}
+{{ .Content }}
+{{- else -}}
+{{- errorf "snippet %q not found at content/%s" $name $path -}}
+{{- end -}}

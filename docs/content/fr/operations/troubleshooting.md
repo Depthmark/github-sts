@@ -32,7 +32,7 @@ grep abc-123 /var/log/github-sts.log
 |---|---|
 | **L'échange renvoie `401`** | En-tête `Authorization: Bearer` manquant ou malformé. Vérifiez que le workflow a réellement demandé un jeton OIDC (permission `id-token: write`). |
 | **L'échange renvoie `403`** avec `code: "oidc_invalid"` | Jeton OIDC rejeté. Vérifiez l'expiration du jeton, que `oidc.allowed_issuers` inclut l'émetteur, que `kid` est présent, et consultez les journaux serveur au `trace_id`. |
-| **Hôte JWKS rejeté** dans les journaux | L'hôte `jwks_uri` de l'émetteur diffère de l'hôte de l'émetteur. Ajoutez-le à `oidc.trusted_jwks_hosts` (voir [Émetteurs OIDC]({{< relref "/learn/oidc-issuers" >}})). |
+| **Hôte JWKS rejeté** dans les journaux | L'hôte `jwks_uri` de l'émetteur diffère de l'hôte de l'émetteur. Ajoutez-le à `oidc.trusted_jwks_hosts` (voir [Émetteurs OIDC]({{< relref "/oidc-issuers" >}})). |
 
 ### Audience
 
@@ -92,6 +92,6 @@ grep abc-123 /var/log/github-sts.log
 
 - [Référence API]({{< relref "/reference/api#error-responses" >}}) : tableau complet des codes d'erreur.
 - [Configuration]({{< relref "/reference/configuration" >}}) : chaque réglage YAML/d'environnement.
-- [Émetteurs OIDC]({{< relref "/learn/oidc-issuers" >}}) : configuration émetteur/JWKS par fournisseur.
+- [Émetteurs OIDC]({{< relref "/oidc-issuers" >}}) : configuration émetteur/JWKS par fournisseur.
 - [Architecture]({{< relref "/concepts/architecture#authorization-pipeline" >}}) : ordre exact des vérifications.
 - Ouvrir une issue : <https://github.com/Depthmark/github-sts/issues>
