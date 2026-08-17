@@ -41,6 +41,46 @@ Valid log levels are lowercase `debug | info | warn | error`. `oidc.allowed_issu
 
 For production, deploy github-sts with the Helm chart rather than hand-managing this file. See [Deploy with Helm]({{< relref "/integrations/deploy-with-helm" >}}).
 
+## Native TLS and mTLS
+
+github-sts can serve HTTPS directly, but it does not manage certificate lifecycles. TLS is **implicitly enabled** when you provide both a certificate and a key; provide a client CA bundle to require and verify client certificates (mTLS):
+
+```yaml
+server:
+  port: 8443
+  tls:
+    cert_file: /etc/github-sts/tls/tls.crt
+    key_file: /etc/github-sts/tls/tls.key
+    # Optional: enable mTLS by trusting a client CA bundle.
+    # client_ca_file: /etc/github-sts/tls/client-ca.crt
+
+    # Optional: enforce TLS 1.3 only (default: "1.2" — TLS 1.2 and above).
+    # min_version: "1.3"
+
+    # Optional: restrict to specific TLS 1.2 cipher suites (IANA names).
+    # Omit to use Go's defaults. Cannot be set when min_version is "1.3".
+    # cipher_suites:
+    #   - TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+    #   - TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+    #   - TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256
+
+    # Optional: poll cert/key files on an interval and reload them when changed,
+    # enabling zero-downtime certificate rotation. "0" disables polling (default).
+    # Without this, cert rotation requires a process restart.
+    # reload_interval: 1h
+```
+
+Rules:
+
+- `cert_file` and `key_file` must be set together. Setting one without the other is a validation error.
+- `client_ca_file` requires `cert_file` and `key_file`.
+- `min_version` accepts `"1.2"` (default) or `"1.3"`. Minimum TLS version is TLS 1.2 when unset.
+- `cipher_suites` accepts IANA cipher suite names. Only the non-insecure suites from Go's standard library are valid; unknown or weak names are a validation error. Setting cipher suites together with `min_version: "1.3"` is also a validation error — TLS 1.3 cipher suite selection is not configurable.
+- `reload_interval` triggers interval-based polling of the cert and key files. When the files change, they are reloaded in-place without restarting the process. Requires `cert_file` and `key_file`.
+- Client verification uses `RequireAndVerifyClientCert` when `client_ca_file` is set.
+
+The recommended deployment model is to terminate TLS at the platform ingress/Gateway when available, and use native TLS for standalone deployments or when re-encrypting Gateway→backend traffic (e.g. Gateway API `BackendTLSPolicy`). See [Security Model]({{< relref "/concepts/security-model" >}}) for the trust-boundary guidance.
+
 ## Trust policies
 
 Trust policies are YAML files stored **in the target repository** that define which OIDC identities can request tokens and with what permissions.

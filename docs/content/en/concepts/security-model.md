@@ -75,7 +75,7 @@ Trust policies match the workload identity through `subject` or `subject_pattern
 | Threat | Reason | Recommended control |
 |---|---|---|
 | **GitHub App private key compromise** | If the private key is leaked, an attacker can mint arbitrary tokens | Rotate keys, use short-lived certificates, monitor `githubsts_github_tokens_issued_total` for anomalies |
-| **Network eavesdropping** | github-sts listens on plain HTTP | TLS termination at ingress / sidecar |
+| **Network eavesdropping** | github-sts listens on plain HTTP unless native TLS is enabled | Terminate TLS at ingress/Gateway, or enable native TLS/mTLS for standalone or Gateway→backend re-encryption |
 | **OIDC issuer compromise** | If the issuer is compromised, it can mint valid tokens | Use `allowed_issuers` restrictively; monitor `githubsts_oidc_validation_errors_total` |
 | **Redis compromise (JTI backend)** | An attacker with Redis access can clear the JTI cache | Use Redis ACLs, TLS, and network policies |
 
@@ -88,7 +88,7 @@ Trust policies match the workload identity through `subject` or `subject_pattern
 - [ ] `/health` and `/ready` are wired to liveness/readiness probes
 - [ ] `/metrics` is scraped by Prometheus
 - [ ] Audit log is forwarded to SIEM
-- [ ] TLS terminates at ingress/sidecar
+- [ ] TLS terminates at ingress/Gateway, or native TLS/mTLS is enabled for standalone deployments
 - [ ] Rate limits are configured
 
 ## Logging and audit

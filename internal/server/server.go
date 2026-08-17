@@ -5,13 +5,17 @@ package server
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -42,6 +46,7 @@ type Server struct {
 	ipRateLimiter      *ratelimit.IPRateLimiter
 	redisClient        *redis.Client
 	slogger            *slog.Logger
+	certReloader       *certReloader
 }
 
 // New creates a new Server with all services initialized.
@@ -205,9 +210,19 @@ func New(cfg *config.Settings, slogger *slog.Logger) (*Server, error) {
 	h = traceIDMiddleware(h)
 	h = securityHeadersMiddleware(h)
 
+	tlsCfg, reloader, err := buildTLSConfig(cfg, slogger)
+	if err != nil {
+		return nil, err
+	}
+	s.certReloader = reloader
+	if reloader != nil && cfg.Server.TLS.ReloadInterval > 0 {
+		slogger.Info("tls cert hot-reload enabled", "interval", cfg.Server.TLS.ReloadInterval)
+	}
+
 	s.httpServer = &http.Server{
 		Addr:              net.JoinHostPort(cfg.Server.Host, strconv.Itoa(cfg.Server.Port)),
 		Handler:           h,
+		TLSConfig:         tlsCfg,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -215,6 +230,133 @@ func New(cfg *config.Settings, slogger *slog.Logger) (*Server, error) {
 	}
 
 	return s, nil
+}
+
+// buildTLSConfig loads TLS configuration and, when TLS is enabled, creates a
+// certReloader that serves the certificate via GetCertificate. It returns nil
+// for both outputs when native TLS is not configured.
+func buildTLSConfig(cfg *config.Settings, slogger *slog.Logger) (*tls.Config, *certReloader, error) {
+	if !cfg.Server.TLSEnabled() {
+		return nil, nil, nil
+	}
+
+	reloader, err := newCertReloader(
+		cfg.Server.TLS.CertFile,
+		cfg.Server.TLS.KeyFile,
+		cfg.Server.TLS.ReloadInterval,
+		slogger,
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("loading TLS key pair: %w", err)
+	}
+
+	tlsCfg := &tls.Config{
+		MinVersion:     cfg.Server.TLSMinVersion(),
+		GetCertificate: reloader.GetCertificate,
+	}
+
+	if ids := cfg.Server.TLSCipherSuiteIDs(); len(ids) > 0 {
+		tlsCfg.CipherSuites = ids
+	}
+
+	if cfg.Server.ClientAuthEnabled() {
+		caPEM, err := os.ReadFile(cfg.Server.TLS.ClientCAFile)
+		if err != nil {
+			return nil, nil, fmt.Errorf("reading client CA file: %w", err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(caPEM) {
+			return nil, nil, fmt.Errorf("client CA file contains no valid certificates")
+		}
+		tlsCfg.ClientAuth = tls.RequireAndVerifyClientCert
+		tlsCfg.ClientCAs = pool
+	}
+
+	return tlsCfg, reloader, nil
+}
+
+// certReloader holds a TLS certificate in memory and optionally refreshes it
+// from disk on an interval, enabling zero-downtime certificate rotation.
+type certReloader struct {
+	mu       sync.RWMutex
+	cert     *tls.Certificate
+	certFile string
+	keyFile  string
+	stop     chan struct{}
+}
+
+func newCertReloader(certFile, keyFile string, interval time.Duration, slogger *slog.Logger) (*certReloader, error) {
+	r := &certReloader{certFile: certFile, keyFile: keyFile}
+	if err := r.load(); err != nil {
+		return nil, err
+	}
+	if interval > 0 {
+		r.stop = make(chan struct{})
+		go r.watch(interval, slogger)
+	}
+	return r, nil
+}
+
+// GetCertificate implements tls.Config.GetCertificate and always returns the
+// currently loaded certificate.
+func (r *certReloader) GetCertificate(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.cert, nil
+}
+
+func (r *certReloader) load() error {
+	cert, err := tls.LoadX509KeyPair(r.certFile, r.keyFile)
+	if err != nil {
+		return err
+	}
+	r.mu.Lock()
+	r.cert = &cert
+	r.mu.Unlock()
+	return nil
+}
+
+func (r *certReloader) watch(interval time.Duration, slogger *slog.Logger) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	lastCertMod := modTime(r.certFile)
+	lastKeyMod := modTime(r.keyFile)
+
+	for {
+		select {
+		case <-ticker.C:
+			certMod := modTime(r.certFile)
+			keyMod := modTime(r.keyFile)
+			if certMod.Equal(lastCertMod) && keyMod.Equal(lastKeyMod) {
+				continue
+			}
+			if err := r.load(); err != nil {
+				slogger.Error("tls cert reload failed", "error", err)
+				continue
+			}
+			lastCertMod, lastKeyMod = certMod, keyMod
+			slogger.Info("tls cert reloaded")
+		case <-r.stop:
+			return
+		}
+	}
+}
+
+// Stop halts the background reload goroutine, if one was started.
+func (r *certReloader) Stop() {
+	if r.stop != nil {
+		close(r.stop)
+	}
+}
+
+// modTime returns the modification time of path, or zero if stat fails.
+func modTime(path string) time.Time {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return time.Time{}
+	}
+	return fi.ModTime()
 }
 
 // ListenAndServe starts the server and blocks until the context is cancelled.
@@ -232,12 +374,20 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	// Mark ready.
 	s.ready.Store(true)
 	metrics.Ready.Set(1)
-	s.slogger.Info("server ready", "addr", s.httpServer.Addr)
+	s.slogger.Info("server ready", "addr", s.httpServer.Addr, "tls", s.httpServer.TLSConfig != nil)
 
 	// Start HTTP server in a goroutine.
 	errCh := make(chan error, 1)
 	go func() {
-		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		var err error
+		if s.httpServer.TLSConfig != nil {
+			// Certificates are pre-loaded in TLSConfig, so the file paths are
+			// intentionally empty here.
+			err = s.httpServer.ListenAndServeTLS("", "")
+		} else {
+			err = s.httpServer.ListenAndServe()
+		}
+		if err != nil && err != http.ErrServerClosed {
 			errCh <- err
 		}
 		close(errCh)
@@ -278,6 +428,11 @@ func (s *Server) Shutdown() error {
 	}
 	if s.ipRateLimiter != nil {
 		s.ipRateLimiter.Stop()
+	}
+
+	// Stop cert reloader.
+	if s.certReloader != nil {
+		s.certReloader.Stop()
 	}
 
 	// Close audit logger.
@@ -451,4 +606,3 @@ func routePattern(r *http.Request) string {
 		return "other"
 	}
 }
-
