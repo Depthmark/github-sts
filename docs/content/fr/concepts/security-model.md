@@ -78,7 +78,7 @@ Les politiques de confiance font correspondre l'identité de la charge de travai
 | Menace | Raison | Contrôle recommandé |
 |---|---|---|
 | **Compromission de la clé privée de la GitHub App** | Si la clé privée fuit, un attaquant peut émettre des jetons arbitraires | Renouvelez les clés, utilisez des certificats à courte durée de vie, surveillez `githubsts_github_tokens_issued_total` pour les anomalies |
-| **Écoute réseau** | github-sts écoute sur HTTP simple | Terminaison TLS au niveau de l'ingress / sidecar |
+| **Écoute réseau** | github-sts écoute sur HTTP simple sauf si le TLS natif est activé | Terminez le TLS à l'ingress/Gateway, ou activez le TLS/mTLS natif pour les déploiements autonomes ou le re-chiffrement Gateway→backend |
 | **Compromission de l'émetteur OIDC** | Si l'émetteur est compromis, il peut émettre des jetons valides | Utilisez `allowed_issuers` de façon restrictive ; surveillez `githubsts_oidc_validation_errors_total` |
 | **Compromission de Redis (backend JTI)** | Un attaquant avec accès à Redis peut vider le cache JTI | Utilisez des ACL Redis, TLS et des politiques réseau |
 
@@ -91,7 +91,7 @@ Les politiques de confiance font correspondre l'identité de la charge de travai
 - [ ] `/health` et `/ready` sont reliés aux sondes de vivacité/préparation
 - [ ] `/metrics` est collecté par Prometheus
 - [ ] Le journal d'audit est transmis au SIEM
-- [ ] Le TLS se termine à l'ingress/sidecar
+- [ ] Le TLS se termine à l'ingress/Gateway, ou le TLS/mTLS natif est activé pour les déploiements autonomes
 - [ ] Les limites de débit sont configurées
 
 ## Journalisation et audit

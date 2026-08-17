@@ -4,6 +4,7 @@ package config
 
 import (
 	"crypto/rsa"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
@@ -37,6 +38,62 @@ type ServerConfig struct {
 	SuppressHealthLogs    bool          `yaml:"suppress_health_logs"`
 	ShutdownTimeout       time.Duration `yaml:"shutdown_timeout"`
 	TrustForwardedHeaders bool          `yaml:"trust_forwarded_headers"`
+	TLS                   TLSConfig     `yaml:"tls"`
+}
+
+// TLSConfig holds native TLS/mTLS settings for the HTTP server. TLS is enabled
+// implicitly when CertFile and KeyFile are both set. Client certificate
+// verification (mTLS) is enabled when ClientCAFile is set.
+type TLSConfig struct {
+	CertFile       string        `yaml:"cert_file"`
+	KeyFile        string        `yaml:"key_file"`
+	ClientCAFile   string        `yaml:"client_ca_file"`
+	MinVersion     string        `yaml:"min_version"`     // "1.2" (default) | "1.3"
+	CipherSuites   []string      `yaml:"cipher_suites"`   // TLS 1.2 only; empty = Go defaults
+	ReloadInterval time.Duration `yaml:"reload_interval"` // 0 = disabled
+}
+
+// tlsCipherSuiteNames maps IANA cipher suite names to their TLS IDs.
+// Built from tls.CipherSuites() — only non-insecure suites are included.
+var tlsCipherSuiteNames = func() map[string]uint16 {
+	m := make(map[string]uint16)
+	for _, cs := range tls.CipherSuites() {
+		m[cs.Name] = cs.ID
+	}
+	return m
+}()
+
+// TLSEnabled reports whether native TLS is configured (certificate and key).
+func (s *ServerConfig) TLSEnabled() bool {
+	return s.TLS.CertFile != "" && s.TLS.KeyFile != ""
+}
+
+// ClientAuthEnabled reports whether client certificate verification (mTLS) is
+// configured via a trusted client CA.
+func (s *ServerConfig) ClientAuthEnabled() bool {
+	return s.TLS.ClientCAFile != ""
+}
+
+// TLSMinVersion returns the numeric TLS version constant for the configured
+// min_version. Defaults to TLS 1.2 when unset.
+func (s *ServerConfig) TLSMinVersion() uint16 {
+	if s.TLS.MinVersion == "1.3" {
+		return tls.VersionTLS13
+	}
+	return tls.VersionTLS12
+}
+
+// TLSCipherSuiteIDs returns the numeric cipher suite IDs for the configured
+// names. Returns nil when no suites are configured (Go selects defaults).
+func (s *ServerConfig) TLSCipherSuiteIDs() []uint16 {
+	if len(s.TLS.CipherSuites) == 0 {
+		return nil
+	}
+	ids := make([]uint16, len(s.TLS.CipherSuites))
+	for i, name := range s.TLS.CipherSuites {
+		ids[i] = tlsCipherSuiteNames[name]
+	}
+	return ids
 }
 
 // AppConfig holds per-application GitHub App settings.
@@ -230,6 +287,32 @@ func (s *Settings) Validate() error {
 		return fmt.Errorf("server.port must be between 1 and 65535")
 	}
 
+	hasCert := s.Server.TLS.CertFile != ""
+	hasKey := s.Server.TLS.KeyFile != ""
+	if hasCert != hasKey {
+		return fmt.Errorf("server.tls.cert_file and server.tls.key_file must be set together")
+	}
+	if s.Server.TLS.ClientCAFile != "" && !hasCert {
+		return fmt.Errorf("server.tls.client_ca_file requires server.tls.cert_file and server.tls.key_file")
+	}
+	switch s.Server.TLS.MinVersion {
+	case "", "1.2", "1.3":
+		// valid
+	default:
+		return fmt.Errorf("server.tls.min_version must be \"1.2\" or \"1.3\" (got %q)", s.Server.TLS.MinVersion)
+	}
+	if s.Server.TLS.MinVersion == "1.3" && len(s.Server.TLS.CipherSuites) > 0 {
+		return fmt.Errorf("server.tls.cipher_suites has no effect when min_version is \"1.3\" and must not be set")
+	}
+	for _, name := range s.Server.TLS.CipherSuites {
+		if _, ok := tlsCipherSuiteNames[name]; !ok {
+			return fmt.Errorf("server.tls.cipher_suites: unknown or insecure cipher suite %q", name)
+		}
+	}
+	if s.Server.TLS.ReloadInterval != 0 && !hasCert {
+		return fmt.Errorf("server.tls.reload_interval requires server.tls.cert_file and server.tls.key_file")
+	}
+
 	level := strings.ToLower(s.Server.LogLevel)
 	switch level {
 	case "debug", "info", "warn", "error":
@@ -363,6 +446,28 @@ func applyEnvOverrides(cfg *Settings) {
 	}
 	if v := os.Getenv("GITHUBSTS_SERVER_TRUST_FORWARDED_HEADERS"); v != "" {
 		cfg.Server.TrustForwardedHeaders = parseBool(v)
+	}
+	if v := os.Getenv("GITHUBSTS_SERVER_TLS_CERT_FILE"); v != "" {
+		cfg.Server.TLS.CertFile = v
+	}
+	if v := os.Getenv("GITHUBSTS_SERVER_TLS_KEY_FILE"); v != "" {
+		cfg.Server.TLS.KeyFile = v
+	}
+	if v := os.Getenv("GITHUBSTS_SERVER_TLS_CLIENT_CA_FILE"); v != "" {
+		cfg.Server.TLS.ClientCAFile = v
+	}
+	if v := os.Getenv("GITHUBSTS_SERVER_TLS_MIN_VERSION"); v != "" {
+		cfg.Server.TLS.MinVersion = v
+	}
+	if v := os.Getenv("GITHUBSTS_SERVER_TLS_CIPHER_SUITES"); v != "" {
+		if suites := parseCommaSeparated(v); len(suites) > 0 {
+			cfg.Server.TLS.CipherSuites = suites
+		}
+	}
+	if v := os.Getenv("GITHUBSTS_SERVER_TLS_RELOAD_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.Server.TLS.ReloadInterval = d
+		}
 	}
 
 	// OIDC

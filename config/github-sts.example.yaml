@@ -14,6 +14,25 @@ server:
   shutdown_timeout: 10s             # Graceful shutdown grace period
   trust_forwarded_headers: false    # Trust X-Forwarded-For for client IP (enable behind a reverse proxy)
 
+  # Native TLS/mTLS (optional). HTTPS is enabled implicitly when both
+  # cert_file and key_file are set. Client certificate verification (mTLS)
+  # is enabled when client_ca_file is set. Leave empty to serve plain HTTP
+  # and terminate TLS at the platform ingress/Gateway instead.
+  tls:
+    cert_file: ""                   # Path to the server certificate (PEM)
+    key_file: ""                    # Path to the server private key (PEM)
+    client_ca_file: ""              # Path to the trusted client CA bundle (PEM) for mTLS
+    min_version: "1.2"              # Minimum TLS version: "1.2" (default) | "1.3"
+    cipher_suites: []               # TLS 1.2 cipher suite allowlist (IANA names). Empty = Go defaults.
+    # cipher_suites:
+    #   - TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+    #   - TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+    #   - TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+    #   - TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+    #   - TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256
+    #   - TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256
+    reload_interval: 0              # Hot-reload interval (e.g. "1h"). 0 = disabled; requires cert_file/key_file.
+
 # GitHub Apps — define one or more apps
 # Each app has its own credentials and maps to a policy subdirectory:
 #   {base_path}/{app_name}/{identity}.sts.yaml

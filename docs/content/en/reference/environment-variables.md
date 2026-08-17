@@ -18,6 +18,12 @@ All variables use the `GITHUBSTS_` prefix. Per-app variables follow `GITHUBSTS_A
 | `GITHUBSTS_SERVER_SUPPRESS_HEALTH_LOGS` | `true` | Suppress health endpoint access logs |
 | `GITHUBSTS_SERVER_SHUTDOWN_TIMEOUT` | `10s` | Graceful shutdown grace period |
 | `GITHUBSTS_SERVER_TRUST_FORWARDED_HEADERS` | `false` | Trust `X-Forwarded-For` for client IP |
+| `GITHUBSTS_SERVER_TLS_CERT_FILE` | — | Path to server certificate (PEM). HTTPS is enabled when both this and `_TLS_KEY_FILE` are set. |
+| `GITHUBSTS_SERVER_TLS_KEY_FILE` | — | Path to server private key (PEM) |
+| `GITHUBSTS_SERVER_TLS_CLIENT_CA_FILE` | — | Path to trusted client CA bundle (PEM). When set, client certificates are required and verified (mTLS). |
+| `GITHUBSTS_SERVER_TLS_MIN_VERSION` | `1.2` | Minimum TLS version: `1.2` or `1.3`. |
+| `GITHUBSTS_SERVER_TLS_CIPHER_SUITES` | — | Comma-separated TLS 1.2 cipher suite allowlist (IANA names). Empty = Go defaults. Ignored when `min_version` is `1.3`. |
+| `GITHUBSTS_SERVER_TLS_RELOAD_INTERVAL` | `0` | Cert hot-reload poll interval (e.g. `1h`). `0` disables hot-reload. Requires cert and key to be set. |
 
 ## GitHub App settings
 
@@ -75,3 +81,6 @@ All variables use the `GITHUBSTS_` prefix. Per-app variables follow `GITHUBSTS_A
 - **Audience:** Set `GITHUBSTS_OIDC_REQUIRED_AUDIENCE` in production. This is defense-in-depth on top of the per-policy `audience:` field.
 - **JTI backend:** Use `redis` for multi-replica deployments. The `memory` backend is per-instance and does not prevent cross-replica replay.
 - **Issuer allowlist:** `GITHUBSTS_OIDC_ALLOWED_ISSUERS` is required. An empty list is a hard validation error, not an "accept any issuer" fallback.
+- **TLS:** Native TLS is optional and activates only when both `GITHUBSTS_SERVER_TLS_CERT_FILE` and `GITHUBSTS_SERVER_TLS_KEY_FILE` are set. In Kubernetes, prefer TLS termination at the ingress/Gateway; use native TLS for standalone deployments or when re-encrypting Gateway→backend traffic. Setting `GITHUBSTS_SERVER_TLS_CLIENT_CA_FILE` enables mTLS and requires every client to present a certificate signed by that CA.
+- **Cipher suites:** `GITHUBSTS_SERVER_TLS_CIPHER_SUITES` accepts IANA names (e.g. `TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256`). Only the non-insecure suites from Go's `tls.CipherSuites()` are valid. Unrecognised or insecure names are a validation error. Cipher suite selection is a TLS 1.2 concern only; when `min_version` is `1.3`, setting cipher suites is also a validation error.
+- **Hot-reload:** When `GITHUBSTS_SERVER_TLS_RELOAD_INTERVAL` is set, github-sts polls the cert and key files for changes and reloads them without restarting. Without hot-reload, cert rotation requires a process restart.

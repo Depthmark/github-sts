@@ -19,6 +19,12 @@ Toutes les variables utilisent le préfixe `GITHUBSTS_`. Les variables par App s
 | `GITHUBSTS_SERVER_SUPPRESS_HEALTH_LOGS` | `true` | Supprimer les journaux d'accès des points de terminaison de santé |
 | `GITHUBSTS_SERVER_SHUTDOWN_TIMEOUT` | `10s` | Délai d'arrêt gracieux |
 | `GITHUBSTS_SERVER_TRUST_FORWARDED_HEADERS` | `false` | Faire confiance à `X-Forwarded-For` pour l'IP du client |
+| `GITHUBSTS_SERVER_TLS_CERT_FILE` | — | Chemin vers le certificat du serveur (PEM). HTTPS est activé lorsque cette variable et `_TLS_KEY_FILE` sont définies. |
+| `GITHUBSTS_SERVER_TLS_KEY_FILE` | — | Chemin vers la clé privée du serveur (PEM) |
+| `GITHUBSTS_SERVER_TLS_CLIENT_CA_FILE` | — | Chemin vers le bundle de CA clientes de confiance (PEM). Lorsqu'il est défini, les certificats clients sont exigés et vérifiés (mTLS). |
+| `GITHUBSTS_SERVER_TLS_MIN_VERSION` | `1.2` | Version minimale de TLS : `1.2` ou `1.3`. |
+| `GITHUBSTS_SERVER_TLS_CIPHER_SUITES` | — | Liste de suites de chiffrement TLS 1.2 autorisées, séparées par des virgules (noms IANA). Vide = valeurs par défaut de Go. Ignoré lorsque `min_version` est `1.3`. |
+| `GITHUBSTS_SERVER_TLS_RELOAD_INTERVAL` | `0` | Intervalle de rechargement des certificats (ex. `1h`). `0` désactive le rechargement. Nécessite que le certificat et la clé soient définis. |
 
 ## Paramètres de la GitHub App
 
@@ -76,3 +82,6 @@ Toutes les variables utilisent le préfixe `GITHUBSTS_`. Les variables par App s
 - **Audience :** Définissez `GITHUBSTS_OIDC_REQUIRED_AUDIENCE` en production. C'est une défense en profondeur en plus du champ `audience:` par politique.
 - **Backend JTI :** Utilisez `redis` pour les déploiements multi-réplicas. Le backend `memory` est par instance et n'empêche pas le rejeu inter-réplicas.
 - **Liste d'autorisation d'émetteurs :** `GITHUBSTS_OIDC_ALLOWED_ISSUERS` est obligatoire. Une liste vide est une erreur de validation, pas un repli « accepter n'importe quel émetteur ».
+- **TLS :** Le TLS natif est optionnel et ne s'active que lorsque `GITHUBSTS_SERVER_TLS_CERT_FILE` et `GITHUBSTS_SERVER_TLS_KEY_FILE` sont toutes deux définies. Sur Kubernetes, préférez la terminaison TLS à l'ingress/Gateway ; utilisez le TLS natif pour les déploiements autonomes ou lors du re-chiffrement du trafic Gateway→backend. Définir `GITHUBSTS_SERVER_TLS_CLIENT_CA_FILE` active le mTLS et exige que chaque client présente un certificat signé par cette CA.
+- **Suites de chiffrement :** `GITHUBSTS_SERVER_TLS_CIPHER_SUITES` accepte les noms IANA (ex. `TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256`). Seules les suites non-insécures de `tls.CipherSuites()` de Go sont valides. Les noms inconnus ou non sécurisés sont une erreur de validation. Lorsque `min_version` est `1.3`, définir des suites de chiffrement est également une erreur de validation.
+- **Rechargement des certificats :** `GITHUBSTS_SERVER_TLS_RELOAD_INTERVAL` active un sondage périodique des fichiers de certificat et de clé. Lorsque les fichiers changent, ils sont rechargés sans redémarrer le processus. Sans cette option, la rotation des certificats nécessite un redémarrage du processus.

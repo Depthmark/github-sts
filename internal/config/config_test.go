@@ -218,6 +218,39 @@ oidc:
 	}
 }
 
+func TestLoad_EnvOverrides_TLS(t *testing.T) {
+	keyPath := writeTestKey(t)
+	yaml := `
+apps:
+  default:
+    app_id: 1
+    private_key_path: "` + keyPath + `"
+oidc:
+  allowed_issuers:
+    - "https://placeholder.example.com"
+`
+	path := writeTestConfig(t, yaml)
+
+	t.Setenv("GITHUBSTS_SERVER_TLS_CERT_FILE", "/etc/tls/tls.crt")
+	t.Setenv("GITHUBSTS_SERVER_TLS_KEY_FILE", "/etc/tls/tls.key")
+	t.Setenv("GITHUBSTS_SERVER_TLS_CLIENT_CA_FILE", "/etc/tls/ca.crt")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	if cfg.Server.TLS.CertFile != "/etc/tls/tls.crt" {
+		t.Errorf("tls.cert_file = %q, want /etc/tls/tls.crt", cfg.Server.TLS.CertFile)
+	}
+	if cfg.Server.TLS.KeyFile != "/etc/tls/tls.key" {
+		t.Errorf("tls.key_file = %q, want /etc/tls/tls.key", cfg.Server.TLS.KeyFile)
+	}
+	if cfg.Server.TLS.ClientCAFile != "/etc/tls/ca.crt" {
+		t.Errorf("tls.client_ca_file = %q, want /etc/tls/ca.crt", cfg.Server.TLS.ClientCAFile)
+	}
+}
+
 // validDefaults returns a defaults() config with the minimum required
 // fields populated to pass validation.
 func validDefaults() *Settings {
@@ -300,6 +333,184 @@ func TestValidate_RateLimitValidCIDR(t *testing.T) {
 	cfg.RateLimit.ExemptCIDRs = []string{"10.0.0.0/8", "fd00::/8"}
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestValidate_TLSCertWithoutKey(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Server.TLS.CertFile = "/path/tls.crt"
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), "must be set together") {
+		t.Errorf("expected cert/key together error, got: %v", err)
+	}
+}
+
+func TestValidate_TLSKeyWithoutCert(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Server.TLS.KeyFile = "/path/tls.key"
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), "must be set together") {
+		t.Errorf("expected cert/key together error, got: %v", err)
+	}
+}
+
+func TestValidate_TLSClientCAWithoutTLS(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Server.TLS.ClientCAFile = "/path/ca.crt"
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), "client_ca_file") {
+		t.Errorf("expected client_ca_file requires TLS error, got: %v", err)
+	}
+}
+
+func TestValidate_TLSValid(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Server.TLS.CertFile = "/path/tls.crt"
+	cfg.Server.TLS.KeyFile = "/path/tls.key"
+	cfg.Server.TLS.ClientCAFile = "/path/ca.crt"
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestValidate_TLSMinVersionInvalid(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Server.TLS.CertFile = "/path/tls.crt"
+	cfg.Server.TLS.KeyFile = "/path/tls.key"
+	cfg.Server.TLS.MinVersion = "1.1"
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), "min_version") {
+		t.Errorf("expected min_version error, got: %v", err)
+	}
+}
+
+func TestValidate_TLSMinVersionTLS13Valid(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Server.TLS.CertFile = "/path/tls.crt"
+	cfg.Server.TLS.KeyFile = "/path/tls.key"
+	cfg.Server.TLS.MinVersion = "1.3"
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestValidate_TLSCipherSuitesInvalid(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Server.TLS.CertFile = "/path/tls.crt"
+	cfg.Server.TLS.KeyFile = "/path/tls.key"
+	cfg.Server.TLS.CipherSuites = []string{"NOT_A_REAL_SUITE"}
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), "cipher_suites") {
+		t.Errorf("expected cipher_suites error, got: %v", err)
+	}
+}
+
+func TestValidate_TLSCipherSuitesValid(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Server.TLS.CertFile = "/path/tls.crt"
+	cfg.Server.TLS.KeyFile = "/path/tls.key"
+	cfg.Server.TLS.CipherSuites = []string{
+		"TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+		"TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestValidate_TLSCipherSuitesWithTLS13MinVersion(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Server.TLS.CertFile = "/path/tls.crt"
+	cfg.Server.TLS.KeyFile = "/path/tls.key"
+	cfg.Server.TLS.MinVersion = "1.3"
+	cfg.Server.TLS.CipherSuites = []string{"TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"}
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), "cipher_suites") {
+		t.Errorf("expected cipher_suites+min_version error, got: %v", err)
+	}
+}
+
+func TestValidate_TLSReloadIntervalWithoutTLS(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Server.TLS.ReloadInterval = 30 * time.Second
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), "reload_interval") {
+		t.Errorf("expected reload_interval error, got: %v", err)
+	}
+}
+
+func TestValidate_TLSReloadIntervalValid(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Server.TLS.CertFile = "/path/tls.crt"
+	cfg.Server.TLS.KeyFile = "/path/tls.key"
+	cfg.Server.TLS.ReloadInterval = 30 * time.Second
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestServerTLSMinVersion_Default(t *testing.T) {
+	cfg := defaults()
+	if got := cfg.Server.TLSMinVersion(); got != 0x0303 { // tls.VersionTLS12 = 0x0303
+		t.Errorf("TLSMinVersion() = %#x, want TLS 1.2 (%#x)", got, uint16(0x0303))
+	}
+}
+
+func TestServerTLSMinVersion_TLS13(t *testing.T) {
+	cfg := defaults()
+	cfg.Server.TLS.MinVersion = "1.3"
+	if got := cfg.Server.TLSMinVersion(); got != 0x0304 { // tls.VersionTLS13 = 0x0304
+		t.Errorf("TLSMinVersion() = %#x, want TLS 1.3 (%#x)", got, uint16(0x0304))
+	}
+}
+
+func TestServerTLSCipherSuiteIDs_Empty(t *testing.T) {
+	cfg := defaults()
+	if ids := cfg.Server.TLSCipherSuiteIDs(); ids != nil {
+		t.Errorf("expected nil IDs when no cipher suites configured, got %v", ids)
+	}
+}
+
+func TestServerTLSCipherSuiteIDs_Known(t *testing.T) {
+	cfg := defaults()
+	cfg.Server.TLS.CipherSuites = []string{
+		"TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+		"TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
+	}
+	ids := cfg.Server.TLSCipherSuiteIDs()
+	if len(ids) != 2 {
+		t.Errorf("expected 2 cipher suite IDs, got %d", len(ids))
+	}
+	for i, id := range ids {
+		if id == 0 {
+			t.Errorf("cipher suite ID[%d] is zero (unknown name)", i)
+		}
+	}
+}
+
+func TestServerTLSEnabled(t *testing.T) {
+	cfg := defaults()
+	if cfg.Server.TLSEnabled() {
+		t.Error("TLSEnabled() should be false when no cert/key configured")
+	}
+	cfg.Server.TLS.CertFile = "/path/tls.crt"
+	if cfg.Server.TLSEnabled() {
+		t.Error("TLSEnabled() should be false when only cert is configured")
+	}
+	cfg.Server.TLS.KeyFile = "/path/tls.key"
+	if !cfg.Server.TLSEnabled() {
+		t.Error("TLSEnabled() should be true when cert and key are configured")
+	}
+}
+
+func TestServerClientAuthEnabled(t *testing.T) {
+	cfg := defaults()
+	if cfg.Server.ClientAuthEnabled() {
+		t.Error("ClientAuthEnabled() should be false by default")
+	}
+	cfg.Server.TLS.ClientCAFile = "/path/ca.crt"
+	if !cfg.Server.ClientAuthEnabled() {
+		t.Error("ClientAuthEnabled() should be true when client CA is configured")
 	}
 }
 

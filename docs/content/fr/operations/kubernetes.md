@@ -66,7 +66,7 @@ extraVolumeMounts:
 
 ## Terminaison TLS
 
-github-sts écoute sur HTTP simple. Terminez le TLS au niveau de l'ingress ou du service mesh :
+Le modèle recommandé est de terminer le TLS à l'ingress/Gateway et de conserver le pod en HTTP simple. L'API Gateway est conçue pour la terminaison TLS frontale :
 
 ```yaml
 ingress:
@@ -82,6 +82,32 @@ ingress:
       hosts:
         - sts.example.com
 ```
+
+Pour les déploiements exigeant un TLS de bout en bout, github-sts peut également servir HTTPS directement. C'est utile pour les clusters renforcés qui re-chiffrent le trafic Gateway→backend (`BackendTLSPolicy` de Gateway API avec `ServerOnly` ou `ClientAndServer`), ou pour les déploiements autonomes/VM sans ingress. Activez-le via la configuration du serveur :
+
+```yaml
+server:
+  tls:
+    cert_file: /etc/github-sts/tls/tls.crt
+    key_file: /etc/github-sts/tls/tls.key
+    # client_ca_file: /etc/github-sts/tls/ca.crt   # mTLS optionnel
+```
+
+Montez le certificat et la clé depuis un Kubernetes Secret (géré par cert-manager ou un autre émetteur de confiance) :
+
+```yaml
+extraVolumes:
+  - name: tls
+    secret:
+      secretName: github-sts-tls
+
+extraVolumeMounts:
+  - name: tls
+    mountPath: /etc/github-sts/tls
+    readOnly: true
+```
+
+> **Avertissement — les certificats auto-signés sont réservés au développement local.** Ne déployez jamais un certificat auto-signé en production. Obtenez toujours des certificats auprès d'une CA de confiance (`cert-manager`/Let's Encrypt, une PKI interne ou un service géré). Un certificat auto-signé force chaque client à installer et à faire confiance à votre CA, ce qui est un anti-modèle de sécurité et annule l'objectif d'authentification du TLS.
 
 ## Redis pour le JTI multi-réplicas
 
