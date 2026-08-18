@@ -9,19 +9,20 @@ github-sts can be deployed with Docker (this page) or with the Helm chart on Kub
 
 ## Docker
 
-The official image is built from a [distroless](https://github.com/GoogleContainerTools/distroless) base with a nonroot user for a minimal attack surface.
+The official image is published at
+[`ghcr.io/depthmark/github-sts`](https://github.com/Depthmark/github-sts/pkgs/container/github-sts),
+built from a [distroless](https://github.com/GoogleContainerTools/distroless) base with a nonroot
+user for a minimal attack surface. Pin a release tag (e.g. `0.0.3`) in production rather than
+`latest`.
 
 ```bash
-# Build
-docker build -t github-sts:local .
-
 # Run with config file
 docker run -p 8080:8080 \
   -v $(pwd)/config/github-sts.example.yaml:/etc/github-sts/config.yaml:ro \
   -e GITHUBSTS_CONFIG_PATH=/etc/github-sts/config.yaml \
   -e GITHUBSTS_APP_DEFAULT_APP_ID="$GITHUBSTS_APP_DEFAULT_APP_ID" \
   -e GITHUBSTS_APP_DEFAULT_PRIVATE_KEY="$GITHUBSTS_APP_DEFAULT_PRIVATE_KEY" \
-  github-sts:local
+  ghcr.io/depthmark/github-sts:0.0.3
 
 # Run with env vars only (explicit YAML-only development posture)
 docker run -p 8080:8080 \
@@ -32,8 +33,11 @@ docker run -p 8080:8080 \
   -e GITHUBSTS_OIDC_REQUIRED_AUDIENCE="https://sts.example.com" \
   -e GITHUBSTS_OIDC_REQUIRE_IMMUTABLE_SUBJECT_CLAIMS="true" \
   -e GITHUBSTS_BUNDLE_ENFORCEMENT="optional" \
-  github-sts:local
+  ghcr.io/depthmark/github-sts:0.0.3
 ```
+
+Building from source instead: `docker build -t github-sts:local .` from the repository root, then
+swap the image name above.
 
 The env-only example intentionally has no enterprise bundle. It emits the
 optional/YAML-only warning and posture signals. Production deployments should

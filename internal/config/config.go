@@ -765,10 +765,8 @@ func applyEnvOverrides(cfg *Settings) error {
 			cfg.Server.TLS.CipherSuites = suites
 		}
 	}
-	if v := os.Getenv("GITHUBSTS_SERVER_TLS_RELOAD_INTERVAL"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			cfg.Server.TLS.ReloadInterval = d
-		}
+	if err := envDuration("GITHUBSTS_SERVER_TLS_RELOAD_INTERVAL", &cfg.Server.TLS.ReloadInterval); err != nil {
+		return err
 	}
 
 	// OIDC

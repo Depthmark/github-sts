@@ -336,10 +336,12 @@ func buildTLSConfig(cfg *config.Settings, slogger *slog.Logger) (*tls.Config, *c
 	if cfg.Server.ClientAuthEnabled() {
 		caPEM, err := os.ReadFile(cfg.Server.TLS.ClientCAFile)
 		if err != nil {
+			reloader.Stop()
 			return nil, nil, fmt.Errorf("reading client CA file: %w", err)
 		}
 		pool := x509.NewCertPool()
 		if !pool.AppendCertsFromPEM(caPEM) {
+			reloader.Stop()
 			return nil, nil, fmt.Errorf("client CA file contains no valid certificates")
 		}
 		tlsCfg.ClientAuth = tls.RequireAndVerifyClientCert
