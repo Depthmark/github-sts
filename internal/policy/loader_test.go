@@ -16,6 +16,15 @@ type mockTokenProvider struct {
 	scopes []string // captures the scope passed to each call, in order
 }
 
+func loadRequest(scope, appName, identity string) LoadRequest {
+	request := LoadRequest{Scope: scope, AppName: appName, Identity: identity}
+	if strings.Contains(scope, "/") {
+		request.TargetOwnerID = "1001"
+		request.TargetRepositoryID = "2001"
+	}
+	return request
+}
+
 func (m *mockTokenProvider) GetInstallationToken(_ context.Context, scope string, _ map[string]string, _ []string, _ string) (string, error) {
 	m.scopes = append(m.scopes, scope)
 	return m.token, m.err
@@ -48,6 +57,13 @@ func TestGitHubLoader_RepoLevel(t *testing.T) {
 issuer: https://token.actions.githubusercontent.com
 subject_pattern: "repo:myorg/myrepo:.*"
 audience: https://sts.example.com
+github:
+  sources:
+    - owner_id: "1001"
+      repository_id: "2001"
+  target:
+    owner_id: "1001"
+    repository_id: "2001"
 permissions:
   contents: read
 `
@@ -71,7 +87,7 @@ permissions:
 	// resolution-matrix tests below.
 	loader := testLoaderWithMode(tp, srv.URL, "sts-policies", ResolutionRepoFirst, 5*time.Minute)
 
-	policy, err := loader.Load(context.Background(), "myorg/myrepo", "default", "ci")
+	policy, err := loader.Load(context.Background(), loadRequest("myorg/myrepo", "default", "ci"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -83,35 +99,6 @@ permissions:
 	}
 }
 
-func TestGitHubLoader_OrgLevel(t *testing.T) {
-	policyYAML := `
-issuer: https://token.actions.githubusercontent.com
-audience: https://sts.example.com
-permissions:
-  contents: read
-`
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Expect: /repos/myorg/sts-policies/contents/...
-		if !strings.Contains(r.URL.Path, "myorg/sts-policies") {
-			t.Errorf("expected org-level path with policy repo, got %s", r.URL.Path)
-		}
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(policyYAML))
-	}))
-	defer srv.Close()
-
-	tp := &mockTokenProvider{token: "ghs_test"}
-	loader := testLoader(tp, srv.URL, "sts-policies", 5*time.Minute)
-
-	policy, err := loader.Load(context.Background(), "myorg", "default", "ci")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if policy == nil {
-		t.Fatal("expected non-nil policy")
-	}
-}
-
 // In repo_first (legacy) mode, repo-local is tried first and falls back to
 // the org policy repo on 404. Preserved for backwards compatibility.
 func TestGitHubLoader_RepoFirst_FallsBackToOrgPolicyRepo(t *testing.T) {
@@ -119,6 +106,13 @@ func TestGitHubLoader_RepoFirst_FallsBackToOrgPolicyRepo(t *testing.T) {
 issuer: https://token.actions.githubusercontent.com
 subject_pattern: "repo:myorg/.*"
 audience: https://sts.example.com
+github:
+  sources:
+    - owner_id: "1001"
+      repository_id: "2001"
+  target:
+    owner_id: "1001"
+    repository_id: "2001"
 permissions:
   contents: read
 `
@@ -141,7 +135,7 @@ permissions:
 	tp := &mockTokenProvider{token: "ghs_test"}
 	loader := testLoaderWithMode(tp, srv.URL, "sts-policies", ResolutionRepoFirst, 5*time.Minute)
 
-	pol, err := loader.Load(context.Background(), "myorg/myrepo", "default", "ci")
+	pol, err := loader.Load(context.Background(), loadRequest("myorg/myrepo", "default", "ci"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -179,7 +173,7 @@ func TestGitHubLoader_RepoLevel_NoFallbackWhenOrgPolicyRepoUnset(t *testing.T) {
 	// No org policy repo configured → no fallback, returns nil.
 	loader := testLoader(tp, srv.URL, "", 5*time.Minute)
 
-	pol, err := loader.Load(context.Background(), "myorg/myrepo", "default", "ci")
+	pol, err := loader.Load(context.Background(), loadRequest("myorg/myrepo", "default", "ci"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -188,44 +182,6 @@ func TestGitHubLoader_RepoLevel_NoFallbackWhenOrgPolicyRepoUnset(t *testing.T) {
 	}
 	if len(tp.scopes) != 1 {
 		t.Errorf("expected single fetch attempt, got %d: %v", len(tp.scopes), tp.scopes)
-	}
-}
-
-func TestGitHubLoader_OrgLevel_MarksCentralized(t *testing.T) {
-	policyYAML := `
-issuer: https://token.actions.githubusercontent.com
-audience: https://sts.example.com
-permissions:
-  contents: read
-`
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(policyYAML))
-	}))
-	defer srv.Close()
-
-	tp := &mockTokenProvider{token: "ghs_test"}
-	loader := testLoader(tp, srv.URL, "sts-policies", 5*time.Minute)
-
-	pol, err := loader.Load(context.Background(), "myorg", "default", "ci")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if pol == nil || !pol.Centralized() {
-		t.Fatal("org-level policy must be marked Centralized()")
-	}
-}
-
-func TestGitHubLoader_OrgLevel_MissingPolicyRepo(t *testing.T) {
-	tp := &mockTokenProvider{token: "ghs_test"}
-	loader := testLoader(tp, "http://localhost", "", 5*time.Minute)
-
-	_, err := loader.Load(context.Background(), "myorg", "default", "ci")
-	if err == nil {
-		t.Fatal("expected error for missing org_policy_repo")
-	}
-	if !strings.Contains(err.Error(), "org_policy_repo required") {
-		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -238,7 +194,7 @@ func TestGitHubLoader_NotFound(t *testing.T) {
 	tp := &mockTokenProvider{token: "ghs_test"}
 	loader := testLoader(tp, srv.URL, "sts-policies", 5*time.Minute)
 
-	policy, err := loader.Load(context.Background(), "myorg/myrepo", "default", "ci")
+	policy, err := loader.Load(context.Background(), loadRequest("myorg/myrepo", "default", "ci"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -247,10 +203,24 @@ func TestGitHubLoader_NotFound(t *testing.T) {
 	}
 }
 
+func TestGitHubLoader_RequiresRepositoryScopeAndImmutableTargetIDs(t *testing.T) {
+	loader := testLoader(&mockTokenProvider{token: "ghs_test"}, "http://localhost", "", 5*time.Minute)
+	for _, request := range []LoadRequest{
+		{Scope: "myorg", TargetOwnerID: "1001", TargetRepositoryID: "2001", AppName: "default", Identity: "ci"},
+		{Scope: "myorg/myrepo", AppName: "default", Identity: "ci"},
+		{Scope: "myorg/myrepo", TargetOwnerID: "1001", TargetRepositoryID: ".*", AppName: "default", Identity: "ci"},
+	} {
+		if _, err := loader.Load(context.Background(), request); err == nil {
+			t.Fatalf("expected invalid load request to fail: %+v", request)
+		}
+	}
+}
+
 func TestGitHubLoader_CacheHit(t *testing.T) {
 	fetchCount := 0
 	policyYAML := `
 issuer: https://iss.example.com
+subject: workload-1
 audience: https://sts.example.com
 permissions:
   contents: read
@@ -266,13 +236,83 @@ permissions:
 	loader := testLoader(tp, srv.URL, "sts-policies", 5*time.Minute)
 
 	// First call — cache miss.
-	_, _ = loader.Load(context.Background(), "myorg/myrepo", "default", "ci")
+	_, _ = loader.Load(context.Background(), loadRequest("myorg/myrepo", "default", "ci"))
 
 	// Second call — cache hit.
-	_, _ = loader.Load(context.Background(), "myorg/myrepo", "default", "ci")
+	_, _ = loader.Load(context.Background(), loadRequest("myorg/myrepo", "default", "ci"))
 
 	if fetchCount != 1 {
 		t.Fatalf("expected 1 fetch (cached), got %d", fetchCount)
+	}
+}
+
+func TestGitHubLoader_CacheIsolatedByImmutableTargetID(t *testing.T) {
+	fetchCount := 0
+	policyYAML := `
+issuer: https://iss.example.com
+subject: workload-1
+audience: https://sts.example.com
+permissions:
+  contents: read
+`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fetchCount++
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(policyYAML))
+	}))
+	defer srv.Close()
+
+	loader := testLoader(&mockTokenProvider{token: "ghs_test"}, srv.URL, "", 5*time.Minute)
+	first := LoadRequest{
+		Scope: "myorg/myrepo", TargetOwnerID: "1001", TargetRepositoryID: "2001",
+		AppName: "default", Identity: "ci",
+	}
+	second := first
+	second.TargetRepositoryID = "9999"
+
+	if _, err := loader.Load(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loader.Load(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+	if fetchCount != 2 {
+		t.Fatalf("fetches = %d, want 2 for different target IDs", fetchCount)
+	}
+}
+
+func TestGitHubLoader_RenamePreservingTargetIDUsesCache(t *testing.T) {
+	fetchCount := 0
+	policyYAML := `
+issuer: https://iss.example.com
+subject: workload-1
+audience: https://sts.example.com
+permissions:
+  contents: read
+`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fetchCount++
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(policyYAML))
+	}))
+	defer srv.Close()
+
+	loader := testLoader(&mockTokenProvider{token: "ghs_test"}, srv.URL, "", 5*time.Minute)
+	first := LoadRequest{
+		Scope: "myorg/old-name", TargetOwnerID: "1001", TargetRepositoryID: "2001",
+		AppName: "default", Identity: "ci",
+	}
+	renamed := first
+	renamed.Scope = "myorg/new-name"
+
+	if _, err := loader.Load(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loader.Load(context.Background(), renamed); err != nil {
+		t.Fatal(err)
+	}
+	if fetchCount != 1 {
+		t.Fatalf("fetches = %d, want 1 for unchanged target IDs", fetchCount)
 	}
 }
 
@@ -286,7 +326,7 @@ func TestGitHubLoader_ParseError(t *testing.T) {
 	tp := &mockTokenProvider{token: "ghs_test"}
 	loader := testLoader(tp, srv.URL, "sts-policies", 5*time.Minute)
 
-	policy, err := loader.Load(context.Background(), "myorg/myrepo", "default", "ci")
+	policy, err := loader.Load(context.Background(), loadRequest("myorg/myrepo", "default", "ci"))
 	if err == nil {
 		t.Fatal("expected error for parse failure, got nil")
 	}
@@ -298,6 +338,7 @@ func TestGitHubLoader_ParseError(t *testing.T) {
 func TestGitHubLoader_MultiApp_UsesCorrectProvider(t *testing.T) {
 	policyYAML := `
 issuer: https://iss.example.com
+subject: workload-1
 audience: https://sts.example.com
 permissions:
   contents: read
@@ -316,7 +357,7 @@ permissions:
 	loader := NewGitHubLoader(tps, nil, nil, srv.URL, "", 5*time.Minute, nil, nil)
 
 	// Load for app-b should use tpB, not tpA.
-	policy, err := loader.Load(context.Background(), "myorg/myrepo", "app-b", "ci")
+	policy, err := loader.Load(context.Background(), loadRequest("myorg/myrepo", "app-b", "ci"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -329,7 +370,7 @@ func TestGitHubLoader_UnknownApp(t *testing.T) {
 	tps := map[string]TokenProvider{"app-a": &mockTokenProvider{token: "ghs_test"}}
 	loader := NewGitHubLoader(tps, nil, nil, "http://localhost", "", 5*time.Minute, nil, nil)
 
-	_, err := loader.Load(context.Background(), "myorg/myrepo", "nonexistent", "ci")
+	_, err := loader.Load(context.Background(), loadRequest("myorg/myrepo", "nonexistent", "ci"))
 	if err == nil {
 		t.Fatal("expected error for unknown app")
 	}
@@ -370,6 +411,13 @@ const samplePolicyYAML = `
 issuer: https://token.actions.githubusercontent.com
 subject_pattern: "repo:myorg/.*"
 audience: https://sts.example.com
+github:
+  sources:
+    - owner_id: "1001"
+      repository_id: "2001"
+  target:
+    owner_id: "1001"
+    repository_id: "2001"
 permissions:
   contents: read
 `
@@ -485,7 +533,7 @@ func TestPolicyResolution_Matrix(t *testing.T) {
 			tp := &mockTokenProvider{token: "ghs_test"}
 			loader := testLoaderWithMode(tp, srv.URL, "sts-policies", tc.mode, 5*time.Minute)
 
-			pol, err := loader.Load(context.Background(), "myorg/myrepo", "default", "ci")
+			pol, err := loader.Load(context.Background(), loadRequest("myorg/myrepo", "default", "ci"))
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -519,7 +567,7 @@ func TestPolicyResolution_Matrix(t *testing.T) {
 // policy fetch against their own repo as a side channel.
 func TestPolicyResolution_OrgFirst_DoesNotFetchRepoOnHit(t *testing.T) {
 	fake := &fakeRepoMux{files: map[string]string{
-		"myorg/myrepo/":      samplePolicyYAML, // would shadow under repo_first
+		"myorg/myrepo/":       samplePolicyYAML, // would shadow under repo_first
 		"myorg/sts-policies/": samplePolicyYAML,
 	}}
 	srv := httptest.NewServer(fake.handler(t))
@@ -528,7 +576,7 @@ func TestPolicyResolution_OrgFirst_DoesNotFetchRepoOnHit(t *testing.T) {
 	tp := &mockTokenProvider{token: "ghs_test"}
 	loader := testLoaderWithMode(tp, srv.URL, "sts-policies", ResolutionOrgFirst, 5*time.Minute)
 
-	pol, err := loader.Load(context.Background(), "myorg/myrepo", "default", "ci")
+	pol, err := loader.Load(context.Background(), loadRequest("myorg/myrepo", "default", "ci"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -559,7 +607,7 @@ func TestPolicyResolution_OrgOnly_NeverFallsBack(t *testing.T) {
 	tp := &mockTokenProvider{token: "ghs_test"}
 	loader := testLoaderWithMode(tp, srv.URL, "sts-policies", ResolutionOrgOnly, 5*time.Minute)
 
-	pol, err := loader.Load(context.Background(), "myorg/myrepo", "default", "ci")
+	pol, err := loader.Load(context.Background(), loadRequest("myorg/myrepo", "default", "ci"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -577,7 +625,7 @@ func TestPolicyResolution_OrgOnly_NeverFallsBack(t *testing.T) {
 // org_first when no mode is set explicitly.
 func TestPolicyResolution_DefaultIsOrgFirst(t *testing.T) {
 	fake := &fakeRepoMux{files: map[string]string{
-		"myorg/myrepo/":      samplePolicyYAML,
+		"myorg/myrepo/":       samplePolicyYAML,
 		"myorg/sts-policies/": samplePolicyYAML,
 	}}
 	srv := httptest.NewServer(fake.handler(t))
@@ -588,7 +636,7 @@ func TestPolicyResolution_DefaultIsOrgFirst(t *testing.T) {
 	// branch, mirroring how config.Validate populates the field.
 	loader := testLoader(tp, srv.URL, "sts-policies", 5*time.Minute)
 
-	pol, err := loader.Load(context.Background(), "myorg/myrepo", "default", "ci")
+	pol, err := loader.Load(context.Background(), loadRequest("myorg/myrepo", "default", "ci"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -609,7 +657,7 @@ func TestPolicyResolution_NoOrgRepo_RepoOnly(t *testing.T) {
 	tp := &mockTokenProvider{token: "ghs_test"}
 	loader := testLoader(tp, srv.URL, "", 5*time.Minute)
 
-	pol, err := loader.Load(context.Background(), "myorg/myrepo", "default", "ci")
+	pol, err := loader.Load(context.Background(), loadRequest("myorg/myrepo", "default", "ci"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

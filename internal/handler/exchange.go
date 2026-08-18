@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/depthmark/github-sts/internal/audit"
+	"github.com/depthmark/github-sts/internal/bundle"
 	"github.com/depthmark/github-sts/internal/github"
 	"github.com/depthmark/github-sts/internal/jti"
 	"github.com/depthmark/github-sts/internal/metrics"
@@ -65,11 +67,19 @@ const (
 
 	// 403 — token rejected. Coarse on purpose; the matching trace_id log line
 	// carries the precise reason.
-	CodeOIDCInvalid      = "oidc_invalid"       // missing/expired/bad-signature/unknown-issuer/missing-kid/malformed
-	CodeAudienceMismatch = "audience_mismatch"  // token aud did not match policy.audience
-	CodeAppUnknown       = "app_unknown"        // requested ?app= is not configured on the server
-	CodePolicyNotFound   = "policy_not_found"   // no .sts.yaml for this scope/app/identity
-	CodePolicyDenied     = "policy_denied"      // policy exists but evaluation failed (subject/claim_pattern)
+	CodeOIDCInvalid           = "oidc_invalid"            // missing/expired/bad-signature/unknown-issuer/missing-kid/malformed
+	CodeGitHubIdentityInvalid = "github_identity_invalid" // GitHub identity claims are missing, malformed, or contradictory
+	CodeAudienceMismatch      = "audience_mismatch"       // token aud did not match policy.audience
+	CodeAppUnknown            = "app_unknown"             // requested ?app= is not configured on the server
+	CodePolicyNotFound        = "policy_not_found"        // no .sts.yaml for this scope/app/identity
+	CodeTrustPolicyInvalid    = "trust_policy_invalid"    // policy definition is malformed or structurally unsafe
+	CodePolicyDenied          = "policy_denied"           // policy exists but evaluation failed (subject/claim_pattern)
+	CodeOrgPolicyDenied       = "org_policy_denied"       // org-rego bundle blocked this request at exchange time
+
+	// 503 — server is up but a dependency is degraded.
+	CodeBundleStale            = "bundle_stale"             // bundle hasn't refreshed in time and fail_mode=closed
+	CodeBundleUnavailable      = "bundle_unavailable"       // mandatory baseline did not participate
+	CodeBundleEvaluationFailed = "bundle_evaluation_failed" // timeout, strict built-in error, or other evaluation fault
 
 	// Other status codes.
 	CodeMethodNotAllowed = "method_not_allowed" // 405
@@ -86,38 +96,62 @@ const TraceIDKey contextKey = "trace_id"
 
 // ExchangeHandler orchestrates the token exchange flow.
 type ExchangeHandler struct {
-	jtiCache              jti.Cache
-	policyLoader          policy.Loader
-	appProviders          map[string]*github.AppTokenProvider
-	allowedIssuers        []string
-	requiredAudience      string
-	auditLogger           audit.Logger
-	slogger               *slog.Logger
-	trustForwardedHeaders bool
+	jtiCache                      jti.Cache
+	policyLoader                  policy.Loader
+	appProviders                  map[string]github.ExchangeApp
+	allowedIssuers                []string
+	requiredAudience              string
+	requireImmutableSubjectClaims bool
+	auditLogger                   audit.Logger
+	slogger                       *slog.Logger
+	trustForwardedHeaders         bool
+	bundleManager                 bundle.Manager
+
+	// validator is the OIDC token validator. Production wires
+	// oidc.Validate; tests override to inject synthetic claims so the
+	// handler can be driven past OIDC validation without a JWKS server.
+	validator func(ctx context.Context, token string, allowedIssuers []string) (oidc.Claims, error)
 }
 
 // NewExchangeHandler creates a new ExchangeHandler with all dependencies injected.
 // requiredAudience, when non-empty, is enforced on every token before policy
 // lookup as a server-wide defense against permissive policy files.
+//
+// bundleManager is the org-rego guardrail. When Enabled() is true, the
+// handler consults it after the YAML policy match and before the GitHub
+// API mint; a deny returns 403 org_policy_denied. Pass bundle.Disabled{}
+// when bundle integration is off (default).
 func NewExchangeHandler(
 	jtiCache jti.Cache,
 	policyLoader policy.Loader,
 	appProviders map[string]*github.AppTokenProvider,
 	allowedIssuers []string,
 	requiredAudience string,
+	requireImmutableSubjectClaims bool,
 	auditLogger audit.Logger,
 	slogger *slog.Logger,
 	trustForwardedHeaders bool,
+	bundleManager bundle.Manager,
 ) *ExchangeHandler {
+	if bundleManager == nil {
+		bundleManager = bundle.Disabled{}
+	}
+	exchangeProviders := make(map[string]github.ExchangeApp, len(appProviders))
+	for name, provider := range appProviders {
+		exchangeProviders[name] = provider
+	}
 	return &ExchangeHandler{
-		jtiCache:              jtiCache,
-		policyLoader:          policyLoader,
-		appProviders:          appProviders,
-		allowedIssuers:        allowedIssuers,
-		requiredAudience:      requiredAudience,
-		auditLogger:           auditLogger,
-		slogger:               slogger,
-		trustForwardedHeaders: trustForwardedHeaders,
+		jtiCache:                      jtiCache,
+		policyLoader:                  policyLoader,
+		appProviders:                  exchangeProviders,
+		allowedIssuers:                allowedIssuers,
+		requiredAudience:              requiredAudience,
+		requireImmutableSubjectClaims: requireImmutableSubjectClaims,
+		auditLogger:                   auditLogger,
+		slogger:                       slogger,
+		trustForwardedHeaders:         trustForwardedHeaders,
+		bundleManager:                 bundleManager,
+		validator:                     oidc.Validate,
 	}
 }
 
@@ -161,14 +195,24 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	targetScope, err := github.ParseRepositoryScope(req.Scope)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error(), Code: CodeBadRequest, TraceID: traceID})
+		return
+	}
 
 	// Build base audit event.
+	bundleEnforcement := bundle.EnforcementOptional
+	if h.bundleManager != nil {
+		bundleEnforcement = h.bundleManager.Enforcement()
+	}
 	event := audit.Event{
-		TraceID:   traceID,
-		Scope:     req.Scope,
-		Identity:  req.Identity,
-		UserAgent: audit.TruncateUserAgent(r.UserAgent(), 100),
-		RemoteIP:  remoteIP(r, h.trustForwardedHeaders),
+		TraceID:           traceID,
+		Scope:             req.Scope,
+		Identity:          req.Identity,
+		UserAgent:         audit.TruncateUserAgent(r.UserAgent(), 100),
+		RemoteIP:          remoteIP(r, h.trustForwardedHeaders),
+		BundleEnforcement: bundleEnforcement,
 	}
 
 	// Step 1: Extract and validate OIDC token.
@@ -182,7 +226,11 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	claims, err := oidc.Validate(r.Context(), bearer, h.allowedIssuers)
+	validate := h.validator
+	if validate == nil {
+		validate = oidc.Validate
+	}
+	claims, err := validate(r.Context(), bearer, h.allowedIssuers)
 	if err != nil {
 		event.Issuer = claimString(claims, "iss")
 		event.Subject = claimString(claims, "sub")
@@ -205,6 +253,46 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	event.Issuer = claimString(claims, "iss")
 	event.Subject = claimString(claims, "sub")
+	if event.Issuer == oidc.GitHubActionsIssuer {
+		required := h.requireImmutableSubjectClaims
+		event.ImmutableSubjectRequired = &required
+	}
+
+	// GitHub.com repository identity is a broker-level security contract. It is
+	// validated before audience, JTI, app, or target policy work so malformed
+	// identity cannot consume state or probe target configuration.
+	sourceIdentity, err := oidc.ParseGitHubIdentity(claims, h.requireImmutableSubjectClaims)
+	if err != nil {
+		reason := "github_identity_invalid"
+		var identityErr *oidc.GitHubIdentityError
+		if errors.As(err, &identityErr) {
+			reason = string(identityErr.Reason)
+		}
+		metrics.OIDCValidationErrors.WithLabelValues(event.Issuer, reason).Inc()
+		event.Result = audit.ResultOIDCInvalid
+		event.ErrorReason = err.Error()
+		event.DurationMS = msSince(start)
+		h.emitResult(event, req, start)
+		if h.slogger != nil {
+			h.slogger.Warn("GitHub identity validation failed",
+				"trace_id", traceID,
+				"scope", req.Scope,
+				"identity", req.Identity,
+				"issuer", event.Issuer,
+				"reason", reason,
+			)
+		}
+		writeJSON(w, http.StatusForbidden, ErrorResponse{Error: "forbidden", Code: CodeGitHubIdentityInvalid, TraceID: traceID})
+		return
+	}
+	if sourceIdentity != nil {
+		immutable := sourceIdentity.ImmutableSubject
+		event.SourceRepositoryOwner = sourceIdentity.RepositoryOwner
+		event.SourceRepositoryOwnerID = sourceIdentity.RepositoryOwnerID
+		event.SourceRepository = sourceIdentity.Repository
+		event.SourceRepositoryID = sourceIdentity.RepositoryID
+		event.ImmutableSubject = &immutable
+	}
 
 	// Server-wide required audience: enforced before JTI reservation so a
 	// token minted for the wrong relying party cannot burn a replay slot or
@@ -310,9 +398,56 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	event.AppName = appName
 
-	// Step 4: Load and evaluate policy.
-	pol, err := h.policyLoader.Load(r.Context(), req.Scope, appName, req.Identity)
+	// Resolve the caller-supplied target through the selected App before policy
+	// lookup. Names select the GitHub resource; immutable IDs authorize it.
+	targetIdentity, err := provider.ResolveTarget(r.Context(), targetScope)
 	if err != nil {
+		event.Result = audit.ResultGitHubError
+		event.ErrorReason = fmt.Sprintf("target resolution failed: %v", err)
+		event.DurationMS = msSince(start)
+		h.emitResult(event, req, start)
+		if h.slogger != nil {
+			h.slogger.Warn("target resolution failed",
+				"trace_id", traceID,
+				"scope", req.Scope,
+				"app", appName,
+				"identity", req.Identity,
+				"error", err,
+			)
+		}
+		if errors.Is(err, github.ErrTargetScopeNotCanonical) {
+			writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "target scope is not canonical", Code: CodeBadRequest, TraceID: traceID})
+			return
+		}
+		writeJSON(w, http.StatusBadGateway, ErrorResponse{Error: "upstream error", Code: CodeUpstream, TraceID: traceID})
+		return
+	}
+	event.TargetRepositoryOwner = targetIdentity.Owner
+	event.TargetRepositoryOwnerID = targetIdentity.OwnerID
+	event.TargetRepository = targetIdentity.Scope
+	event.TargetRepositoryID = targetIdentity.RepositoryID
+
+	// Step 4: Load and evaluate policy.
+	pol, err := h.policyLoader.Load(r.Context(), policy.LoadRequest{
+		Scope:              targetIdentity.Scope,
+		TargetOwnerID:      targetIdentity.OwnerID,
+		TargetRepositoryID: targetIdentity.RepositoryID,
+		AppName:            appName,
+		Identity:           req.Identity,
+	})
+	if err != nil {
+		var validationErr *policy.ValidationError
+		if errors.As(err, &validationErr) {
+			event.Result = audit.ResultPolicyInvalid
+			event.ErrorReason = err.Error()
+			event.DurationMS = msSince(start)
+			h.emitResult(event, req, start)
+			if h.slogger != nil {
+				h.slogger.Warn("trust policy invalid", "trace_id", traceID, "scope", req.Scope, "app", appName, "identity", req.Identity, "error", err)
+			}
+			writeJSON(w, http.StatusForbidden, ErrorResponse{Error: "forbidden", Code: CodeTrustPolicyInvalid, TraceID: traceID})
+			return
+		}
 		event.Result = audit.ResultGitHubError
 		event.ErrorReason = fmt.Sprintf("policy load error: %v", err)
 		event.DurationMS = msSince(start)
@@ -344,6 +479,17 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			)
 		}
 		writeJSON(w, http.StatusForbidden, ErrorResponse{Error: "forbidden", Code: CodePolicyNotFound, TraceID: traceID})
+		return
+	}
+	if err := pol.Validate(); err != nil {
+		event.Result = audit.ResultPolicyInvalid
+		event.ErrorReason = err.Error()
+		event.DurationMS = msSince(start)
+		h.emitResult(event, req, start)
+		if h.slogger != nil {
+			h.slogger.Warn("trust policy invalid", "trace_id", traceID, "scope", req.Scope, "app", appName, "identity", req.Identity, "error", err)
+		}
+		writeJSON(w, http.StatusForbidden, ErrorResponse{Error: "forbidden", Code: CodeTrustPolicyInvalid, TraceID: traceID})
 		return
 	}
 
@@ -390,11 +536,150 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusForbidden, ErrorResponse{Error: "forbidden", Code: CodePolicyDenied, TraceID: traceID})
 		return
 	}
+	if sourceIdentity != nil {
+		relationship := pol.EvaluateGitHubRelationship(
+			policy.GitHubRepository{
+				OwnerID:      policy.GitHubID(sourceIdentity.RepositoryOwnerID),
+				RepositoryID: policy.GitHubID(sourceIdentity.RepositoryID),
+			},
+			policy.GitHubRepository{
+				OwnerID:      policy.GitHubID(targetIdentity.OwnerID),
+				RepositoryID: policy.GitHubID(targetIdentity.RepositoryID),
+			},
+		)
+		if !relationship.Allowed {
+			event.Result = audit.ResultPolicyDenied
+			event.ErrorReason = relationship.Reason
+			event.DurationMS = msSince(start)
+			h.emitResult(event, req, start)
+			if h.slogger != nil {
+				h.slogger.Warn("source-to-target relationship denied", "trace_id", traceID, "scope", req.Scope, "identity", req.Identity, "reason", relationship.Reason)
+			}
+			writeJSON(w, http.StatusForbidden, ErrorResponse{Error: "forbidden", Code: CodePolicyDenied, TraceID: traceID})
+			return
+		}
+	}
 
-	// Step 5: Issue GitHub token.
-	subject, _ := claims["sub"].(string)
-	repositories := buildRepositories(req.Scope, pol, subject)
-	token, err := provider.GetInstallationToken(r.Context(), req.Scope, pol.Permissions, repositories, traceID)
+	// Repository scopes always mint for the one resolved immutable target.
+	repositories := []string{targetIdentity.Repository}
+	repositoryIDs := []string{targetIdentity.RepositoryID}
+
+	// Step 4.5: Org-rego bundle guardrail. Composes with the YAML policy
+	// (deny wins, both must allow). The bundle digest is recorded in
+	// the audit event whether the call allowed or denied — it's the
+	// fingerprint that proves which bundle gated which decision. A
+	// deny here returns 403 org_policy_denied and never reaches the
+	// mint call. An engine error fails closed (also 403, not 500) so
+	// a Rego compile bug or context cancellation can't accidentally
+	// produce an allow.
+	if h.bundleManager.Enabled() {
+		input := bundle.Input{
+			Mode: bundle.ModeExchange,
+			Request: bundle.InputRequest{
+				Scope: req.Scope, App: appName, Identity: req.Identity,
+			},
+			YAMLPolicy:     bundle.FromPolicy(pol),
+			Claims:         claims,
+			SourceIdentity: bundleSourceIdentity(sourceIdentity, h.requireImmutableSubjectClaims),
+			TargetIdentity: bundleTargetIdentity(targetIdentity),
+			Requested: &bundle.InputRequested{
+				Permissions:      pol.Permissions,
+				Repositories:     repositories,
+				RepositoryIDs:    repositoryIDs,
+				OrganizationWide: false,
+			},
+		}
+		decision, evalErr := h.bundleManager.Eval(r.Context(), input)
+		if evalErr != nil {
+			if decision.SnapshotDigest != "" {
+				event.BundleDigest = decision.SnapshotDigest
+			} else if decision.EvaluatedDigest != "" {
+				event.BundleDigest = decision.EvaluatedDigest
+			}
+			event.BundleDecisions = audit.FromBundleDecision(decision)
+			// Bundle staleness (fail_mode=closed + age > max_staleness)
+			// surfaces as 503 bundle_stale, not 403 — this is a server-
+			// side dependency degradation, not a policy decision. Clients
+			// (and especially github-sts-action) should back off + retry,
+			// not surface the request as a hard authorization failure to
+			// end users.
+			metrics.OrgDecisionTotal.WithLabelValues(appName, "all", "error").Inc()
+			code := CodeBundleEvaluationFailed
+			result := audit.ResultBundleEvaluationFailed
+			reason := "bundle evaluation failed"
+			logMessage := "bundle evaluation failed (failing closed)"
+			retryAfter := "1"
+			switch {
+			case errors.Is(evalErr, bundle.ErrBundleStale):
+				code = CodeBundleStale
+				result = audit.ResultBundleStale
+				reason = "bundle stale (no successful refresh within max_staleness)"
+				logMessage = "bundle stale: refusing exchange (fail_mode=closed)"
+				retryAfter = "60"
+			case errors.Is(evalErr, bundle.ErrBundleUnavailable), errors.Is(evalErr, bundle.ErrDisabled):
+				code = CodeBundleUnavailable
+				result = audit.ResultBundleUnavailable
+				reason = "mandatory bundle unavailable"
+				logMessage = "mandatory bundle unavailable (failing closed)"
+				retryAfter = "60"
+			}
+			event.Result = result
+			event.ErrorReason = fmt.Sprintf("%s: %v", reason, evalErr)
+			event.OrgDecision = &audit.OrgDecision{
+				Applicable: decision.Applicable,
+				Evaluated:  decision.Evaluated,
+				Allow:      false,
+				Reasons:    []string{reason},
+			}
+			event.DurationMS = msSince(start)
+			h.emitResult(event, req, start)
+			h.slogger.Error(logMessage,
+				"trace_id", traceID,
+				"scope", req.Scope,
+				"app", appName,
+				"identity", req.Identity,
+				"bundle_digest", event.BundleDigest,
+				"error", evalErr,
+			)
+			w.Header().Set("Retry-After", retryAfter)
+			writeJSON(w, http.StatusServiceUnavailable, ErrorResponse{Error: "service unavailable", Code: code, TraceID: traceID})
+			return
+		}
+		if decision.EvaluatedDigest != "" {
+			event.BundleDigest = decision.EvaluatedDigest
+		}
+		event.OrgDecision = &audit.OrgDecision{
+			Applicable: decision.Applicable,
+			Evaluated:  decision.Evaluated,
+			Allow:      decision.Allow,
+			Reasons:    decision.Reasons,
+		}
+		event.BundleDecisions = audit.FromBundleDecision(decision)
+		if !decision.Allow {
+			metrics.OrgDecisionTotal.WithLabelValues(appName, "all", "deny").Inc()
+			event.Result = audit.ResultOrgPolicyDenied
+			event.ErrorReason = fmt.Sprintf("org policy denied: %v", decision.Reasons)
+			event.DurationMS = msSince(start)
+			h.emitResult(event, req, start)
+			h.slogger.Warn("org policy denied",
+				"trace_id", traceID,
+				"scope", req.Scope,
+				"app", appName,
+				"identity", req.Identity,
+				"bundle_digest", event.BundleDigest,
+				"reasons", decision.Reasons,
+			)
+			writeJSON(w, http.StatusForbidden, ErrorResponse{Error: "forbidden", Code: CodeOrgPolicyDenied, TraceID: traceID})
+			return
+		}
+		if decision.Evaluated {
+			metrics.OrgDecisionTotal.WithLabelValues(appName, "all", "allow").Inc()
+		} else {
+			metrics.OrgDecisionTotal.WithLabelValues(appName, "all", "not_evaluated").Inc()
+		}
+	}
+
+	token, err := provider.GetInstallationTokenForTarget(r.Context(), targetIdentity, pol.Permissions, traceID)
 	if err != nil {
 		event.Result = audit.ResultGitHubError
 		event.ErrorReason = fmt.Sprintf("github token issuance failed: %v", err)
@@ -430,7 +715,7 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // resolveApp determines which app provider to use.
-func (h *ExchangeHandler) resolveApp(requestedApp string) (string, *github.AppTokenProvider, error) {
+func (h *ExchangeHandler) resolveApp(requestedApp string) (string, github.ExchangeApp, error) {
 	if requestedApp != "" {
 		provider, ok := h.appProviders[requestedApp]
 		if !ok {
@@ -570,39 +855,32 @@ func audienceMatches(claims map[string]any, expected string) bool {
 	return false
 }
 
-// subjectRepoPattern matches the leading "repo:<org>/<repo>:" segment of a
-// GitHub Actions OIDC subject and captures the repo name.
-var subjectRepoPattern = regexp.MustCompile(`^repo:[^/]+/([^:]+):`)
+func bundleSourceIdentity(identity *oidc.GitHubIdentity, required bool) *bundle.InputSourceIdentity {
+	if identity == nil {
+		return nil
+	}
+	return &bundle.InputSourceIdentity{
+		Version:                  bundle.SourceIdentityVersionV1,
+		Issuer:                   identity.Issuer,
+		Subject:                  identity.Subject,
+		RepositoryOwner:          identity.RepositoryOwner,
+		RepositoryOwnerID:        identity.RepositoryOwnerID,
+		Repository:               identity.Repository,
+		RepositoryID:             identity.RepositoryID,
+		ImmutableSubject:         identity.ImmutableSubject,
+		ImmutableSubjectRequired: required,
+	}
+}
 
-// buildRepositories constructs the repository list for token issuance.
-//
-// Security invariants:
-//   - Repo-level scope ("org/repo") always issues a token restricted to that
-//     repo, regardless of what the policy declares.
-//   - Centralized policies (loaded from the org policy repo) NEVER issue
-//     org-wide tokens. For org-level scope, the requesting repo is derived
-//     from the OIDC subject and the token is restricted to that single repo.
-//     This prevents a centralized identity from minting cross-repo tokens.
-//   - Non-centralized org-level scope falls back to the policy's repositories
-//     field (may be nil for full org access — only honored for repo-local
-//     identities that explicitly opt in).
-func buildRepositories(scope string, pol *policy.TrustPolicy, subject string) []string {
-	if strings.Contains(scope, "/") {
-		parts := strings.SplitN(scope, "/", 2)
-		if len(parts) == 2 {
-			return []string{parts[1]}
-		}
+func bundleTargetIdentity(identity github.TargetIdentity) *bundle.InputTargetIdentity {
+	return &bundle.InputTargetIdentity{
+		Version:           bundle.TargetIdentityVersionV1,
+		Scope:             identity.Scope,
+		RepositoryOwner:   identity.Owner,
+		RepositoryOwnerID: identity.OwnerID,
+		Repository:        identity.Scope,
+		RepositoryID:      identity.RepositoryID,
 	}
-	if pol.Centralized() {
-		if m := subjectRepoPattern.FindStringSubmatch(subject); len(m) == 2 {
-			return []string{m[1]}
-		}
-		// Centralized policy but subject doesn't identify a repo — refuse to
-		// issue an org-wide token. Returning an empty (non-nil) slice causes
-		// GitHub to reject the token request rather than grant org-wide access.
-		return []string{}
-	}
-	return pol.Repositories
 }
 
 // remoteIP extracts the client IP from the request. X-Forwarded-For is

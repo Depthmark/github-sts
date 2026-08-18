@@ -8,6 +8,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/depthmark/github-sts/internal/bundle"
 	"github.com/depthmark/github-sts/internal/metrics"
 )
 
@@ -16,7 +17,7 @@ func auditLogLevel(result ExchangeResult) slog.Level {
 	switch result {
 	case ResultSuccess:
 		return slog.LevelInfo
-	case ResultPolicyDenied, ResultNotFound, ResultOIDCInvalid, ResultJTIReplay:
+	case ResultPolicyDenied, ResultPolicyInvalid, ResultOrgPolicyDenied, ResultNotFound, ResultOIDCInvalid, ResultJTIReplay:
 		return slog.LevelWarn
 	default:
 		// ResultGitHubError, ResultCacheError, ResultUnknownError
@@ -28,31 +29,109 @@ func auditLogLevel(result ExchangeResult) slog.Level {
 type ExchangeResult string
 
 const (
-	ResultSuccess      ExchangeResult = "success"
-	ResultPolicyDenied ExchangeResult = "policy_denied"
-	ResultOIDCInvalid  ExchangeResult = "oidc_invalid"
-	ResultJTIReplay    ExchangeResult = "jti_replay"
-	ResultNotFound     ExchangeResult = "policy_not_found"
-	ResultCacheError   ExchangeResult = "cache_error"
-	ResultGitHubError  ExchangeResult = "github_error"
-	ResultUnknownError ExchangeResult = "unknown_error"
+	ResultSuccess                ExchangeResult = "success"
+	ResultPolicyDenied           ExchangeResult = "policy_denied"
+	ResultPolicyInvalid          ExchangeResult = "trust_policy_invalid"
+	ResultOrgPolicyDenied        ExchangeResult = "org_policy_denied"
+	ResultOIDCInvalid            ExchangeResult = "oidc_invalid"
+	ResultJTIReplay              ExchangeResult = "jti_replay"
+	ResultNotFound               ExchangeResult = "policy_not_found"
+	ResultCacheError             ExchangeResult = "cache_error"
+	ResultGitHubError            ExchangeResult = "github_error"
+	ResultBundleStale            ExchangeResult = "bundle_stale"
+	ResultBundleUnavailable      ExchangeResult = "bundle_unavailable"
+	ResultBundleEvaluationFailed ExchangeResult = "bundle_evaluation_failed"
+	ResultUnknownError           ExchangeResult = "unknown_error"
 )
 
 // Event represents a single token exchange audit event.
 type Event struct {
-	Timestamp   time.Time      `json:"timestamp"`
-	TraceID     string         `json:"trace_id"`
-	Scope       string         `json:"scope"`
-	AppName     string         `json:"app"`
-	Identity    string         `json:"identity"`
-	Issuer      string         `json:"issuer"`
-	Subject     string         `json:"subject"`
-	JTI         string         `json:"jti,omitempty"`
-	Result      ExchangeResult `json:"result"`
-	ErrorReason string         `json:"error_reason,omitempty"`
-	DurationMS  int64          `json:"duration_ms"`
-	UserAgent   string         `json:"user_agent,omitempty"`
-	RemoteIP    string         `json:"remote_ip,omitempty"`
+	Timestamp                time.Time        `json:"timestamp"`
+	TraceID                  string           `json:"trace_id"`
+	Scope                    string           `json:"scope"`
+	AppName                  string           `json:"app"`
+	Identity                 string           `json:"identity"`
+	Issuer                   string           `json:"issuer"`
+	Subject                  string           `json:"subject"`
+	SourceRepositoryOwner    string           `json:"source_repository_owner,omitempty"`
+	SourceRepositoryOwnerID  string           `json:"source_repository_owner_id,omitempty"`
+	SourceRepository         string           `json:"source_repository,omitempty"`
+	SourceRepositoryID       string           `json:"source_repository_id,omitempty"`
+	TargetRepositoryOwner    string           `json:"target_repository_owner,omitempty"`
+	TargetRepositoryOwnerID  string           `json:"target_repository_owner_id,omitempty"`
+	TargetRepository         string           `json:"target_repository,omitempty"`
+	TargetRepositoryID       string           `json:"target_repository_id,omitempty"`
+	ImmutableSubject         *bool            `json:"immutable_subject,omitempty"`
+	ImmutableSubjectRequired *bool            `json:"immutable_subject_required,omitempty"`
+	JTI                      string           `json:"jti,omitempty"`
+	Result                   ExchangeResult   `json:"result"`
+	ErrorReason              string           `json:"error_reason,omitempty"`
+	DurationMS               int64            `json:"duration_ms"`
+	UserAgent                string           `json:"user_agent,omitempty"`
+	RemoteIP                 string           `json:"remote_ip,omitempty"`
+	OrgDecision              *OrgDecision     `json:"org_decision,omitempty"`
+	BundleDigest             string           `json:"bundle_digest,omitempty"`
+	BundleEnforcement        string           `json:"bundle_enforcement"`
+	BundleDecisions          []BundleDecision `json:"bundle_decisions,omitempty"`
+}
+
+// OrgDecision is the bundle's verdict captured in the audit trail. Allow
+// is the final allow/deny outcome; Reasons is the producer's
+// allow_reasons (on allow) or deny_reasons (on deny). Phase 3 will add
+// a Mode field here to disambiguate validate-mode from exchange-mode.
+type OrgDecision struct {
+	Applicable bool     `json:"applicable"`
+	Evaluated  bool     `json:"evaluated"`
+	Allow      bool     `json:"allow"`
+	Reasons    []string `json:"reasons,omitempty"`
+}
+
+type BundleDecision struct {
+	BundleName     string            `json:"bundle_name"`
+	Digest         string            `json:"digest"`
+	PolicyRevision string            `json:"policy_revision,omitempty"`
+	Packages       []PackageDecision `json:"packages,omitempty"`
+}
+
+type PackageDecision struct {
+	Package     string   `json:"package"`
+	Query       string   `json:"query"`
+	Allow       bool     `json:"allow"`
+	Reasons     []string `json:"reasons,omitempty"`
+	RuleID      string   `json:"rule_id,omitempty"`
+	RuleName    string   `json:"rule_name,omitempty"`
+	ExceptionID string   `json:"exception_id,omitempty"`
+}
+
+func FromBundleDecision(d bundle.Decision) []BundleDecision {
+	byBundle := make(map[string]*BundleDecision)
+	order := make([]string, 0)
+	for _, pd := range d.Packages {
+		name := pd.BundleName
+		if name == "" {
+			name = "unknown"
+		}
+		bd, ok := byBundle[name]
+		if !ok {
+			bd = &BundleDecision{BundleName: name, Digest: pd.Digest, PolicyRevision: pd.PolicyRevision}
+			byBundle[name] = bd
+			order = append(order, name)
+		}
+		bd.Packages = append(bd.Packages, PackageDecision{
+			Package:     pd.Package,
+			Query:       pd.Query,
+			Allow:       pd.Allow,
+			Reasons:     pd.Reasons,
+			RuleID:      pd.RuleID,
+			RuleName:    pd.RuleName,
+			ExceptionID: pd.ExceptionID,
+		})
+	}
+	out := make([]BundleDecision, 0, len(order))
+	for _, name := range order {
+		out = append(out, *byBundle[name])
+	}
+	return out
 }
 
 // Logger is the interface for audit event logging.
@@ -161,6 +240,43 @@ func (fl *FileLogger) writer() {
 			}
 			if event.ErrorReason != "" {
 				attrs = append(attrs, "error_reason", event.ErrorReason)
+			}
+			if event.SourceRepositoryID != "" {
+				attrs = append(attrs,
+					"source_repository_owner", event.SourceRepositoryOwner,
+					"source_repository_owner_id", event.SourceRepositoryOwnerID,
+					"source_repository", event.SourceRepository,
+					"source_repository_id", event.SourceRepositoryID,
+				)
+			}
+			if event.TargetRepositoryID != "" {
+				attrs = append(attrs,
+					"target_repository_owner", event.TargetRepositoryOwner,
+					"target_repository_owner_id", event.TargetRepositoryOwnerID,
+					"target_repository", event.TargetRepository,
+					"target_repository_id", event.TargetRepositoryID,
+				)
+			}
+			if event.ImmutableSubject != nil {
+				attrs = append(attrs, "immutable_subject", *event.ImmutableSubject)
+			}
+			if event.ImmutableSubjectRequired != nil {
+				attrs = append(attrs, "immutable_subject_required", *event.ImmutableSubjectRequired)
+			}
+			if event.BundleDigest != "" {
+				attrs = append(attrs, "bundle_digest", event.BundleDigest)
+			}
+			attrs = append(attrs, "bundle_enforcement", event.BundleEnforcement)
+			if event.OrgDecision != nil {
+				attrs = append(attrs,
+					"org_decision_applicable", event.OrgDecision.Applicable,
+					"org_decision_evaluated", event.OrgDecision.Evaluated,
+					"org_decision_allow", event.OrgDecision.Allow,
+					"org_decision_reasons", event.OrgDecision.Reasons,
+				)
+			}
+			if len(event.BundleDecisions) > 0 {
+				attrs = append(attrs, "bundle_decisions", event.BundleDecisions)
 			}
 			fl.slogger.Log(context.Background(), auditLogLevel(event.Result), "audit", attrs...)
 		}

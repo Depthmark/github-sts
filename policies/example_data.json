@@ -1,0 +1,68 @@
+{
+  "sts": {
+    "enterprise_config": {
+      "v1": {
+        "contract_version": "v1",
+        "approved_source_owner_ids": {
+          "123456": true
+        },
+        "approved_target_owner_ids": {
+          "123456": true
+        },
+        "apps": {
+          "default": {
+            "permission_ceiling": {
+              "contents": "write",
+              "deployments": "write",
+              "statuses": "write",
+              "pull_requests": "write"
+            },
+            "targets": {
+              "123456": {
+                "repositories": {
+                  "456789": {
+                    "permission_ceiling": {
+                      "contents": "write",
+                      "deployments": "write",
+                      "statuses": "write"
+                    },
+                    "identities": {
+                      "ci": {
+                        "permission_ceiling": {
+                          "contents": "read"
+                        }
+                      },
+                      "deploy": {
+                        "permission_ceiling": {
+                          "contents": "write",
+                          "deployments": "write",
+                          "statuses": "write"
+                        }
+                      }
+                    }
+                  },
+                  "456791": {
+                    "permission_ceiling": {
+                      "contents": "read",
+                      "pull_requests": "write"
+                    },
+                    "identities": {
+                      "cross-repo-ci": {
+                        "permission_ceiling": {
+                          "contents": "read",
+                          "pull_requests": "write"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "cross_org_exceptions": [],
+        "org_wide_grants": []
+      }
+    }
+  }
+}

@@ -63,19 +63,6 @@ permissions:
   contents: read
 ```
 
-## Identité de charge de travail GCP
-
-Pour les comptes de service GCP.
-
-```yaml
-issuer: https://accounts.google.com
-subject: https://accounts.google.com/service-account-name
-audience: https://sts.example.com
-permissions:
-  contents: read
-  packages: read
-```
-
 ## Restriction par environnement
 
 Uniquement les jetons provenant d'un environnement GitHub spécifique.

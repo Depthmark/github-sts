@@ -40,11 +40,7 @@ apps:
 oidc:
   allowedIssuers:
     - https://token.actions.githubusercontent.com
-    - https://accounts.google.com
   requiredAudience: https://sts.example.com
-  trustedJwksHosts:
-    https://accounts.google.com:
-      - www.googleapis.com
 
 jti:
   backend: redis

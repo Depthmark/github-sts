@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,6 +21,7 @@ import (
 	"time"
 
 	"github.com/depthmark/github-sts/internal/audit"
+	"github.com/depthmark/github-sts/internal/bundle"
 	"github.com/depthmark/github-sts/internal/config"
 	"github.com/depthmark/github-sts/internal/github"
 	"github.com/depthmark/github-sts/internal/handler"
@@ -45,6 +47,7 @@ type Server struct {
 	reachabilityProber *github.ReachabilityProber
 	ipRateLimiter      *ratelimit.IPRateLimiter
 	redisClient        *redis.Client
+	bundleManager      bundle.LifecycleManager // nil when bundle integration is disabled
 	slogger            *slog.Logger
 	certReloader       *certReloader
 }
@@ -174,6 +177,37 @@ func New(cfg *config.Settings, slogger *slog.Logger) (*Server, error) {
 
 	// Register metrics.
 	metrics.Register()
+	if cfg.RequireImmutableSubjectClaims() {
+		metrics.ImmutableSubjectClaimsRequired.Set(1)
+	} else {
+		metrics.ImmutableSubjectClaimsRequired.Set(0)
+		slogger.Warn("immutable GitHub subject claims are not required",
+			"setting", "oidc.require_immutable_subject_claims",
+			"risk", "legacy subject format is vulnerable to repository namespace reuse",
+		)
+	}
+	yamlOnlyAuthorization := yamlOnlyAuthorizationPossible(cfg)
+	if cfg.BundleEnforcement == config.BundleEnforcementRequired {
+		metrics.BundleEnforcementRequired.Set(1)
+	} else {
+		metrics.BundleEnforcementRequired.Set(0)
+		slogger.Warn("enterprise bundle enforcement is explicitly optional",
+			"setting", "bundle_enforcement",
+			"yaml_only_authorization", yamlOnlyAuthorization,
+			"risk", "token exchange does not require enterprise policy participation",
+		)
+	}
+
+	// Initialize bundle manager. When bundle.enabled=false the handler
+	// receives the no-op Disabled manager and skips the engine call
+	// entirely. When enabled, Init() pulls/verifies/compiles synchronously;
+	// any failure here causes server creation to fail with a clear error
+	// — silent degrade to YAML-only would mask a security misconfiguration.
+	bundleMgr, liveBundleMgr, err := initBundleManager(cfg, slogger)
+	if err != nil {
+		return nil, fmt.Errorf("initializing bundle manager: %w", err)
+	}
+	s.bundleManager = liveBundleMgr
 
 	// Create exchange handler.
 	exchangeHandler := handler.NewExchangeHandler(
@@ -182,9 +216,11 @@ func New(cfg *config.Settings, slogger *slog.Logger) (*Server, error) {
 		appProviders,
 		cfg.AllowedIssuers(),
 		cfg.RequiredAudience(),
+		cfg.RequireImmutableSubjectClaims(),
 		s.auditLogger,
 		slogger,
 		cfg.Server.TrustForwardedHeaders,
+		bundleMgr,
 	)
 
 	// Wrap exchange handler with rate limiting if enabled.
@@ -197,7 +233,26 @@ func New(cfg *config.Settings, slogger *slog.Logger) (*Server, error) {
 	mux := http.NewServeMux()
 	mux.Handle("GET /sts/exchange", exchangeH)
 	mux.Handle("POST /sts/exchange", exchangeH)
-	mux.HandleFunc("GET /health", handler.HealthHandler())
+	// Trust-policy schema, served from the loaded bundle. 503 when
+	// bundle integration is disabled; see SchemaHandler for codes.
+	schemaHandler := handler.NewSchemaHandler(bundleMgr)
+	mux.Handle("GET /sts/v1/trust-policy.json", schemaHandler)
+	mux.Handle("HEAD /sts/v1/trust-policy.json", schemaHandler)
+	mux.Handle("POST /sts/v1/trust-policy/validate", handler.NewPolicyValidationHandler())
+	// /health includes bundle status when the integration is enabled.
+	// liveBundleMgr is nil when bundle.enabled=false; HealthHandler
+	// degrades gracefully in that case (just returns status: ok).
+	var bundleReporter handler.BundleHealthReporter
+	if liveBundleMgr != nil {
+		bundleReporter = liveBundleMgr
+	}
+	mux.HandleFunc("GET /health", handler.HealthHandler(bundleReporter, handler.SecurityPosture{
+		RequireImmutableSubjectClaims: cfg.RequireImmutableSubjectClaims(),
+		LegacySubjectOptOut:           !cfg.RequireImmutableSubjectClaims(),
+		BundleEnforcement:             cfg.BundleEnforcement,
+		EnterprisePolicyRequired:      cfg.BundleEnforcement == config.BundleEnforcementRequired,
+		YAMLOnlyAuthorization:         yamlOnlyAuthorization,
+	}))
 	mux.HandleFunc("GET /ready", handler.ReadinessHandler(&s.ready))
 	if cfg.Metrics.Enabled {
 		mux.Handle("GET /metrics", handler.MetricsHandler(cfg.Metrics.AuthToken))
@@ -232,6 +287,25 @@ func New(cfg *config.Settings, slogger *slog.Logger) (*Server, error) {
 	return s, nil
 }
 
+func yamlOnlyAuthorizationPossible(cfg *config.Settings) bool {
+	if cfg.BundleEnforcement == config.BundleEnforcementRequired {
+		return false
+	}
+	for app := range cfg.Apps {
+		covered := false
+		for _, configuredBundle := range cfg.Bundles {
+			if len(configuredBundle.Apps) == 0 || slices.Contains(configuredBundle.Apps, app) {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			return true
+		}
+	}
+	return false
+}
+
 // buildTLSConfig loads TLS configuration and, when TLS is enabled, creates a
 // certReloader that serves the certificate via GetCertificate. It returns nil
 // for both outputs when native TLS is not configured.
@@ -262,10 +336,12 @@ func buildTLSConfig(cfg *config.Settings, slogger *slog.Logger) (*tls.Config, *c
 	if cfg.Server.ClientAuthEnabled() {
 		caPEM, err := os.ReadFile(cfg.Server.TLS.ClientCAFile)
 		if err != nil {
+			reloader.Stop()
 			return nil, nil, fmt.Errorf("reading client CA file: %w", err)
 		}
 		pool := x509.NewCertPool()
 		if !pool.AppendCertsFromPEM(caPEM) {
+			reloader.Stop()
 			return nil, nil, fmt.Errorf("client CA file contains no valid certificates")
 		}
 		tlsCfg.ClientAuth = tls.RequireAndVerifyClientCert
@@ -370,6 +446,12 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		s.reachabilityProber.Start()
 		s.slogger.Info("reachability prober started")
 	}
+	if s.bundleManager != nil {
+		// Use background context so the poll loop keeps running even if
+		// ListenAndServe's ctx is cancelled on shutdown — Stop() below
+		// is the authoritative drain.
+		s.bundleManager.Start(context.Background())
+	}
 
 	// Mark ready.
 	s.ready.Store(true)
@@ -403,6 +485,19 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	}
 }
 
+// ReloadBundle triggers an on-demand bundle reload. Used by the SIGHUP
+// handler. No-op (returns nil) when bundle integration is disabled,
+// rather than an error, so SIGHUP behaviour is consistent regardless
+// of config — operators get a single signal they can wire into any ops
+// runbook.
+func (s *Server) ReloadBundle(ctx context.Context) error {
+	if s.bundleManager == nil {
+		return nil
+	}
+	_, err := s.bundleManager.Reload(ctx)
+	return err
+}
+
 // Shutdown performs ordered graceful shutdown.
 func (s *Server) Shutdown() error {
 	// Mark not ready.
@@ -418,6 +513,9 @@ func (s *Server) Shutdown() error {
 	}
 
 	// Stop background services.
+	if s.bundleManager != nil {
+		s.bundleManager.Stop()
+	}
 	if s.reachabilityProber != nil {
 		s.reachabilityProber.Stop()
 		s.slogger.Info("reachability prober stopped")
@@ -449,6 +547,71 @@ func (s *Server) Shutdown() error {
 
 	s.slogger.Info("server shutdown complete")
 	return nil
+}
+
+// initBundleManager constructs and initializes a bundle.Manager based on
+// configuration. Returns bundle.Disabled{} when bundle integration is
+// off; otherwise constructs a LiveManager and runs Init synchronously
+// — a failed Init returns a non-nil error and the server fails to come
+// up. This is intentional: a misconfigured bundle is a security
+// configuration error, not something to silently degrade through.
+//
+// The returned *LiveManager (if any) is wrapped as bundle.Manager for
+// dependency injection but exposed separately so server lifecycle code
+// can call Start/Stop/Reload on it.
+func initBundleManager(cfg *config.Settings, slogger *slog.Logger) (bundle.Manager, bundle.LifecycleManager, error) {
+	bundles := cfg.EffectiveBundles()
+	if len(bundles) == 0 {
+		slogger.Info("bundle integration disabled")
+		return bundle.Disabled{}, nil, nil
+	}
+	children := make([]bundle.LifecycleManager, 0, len(bundles))
+	for _, bc := range bundles {
+		src := bundle.Source{Raw: bc.Ref}
+		loader, err := bundle.NewLoader(src)
+		if err != nil {
+			return nil, nil, fmt.Errorf("constructing bundle loader for %q: %w", bc.Ref, err)
+		}
+		verify := bundle.VerifyConfig{
+			CertificateIdentityRegexp: bc.Cosign.CertificateIdentityRegexp,
+			CertificateOIDCIssuer:     bc.Cosign.CertificateOIDCIssuer,
+			PublicKeyRef:              bc.Cosign.PublicKeyRef,
+			SkipVerification:          bc.Cosign.SkipVerification,
+			RegistryAuth: bundle.RegistryAuthConfig{
+				Mode:         bc.Registry.Auth.Mode,
+				Username:     bc.Registry.Auth.Username,
+				PasswordFile: bc.Registry.Auth.PasswordFile,
+				PasswordEnv:  bc.Registry.Auth.PasswordEnv,
+			},
+		}
+		mgr := bundle.NewLiveManager(loader, src, verify, slogger.With("bundle", bc.Name), bundle.LiveOpts{
+			Name:                   bc.Name,
+			Apps:                   bc.Apps,
+			Mandatory:              cfg.BundleEnforcement == config.BundleEnforcementRequired && len(bc.Apps) == 0,
+			ExpectedPolicyRevision: bc.ExpectedPolicyRevision,
+			PollInterval:           bc.PollInterval,
+			MaxStaleness:           bc.MaxStaleness,
+			FailMode:               bc.FailMode,
+		})
+		initCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		if err := mgr.Init(initCtx); err != nil {
+			cancel()
+			return nil, nil, err
+		}
+		cancel()
+		children = append(children, mgr)
+		slogger.Info("bundle integration enabled",
+			"bundle", bc.Name,
+			"source", bc.Ref,
+			"apps", bc.Apps,
+			"digest", mgr.Digest(),
+			"poll_interval", bc.PollInterval,
+			"max_staleness", bc.MaxStaleness,
+			"fail_mode", bc.FailMode,
+		)
+	}
+	mgr := bundle.NewMultiManager(children, cfg.BundleEnforcement)
+	return mgr, mgr, nil
 }
 
 // securityHeadersMiddleware sets security headers on all responses.
@@ -596,6 +759,10 @@ func routePattern(r *http.Request) string {
 	switch {
 	case strings.HasPrefix(path, "/sts/exchange"):
 		return "/sts/exchange"
+	case path == "/sts/v1/trust-policy.json":
+		return "/sts/v1/trust-policy.json"
+	case path == "/sts/v1/trust-policy/validate":
+		return "/sts/v1/trust-policy/validate"
 	case path == "/health":
 		return "/health"
 	case path == "/ready":

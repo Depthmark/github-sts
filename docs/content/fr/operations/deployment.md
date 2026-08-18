@@ -10,19 +10,18 @@ github-sts peut être déployé avec Docker (cette page) ou avec le chart Helm s
 
 ## Docker
 
-L'image officielle est construite à partir d'une base [distroless](https://github.com/GoogleContainerTools/distroless) avec un utilisateur non-root pour une surface d'attaque minimale.
+L'image officielle est publiée sur
+[`ghcr.io/depthmark/github-sts`](https://github.com/Depthmark/github-sts/pkgs/container/github-sts),
+construite à partir d'une base [distroless](https://github.com/GoogleContainerTools/distroless) avec un utilisateur non-root pour une surface d'attaque minimale. En production, fixez une version (par exemple `0.0.3`) plutôt que `latest`.
 
 ```bash
-# Build
-docker build -t github-sts:local .
-
 # Run with config file
 docker run -p 8080:8080 \
   -v $(pwd)/config/github-sts.example.yaml:/etc/github-sts/config.yaml:ro \
   -e GITHUBSTS_CONFIG_PATH=/etc/github-sts/config.yaml \
   -e GITHUBSTS_APP_DEFAULT_APP_ID="$GITHUBSTS_APP_DEFAULT_APP_ID" \
   -e GITHUBSTS_APP_DEFAULT_PRIVATE_KEY="$GITHUBSTS_APP_DEFAULT_PRIVATE_KEY" \
-  github-sts:local
+  ghcr.io/depthmark/github-sts:0.0.3
 
 # Run with env vars only
 docker run -p 8080:8080 \
@@ -31,8 +30,10 @@ docker run -p 8080:8080 \
   -e GITHUBSTS_APP_DEFAULT_PRIVATE_KEY="$GITHUBSTS_APP_DEFAULT_PRIVATE_KEY" \
   -e GITHUBSTS_OIDC_ALLOWED_ISSUERS="https://token.actions.githubusercontent.com" \
   -e GITHUBSTS_OIDC_REQUIRED_AUDIENCE="https://sts.example.com" \
-  github-sts:local
+  ghcr.io/depthmark/github-sts:0.0.3
 ```
+
+Pour construire depuis les sources : `docker build -t github-sts:local .` à la racine du dépôt, puis remplacez le nom d'image ci-dessus.
 
 ## TLS et mTLS
 
@@ -64,7 +65,7 @@ Vérifiez :
 curl --cacert certs/ca.crt https://localhost:8443/health
 ```
 
-> **Avertissement — les certificats auto-signés sont réservés au développement local.** Un certificat auto-signé (généré vous-même avec `openssl`) convient aux tests sur votre machine, mais **ne l'utilisez jamais en production**. En production, les clients rejettent les certificats auto-signés à moins d'installer manuellement leur CA, ce qui est un anti-modèle de sécurité. En production, obtenez des certificats auprès d'une CA de confiance — `cert-manager`/Let's Encrypt, votre PKI interne ou un service géré tel qu'AWS ACM ou Azure Key Vault — et terminez le TLS à l'ingress/Gateway lorsque cela est possible.
+> **Avertissement : les certificats auto-signés sont réservés au développement local.** Un certificat auto-signé (généré vous-même avec `openssl`) convient aux tests sur votre machine, mais **ne l'utilisez jamais en production**. En production, les clients rejettent les certificats auto-signés à moins d'installer manuellement leur CA, ce qui est un anti-modèle de sécurité. En production, obtenez des certificats auprès d'une CA de confiance (`cert-manager`/Let's Encrypt, votre PKI interne ou un service géré tel qu'AWS ACM ou Azure Key Vault) et terminez le TLS à l'ingress/Gateway lorsque cela est possible.
 
 Pour les déploiements autonomes nécessitant le mTLS, ajoutez le bundle de CA clientes et exigez que les clients présentent un certificat signé par celle-ci. Consultez [Configuration]({{< relref "/reference/configuration" >}}) pour la référence TLS complète.
 

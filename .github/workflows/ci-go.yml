@@ -1,0 +1,42 @@
+---
+name: CI (Go)
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '**.go'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Dockerfile'
+      - '.dockerignore'
+      - 'Makefile'
+      - 'policies/**'
+      - '.github/workflows/ci-go.yml'
+  push:
+    branches: [main]
+    paths:
+      - '**.go'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Dockerfile'
+      - '.dockerignore'
+      - 'Makefile'
+      - 'policies/**'
+      - '.github/workflows/ci-go.yml'
+  workflow_call: {}
+
+concurrency:
+  group: ci-go-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  go:
+    name: Go
+    uses: Depthmark/reusable-workflows/.github/workflows/ci-go.yml@b75184a59af82875f02abd547e57645ffcdcd91a # v1.0.1
+    permissions:
+      contents: read
+    with:
+      docker-build: true

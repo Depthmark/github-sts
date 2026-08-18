@@ -7,11 +7,10 @@ translationStatus: pending-review
 ---
 
 Vous avez déjà une GitHub App issue de [Configurer une GitHub App](../configure-github-app/) et
-[Installer l'App](../install-the-app/) ? Ceci construit et exécute l'image du conteneur sur votre
-propre machine avec des réglages choisis pour la rapidité de mise en place, pas pour un usage en
-production, afin d'avoir le serveur en service et vérifié en quelques minutes. Il n'existe pas
-encore d'image github-sts publiée, donc cette étape en construit une localement à partir du
-`Dockerfile` du dépôt.
+[Installer l'App](../install-the-app/) ? Ceci récupère
+l'[image publiée](https://github.com/Depthmark/github-sts/pkgs/container/github-sts) et l'exécute
+sur votre propre machine avec des réglages choisis pour la rapidité de mise en place, pas pour un
+usage en production, afin d'avoir le serveur en service et vérifié en quelques minutes.
 
 ## Prérequis
 
@@ -27,11 +26,15 @@ encore d'image github-sts publiée, donc cette étape en construit une localemen
 
 {{< snippet "run-local" >}}
 
+Vous construisez depuis les sources plutôt que d'utiliser l'image publiée ? Exécutez
+`docker build -t github-sts:local .` à la racine du dépôt, puis remplacez le nom d'image dans la
+commande `docker run` ci-dessus.
+
 ## Vérifier qu'il est en service
 
 ```bash
 curl -s http://127.0.0.1:8080/health
-# {"status":"ok"}
+# Inclut la vivacité, la posture de sécurité et l'état des bundles
 ```
 
 Consultez les journaux :

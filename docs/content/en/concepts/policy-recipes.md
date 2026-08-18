@@ -62,19 +62,6 @@ permissions:
   contents: read
 ```
 
-## GCP workload identity
-
-For GCP service accounts.
-
-```yaml
-issuer: https://accounts.google.com
-subject: https://accounts.google.com/service-account-name
-audience: https://sts.example.com
-permissions:
-  contents: read
-  packages: read
-```
-
 ## Environment-restricted
 
 Only tokens from a specific GitHub environment.

@@ -6,10 +6,10 @@ weight: 6
 ---
 
 Already have a GitHub App from [Configure a GitHub App](../configure-github-app/) and
-[Install the App](../install-the-app/)? This builds and runs the container image on your own
-machine with settings chosen for setup speed, not production use, so you can get the server up
-and verified in a few minutes. There is no published github-sts image yet, so this builds one
-locally from the repository's `Dockerfile`.
+[Install the App](../install-the-app/)? This pulls the
+[published image](https://github.com/Depthmark/github-sts/pkgs/container/github-sts) and runs it
+on your own machine with settings chosen for setup speed, not production use, so you can get the
+server up and verified in a few minutes.
 
 ## Prerequisites
 
@@ -25,11 +25,15 @@ locally from the repository's `Dockerfile`.
 
 {{< snippet "run-local" >}}
 
+Building from source instead of pulling the published image? Run
+`docker build -t github-sts:local .` from the repository root, then swap the image name in the
+`docker run` command above.
+
 ## Verify it's running
 
 ```bash
 curl -s http://127.0.0.1:8080/health
-# {"status":"ok"}
+# Includes liveness, security posture, and bundle state
 ```
 
 Check the logs:

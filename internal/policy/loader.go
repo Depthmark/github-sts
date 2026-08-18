@@ -16,7 +16,17 @@ import (
 
 // Loader loads trust policies for a given scope/app/identity combination.
 type Loader interface {
-	Load(ctx context.Context, scope, appName, identity string) (*TrustPolicy, error)
+	Load(ctx context.Context, request LoadRequest) (*TrustPolicy, error)
+}
+
+// LoadRequest carries the canonical target name used for GitHub fetches and
+// immutable target IDs used for cache isolation.
+type LoadRequest struct {
+	Scope              string
+	TargetOwnerID      string
+	TargetRepositoryID string
+	AppName            string
+	Identity           string
 }
 
 // TokenProvider provides GitHub installation tokens for accessing policy files.
@@ -103,19 +113,26 @@ func NewGitHubLoader(
 // Load fetches a trust policy for the given scope/app/identity. Results are
 // cached for cacheTTL duration. Returns nil if the policy file is not found.
 // Concurrent loads for the same key are deduplicated via singleflight.
-func (l *GitHubPolicyLoader) Load(ctx context.Context, scope, appName, identity string) (*TrustPolicy, error) {
-	cacheKey := fmt.Sprintf("github:%s:%s:%s", scope, appName, identity)
+func (l *GitHubPolicyLoader) Load(ctx context.Context, request LoadRequest) (*TrustPolicy, error) {
+	parts := strings.Split(request.Scope, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return nil, fmt.Errorf("policy load requires a repository scope")
+	}
+	if !validGitHubID(GitHubID(request.TargetOwnerID)) || !validGitHubID(GitHubID(request.TargetRepositoryID)) {
+		return nil, fmt.Errorf("policy load requires immutable target owner and repository IDs")
+	}
+	cacheKey := request.cacheKey()
 
 	// Check cache.
 	l.mu.RLock()
 	if entry, ok := l.cache[cacheKey]; ok && time.Now().Before(entry.expiresAt) {
 		l.mu.RUnlock()
-		metrics.PolicyCacheHits.WithLabelValues(appName).Inc()
+		metrics.PolicyCacheHits.WithLabelValues(request.AppName).Inc()
 		return entry.policy, nil
 	}
 	l.mu.RUnlock()
 
-	metrics.PolicyCacheMisses.WithLabelValues(appName).Inc()
+	metrics.PolicyCacheMisses.WithLabelValues(request.AppName).Inc()
 
 	// Singleflight: deduplicate concurrent cache-miss fetches for the same key.
 	v, err, _ := l.sf.Do(cacheKey, func() (any, error) {
@@ -127,7 +144,7 @@ func (l *GitHubPolicyLoader) Load(ctx context.Context, scope, appName, identity 
 		}
 		l.mu.RUnlock()
 
-		return l.fetchAndCache(ctx, cacheKey, scope, appName, identity)
+		return l.fetchAndCache(ctx, cacheKey, request.Scope, request.AppName, request.Identity)
 	})
 	if err != nil {
 		return nil, err
@@ -137,6 +154,10 @@ func (l *GitHubPolicyLoader) Load(ctx context.Context, scope, appName, identity 
 		return nil, nil
 	}
 	return v.(*TrustPolicy), nil
+}
+
+func (r LoadRequest) cacheKey() string {
+	return fmt.Sprintf("github:repository:%s:%s:%s:%s", r.TargetOwnerID, r.TargetRepositoryID, r.AppName, r.Identity)
 }
 
 // fetchAndCache performs the actual policy fetch from GitHub and caches the result.
@@ -155,9 +176,6 @@ func (l *GitHubPolicyLoader) Load(ctx context.Context, scope, appName, identity 
 // When org_policy_repo is unset for the app, only the requesting repo is
 // consulted regardless of mode.
 //
-// Org-level scope ("org" with no "/") always loads from the centralized org
-// policy repo (requires org_policy_repo) and is marked centralized.
-//
 // Policies resolved from the org repo are marked centralized so the
 // response-token issuer can force per-request repo scoping.
 func (l *GitHubPolicyLoader) fetchAndCache(ctx context.Context, cacheKey, scope, appName, identity string) (*TrustPolicy, error) {
@@ -174,22 +192,9 @@ func (l *GitHubPolicyLoader) fetchAndCache(ctx context.Context, cacheKey, scope,
 	var err error
 	centralized := false
 
-	if strings.Contains(scope, "/") {
-		pol, centralized, err = l.fetchRepoLevel(ctx, tp, scope, orgPolicyRepo, filePath, appName, identity)
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		// Org-level: load from the centralized org policy repo.
-		if orgPolicyRepo == "" {
-			return nil, fmt.Errorf("org_policy_repo required for app %q with org-level scope %q", appName, scope)
-		}
-		orgRepo := scope + "/" + orgPolicyRepo
-		pol, err = l.fetchFrom(ctx, tp, scope, orgRepo, filePath, appName, identity)
-		if err != nil {
-			return nil, err
-		}
-		centralized = pol != nil
+	pol, centralized, err = l.fetchRepoLevel(ctx, tp, scope, orgPolicyRepo, filePath, appName, identity)
+	if err != nil {
+		return nil, err
 	}
 
 	if pol != nil {

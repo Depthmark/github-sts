@@ -9,7 +9,7 @@ translationKey: architecture
 
 ```mermaid
 flowchart LR
-    W["Workload<br/>GitHub Actions / Azure / GCP"]
+    W["Workload<br/>GitHub Actions / Azure"]
 
     IDP["OIDC<br/>Identity Provider"]
 
@@ -29,10 +29,13 @@ flowchart LR
 
     A -. "Load trust policy" .-> GH
 
-    M -- "4. GitHub App authentication" --> GH
-    GH -- "5. Scoped installation token" --> M
+    A -- "4. Approved scope + perms" --> H["Enterprise Rego<br/>guardrails"]
+    H -- "5. All bundles allow" --> M
 
-    M -- "6. Short-lived token" --> W
+    M -- "6. GitHub App authentication" --> GH
+    GH -- "7. Scoped installation token" --> M
+
+    M -- "8. Short-lived token" --> W
 ```
 
 **OIDC proves who the workload is → policy determines what it may do → GitHub issues the credential.**
@@ -111,13 +114,16 @@ flowchart TD
     A["Exchange request<br/>OIDC JWT + scope + identity + app"]
 
     B["Validate OIDC JWT<br/>issuer • signature • exp • iat"]
+    B2["Validate canonical GitHub identity<br/>immutable owner/repo IDs"]
     C["Validate server audience"]
     D["Reserve JTI<br/>replay protection"]
     E["Resolve GitHub App"]
+    E2["Resolve canonical target<br/>owner/repo + immutable IDs"]
     F["Resolve trust policy"]
     G["Validate policy audience"]
-    H["Evaluate subject + claims"]
+    H["Evaluate subject + claims<br/>+ exact source/target IDs"]
     I["Derive repositories<br/>and permissions"]
+    R["Evaluate enterprise<br/>Rego bundles"]
     J["Mint installation token"]
     K["Return short-lived token"]
 
@@ -126,8 +132,11 @@ flowchart TD
 
     A --> B
 
-    B -->|valid| C
+    B -->|valid| B2
     B -->|invalid| DENY
+
+    B2 -->|valid| C
+    B2 -->|invalid| DENY
 
     C -->|match| D
     C -->|mismatch| DENY
@@ -135,8 +144,11 @@ flowchart TD
     D -->|unused| E
     D -->|replayed| DENY
 
-    E -->|configured| F
+    E -->|configured| E2
     E -->|unknown| DENY
+
+    E2 -->|resolved| F
+    E2 -->|not canonical| DENY
 
     F -->|found| G
     F -->|not found| DENY
@@ -148,7 +160,11 @@ flowchart TD
     H -->|allowed| I
     H -->|denied| DENY
 
-    I --> J
+    I --> R
+
+    R -->|all bundles allow| J
+    R -->|any bundle denies| DENY
+    R -->|evaluation fault| ERROR
 
     J -->|created| K
     J -->|GitHub error| ERROR
@@ -160,15 +176,36 @@ flowchart TD
 | 2 | Issuer allowlist: `iss` in `oidc.allowed_issuers` | `oidc_invalid` |
 | 3 | JWKS fetch: retrieve keys from the issuer's pinned `jwks_uri` | `oidc_invalid` |
 | 4 | Signature and claims: `kid` matches a JWKS key, RS256 signature valid, `exp` and `iat` required (`nbf` checked when present) | `oidc_invalid` |
-| 5 | Server-wide audience: `aud` matches `oidc.required_audience` (if set) | `audience_mismatch` |
-| 6 | JTI replay: `jti` not consumed within the `jti.ttl` window | `replay_detected` |
-| 7 | App resolution: `?app=` matches a configured app | `app_unknown` |
-| 8 | Policy lookup: `.sts.yaml` file found in repo or org policy repo | `policy_not_found` |
-| 9 | Policy audience: token `aud` matches policy `audience:` | `audience_mismatch` |
-| 10 | Claim evaluation: `subject`/`subject_pattern` and `claim_pattern` match | `policy_denied` |
-| 11 | Token mint: GitHub API creates installation token | `upstream_error` |
+| 5 | Canonical GitHub identity: for GitHub.com, cross-check signed owner/repository ID claims and require immutable `sub` format by default | `github_identity_invalid` |
+| 6 | Server-wide audience: `aud` matches `oidc.required_audience` (if set) | `audience_mismatch` |
+| 7 | JTI replay: `jti` not consumed within the `jti.ttl` window | `replay_detected` |
+| 8 | App resolution: `?app=` matches a configured app | `app_unknown` |
+| 9 | Target resolution: resolve `scope` to GitHub's current canonical owner/repository names and immutable IDs; organization-level scopes are rejected | `bad_request` |
+| 10 | Policy lookup: `.sts.yaml` file found in repo or org policy repo, keyed by target IDs | `policy_not_found` |
+| 11 | Policy validation: workload selector, GitHub ID bindings, and `audience:` are present and well-formed | `trust_policy_invalid` |
+| 12 | Policy audience: token `aud` matches policy `audience:` | `audience_mismatch` |
+| 13 | Claim and relationship evaluation: `subject`/`subject_pattern`, `claim_pattern`, and exact immutable `github.sources[]`/`github.target` IDs match | `policy_denied` |
+| 14 | Enterprise Rego enforcement: required mode proves mandatory baseline participation, then composes all applicable app-scoped bundles additively | `org_policy_denied`, `bundle_stale`, `bundle_unavailable`, `bundle_evaluation_failed` |
+| 15 | Token mint: GitHub API creates an installation token scoped to the authorized `repository_id` | `upstream_error` |
 
 See [API Reference]({{< relref "/reference/api#error-responses" >}}) for the full error code reference.
+
+## Bundle admission and participation
+
+Startup requires top-level `bundle_enforcement` to be exactly `required` or
+`optional`. Required mode admits exactly one global `apps: []` baseline, and
+every required-mode bundle must be digest-pinned OCI and cosign verified. The
+global baseline is fail-closed and must expose
+`data.sts.enterprise.v1.decision` plus `data.sts.enterprise.v1.metadata` with
+the v1 contract metadata. The broker requires that baseline to deny malformed
+input, missing identity, unknown source, and unknown permission probes before
+installation.
+
+At request time, the global baseline applies to every app. App-scoped bundles
+can add denials but cannot replace the baseline. Required mode returns
+`bundle_unavailable` unless the baseline actually evaluates. Optional mode
+with no bundles is deliberately YAML-only and reports that posture through
+startup warning, health, metric, and audit signals.
 
 ## Policy resolution
 
@@ -208,7 +245,7 @@ If `org_policy_repo` is unset, only the requesting repo is consulted regardless 
 ## Project structure
 
 ```
-cmd/github-sts/           Entry point — server bootstrap, signal handling
+cmd/github-sts/           Entry point: server bootstrap, signal handling
 client/                   Importable Go client library (token exchange + revocation)
 internal/
   config/                 YAML + env var configuration
@@ -218,6 +255,7 @@ internal/
   metrics/                Prometheus metrics registry
   oidc/                   OIDC JWT validation with JWKS caching
   policy/                 Trust policy loading & claim evaluation
+  bundle/                 OPA bundle loading, verification, evaluation, and lifecycle
   jti/                    JTI replay cache (in-memory + Redis)
   ratelimit/              Per-identity rate limiting
   github/                 GitHub App auth, installation token provider
@@ -228,9 +266,10 @@ config/examples/          Ready-to-use trust policy templates
 
 | Cache | Default TTL | Setting | Purpose |
 |---|---|---|---|
-| JWKS keys | `1h` | — | Avoid fetching JWKS on every request |
-| Trust policy | `60s` | `GITHUBSTS_POLICY_CACHE_TTL` | Avoid re-fetching `.sts.yaml` from GitHub on every request |
-| GitHub App installation ID | `15m` | — | Avoid re-discovering the installation on every request |
+| JWKS keys | `1h` | n/a | Avoid fetching JWKS on every request |
+| Target identity | `5m` | n/a | Bound GitHub metadata lookups while refreshing canonical names and immutable IDs |
+| Trust policy | `60s` | `GITHUBSTS_POLICY_CACHE_TTL` | Avoid re-fetching `.sts.yaml`; repository targets are isolated by immutable IDs |
+| GitHub App installation ID | `15m` | n/a | Avoid re-discovering the installation on every request |
 | JTI replay set | `1h` | `GITHUBSTS_JTI_TTL` | Replay window. Use `redis` backend for multi-replica deployments. |
 
 Installation tokens themselves are not cached; each exchange mints a fresh token.
