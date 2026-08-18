@@ -46,8 +46,8 @@ Server.
 Trust policies (`github.sources[]` / `github.target`, see
 [Trust Policies]({{< relref "/concepts/trust-policies" >}})) and enterprise
 cross-org exceptions are keyed on numeric `owner_id` / `repository_id`, not
-names. Look them up with the GitHub API before writing the policy — no token
-exchange required:
+names. Look them up with the GitHub API before writing the policy: no token
+exchange required.
 
 ```bash
 # Both source and target repos: owner_id + repository_id in one call.
@@ -64,7 +64,7 @@ curl -fsS -H "Authorization: Bearer $GITHUB_TOKEN" \
   | jq '{owner_id: (.owner.id | tostring), repository_id: (.id | tostring)}'
 ```
 
-Trust-policy fields are strings (`"123456"`, not `123456`) — quote the values
+Trust-policy fields are strings (`"123456"`, not `123456`). Quote the values
 from `jq` output when pasting into YAML.
 
 Once a workflow has opted in to immutable subjects, confirm the minted OIDC
@@ -78,7 +78,7 @@ echo "$OIDC_TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null \
 ```
 
 If `repository_owner_id` / `repository_id` are absent from the decoded token,
-the repository has not opted in to immutable claims yet — opt in via the
+the repository has not opted in to immutable claims yet. Opt in via the
 repository or organization Actions "OIDC customization" setting (or the
 equivalent REST API) before relying on `github.sources[]` / `github.target`
 matches.

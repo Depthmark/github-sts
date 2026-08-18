@@ -245,7 +245,7 @@ If `org_policy_repo` is unset, only the requesting repo is consulted regardless 
 ## Project structure
 
 ```
-cmd/github-sts/           Entry point — server bootstrap, signal handling
+cmd/github-sts/           Entry point: server bootstrap, signal handling
 client/                   Importable Go client library (token exchange + revocation)
 internal/
   config/                 YAML + env var configuration
@@ -266,10 +266,10 @@ config/examples/          Ready-to-use trust policy templates
 
 | Cache | Default TTL | Setting | Purpose |
 |---|---|---|---|
-| JWKS keys | `1h` | — | Avoid fetching JWKS on every request |
-| Target identity | `5m` | — | Bound GitHub metadata lookups while refreshing canonical names and immutable IDs |
+| JWKS keys | `1h` | n/a | Avoid fetching JWKS on every request |
+| Target identity | `5m` | n/a | Bound GitHub metadata lookups while refreshing canonical names and immutable IDs |
 | Trust policy | `60s` | `GITHUBSTS_POLICY_CACHE_TTL` | Avoid re-fetching `.sts.yaml`; repository targets are isolated by immutable IDs |
-| GitHub App installation ID | `15m` | — | Avoid re-discovering the installation on every request |
+| GitHub App installation ID | `15m` | n/a | Avoid re-discovering the installation on every request |
 | JTI replay set | `1h` | `GITHUBSTS_JTI_TTL` | Replay window. Use `redis` backend for multi-replica deployments. |
 
 Installation tokens themselves are not cached; each exchange mints a fresh token.

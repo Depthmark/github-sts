@@ -36,7 +36,7 @@ permissions:
   pull_requests: write
 ```
 
-Replace the example IDs with `myorg`/`myrepo`'s immutable owner and repository IDs — see [OIDC Issuers → Getting the immutable owner and repository IDs](../../oidc-issuers/github-actions/#getting-the-immutable-owner-and-repository-ids). GitHub.com source repositories must opt in to immutable subject claims unless the server's explicit degraded migration posture is temporarily selected.
+Replace the example IDs with `myorg`/`myrepo`'s immutable owner and repository IDs. See [OIDC Issuers → Getting the immutable owner and repository IDs](../../oidc-issuers/github-actions/#getting-the-immutable-owner-and-repository-ids). GitHub.com source repositories must opt in to immutable subject claims unless the server's explicit degraded migration posture is temporarily selected.
 
 > **`audience` is mandatory**, and it must match the audience the workload requests in its OIDC
 > token. It's what ties a token to *this* github-sts deployment and no other. See

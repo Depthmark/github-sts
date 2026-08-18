@@ -41,7 +41,7 @@ apps:
     policy_resolution: org_first
 ```
 
-Valid log levels are lowercase `debug | info | warn | error`. `oidc.allowed_issuers` must contain at least one issuer; an empty list is a validation error. Top-level `bundle_enforcement` is also mandatory — see [Enterprise Rego bundles](#enterprise-rego-bundles) below. The explicit optional/no-bundle posture above emits a startup warning and observable health, metric, and audit signals; production deployments should use required mode.
+Valid log levels are lowercase `debug | info | warn | error`. `oidc.allowed_issuers` must contain at least one issuer; an empty list is a validation error. Top-level `bundle_enforcement` is also mandatory. See [Enterprise Rego bundles](#enterprise-rego-bundles) below. The explicit optional/no-bundle posture above emits a startup warning and observable health, metric, and audit signals; production deployments should use required mode.
 
 For production, deploy github-sts with the Helm chart rather than hand-managing this file. See [Deploy with Helm]({{< relref "/integrations/deploy-with-helm" >}}).
 
@@ -58,7 +58,7 @@ server:
     # Optional: enable mTLS by trusting a client CA bundle.
     # client_ca_file: /etc/github-sts/tls/client-ca.crt
 
-    # Optional: enforce TLS 1.3 only (default: "1.2" — TLS 1.2 and above).
+    # Optional: enforce TLS 1.3 only (default: "1.2", meaning TLS 1.2 and above).
     # min_version: "1.3"
 
     # Optional: restrict to specific TLS 1.2 cipher suites (IANA names).
@@ -79,7 +79,7 @@ Rules:
 - `cert_file` and `key_file` must be set together. Setting one without the other is a validation error.
 - `client_ca_file` requires `cert_file` and `key_file`.
 - `min_version` accepts `"1.2"` (default) or `"1.3"`. Minimum TLS version is TLS 1.2 when unset.
-- `cipher_suites` accepts IANA cipher suite names. Only the non-insecure suites from Go's standard library are valid; unknown or weak names are a validation error. Setting cipher suites together with `min_version: "1.3"` is also a validation error — TLS 1.3 cipher suite selection is not configurable.
+- `cipher_suites` accepts IANA cipher suite names. Only the non-insecure suites from Go's standard library are valid; unknown or weak names are a validation error. Setting cipher suites together with `min_version: "1.3"` is also a validation error: TLS 1.3 cipher suite selection is not configurable.
 - `reload_interval` triggers interval-based polling of the cert and key files. When the files change, they are reloaded in-place without restarting the process. Requires `cert_file` and `key_file`.
 - Client verification uses `RequireAndVerifyClientCert` when `client_ca_file` is set.
 
@@ -181,9 +181,9 @@ filtered at evaluation time even if bundle refresh fails.
 `cross_org_exceptions` is a field on the enterprise bundle's own data
 document (`data.sts.enterprise_config.v1`, built into the OCI bundle
 alongside the Rego, not something a caller passes at request time). A full
-document — the shape of
+document, the shape of
 [`policies/example_data.json`](https://github.com/Depthmark/github-sts/blob/main/policies/example_data.json)
-used by the enterprise baseline's conformance tests — looks like this:
+used by the enterprise baseline's conformance tests, looks like this:
 
 ```json
 {
@@ -237,13 +237,13 @@ Every source owner ID and target owner ID that appears anywhere in
 `cross_org_exceptions` must also be listed (`true`) in
 `approved_source_owner_ids` / `approved_target_owner_ids`, or the enterprise
 baseline denies with `sts.context.unknown` before it even reaches the
-cross-org rule. `org_wide_grants` must stay an empty array — see
+cross-org rule. `org_wide_grants` must stay an empty array. See
 [Organization-level scope]({{< relref "/concepts/trust-policies#organization-level-scope" >}}):
 the broker rejects it non-empty at startup until organization-wide grants are
 covered by mandatory enterprise policy. This data document is authored and
 reviewed by whoever owns the enterprise policy bundle (typically a
 platform/security team), built into the signed OCI bundle, and is the
-"organization level" of authorization — individual repo trust policies cannot
+"organization level" of authorization: individual repo trust policies cannot
 grant cross-organization access on their own once `bundle_enforcement:
 required` is in effect.
 

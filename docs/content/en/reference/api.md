@@ -14,7 +14,7 @@ Exchange an OIDC bearer token for a scoped GitHub installation token.
 | Parameter | Required | Description |
 |---|---|---|
 | `scope` | Yes | Exact current canonical `org/repo` target. Organization-level scopes are rejected. |
-| `identity` | Yes | Policy selector — maps to `{base_path}/{app}/{identity}.sts.yaml` |
+| `identity` | Yes | Policy selector, maps to `{base_path}/{app}/{identity}.sts.yaml` |
 | `app` | No | App name (defaults to single configured app) |
 
 ```bash
@@ -166,9 +166,9 @@ When you use the `github-sts-action`, the token is revoked automatically at the 
 
 | Endpoint | Method | Success | Failure |
 |---|---|---|---|
-| `/health` | `GET` | `200` with liveness, security posture, and configured bundle state | — |
+| `/health` | `GET` | `200` with liveness, security posture, and configured bundle state | n/a |
 | `/ready` | `GET` | `200` `{"ready":true}` | `503` `{"ready":false}` |
-| `/metrics` | `GET` | Prometheus text format | — |
+| `/metrics` | `GET` | Prometheus text format | n/a |
 
 `/health` is a liveness probe and returns `200` as long as the process is up.
 Its `security` object reports `require_immutable_subject_claims`,
@@ -177,8 +177,8 @@ Its `security` object reports `require_immutable_subject_claims`,
 mode reports `enterprise_policy_required: false`; `yaml_only_authorization` is
 true when no bundle is configured or at least one App lacks bundle coverage.
 `/ready` returns `200` with `{"ready":true}` once the server is serving and
-`503` with `{"ready":false}` while it is not; readiness is not gated on GitHub
-API reachability — the reachability prober only updates the
+`503` with `{"ready":false}` while it is not. Readiness is not gated on GitHub
+API reachability; the reachability prober only updates the
 `githubsts_github_reachable` metric. Use `/ready` for Kubernetes readiness
 probes and load balancer health checks.
 

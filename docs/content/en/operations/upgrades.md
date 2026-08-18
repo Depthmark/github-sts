@@ -87,7 +87,7 @@ permissions:
 
 ## Migration: immutable GitHub identity
 
-GitHub.com trust policies require `github.sources[]` and `github.target` — exact immutable `owner_id`/`repository_id` pairs — in addition to a workload selector (`subject`, `subject_pattern`, or `claim_pattern`). See [Trust Policies]({{< relref "/concepts/trust-policies" >}}) for the schema and examples.
+GitHub.com trust policies require `github.sources[]` and `github.target` (exact immutable `owner_id`/`repository_id` pairs) in addition to a workload selector (`subject`, `subject_pattern`, or `claim_pattern`). See [Trust Policies]({{< relref "/concepts/trust-policies" >}}) for the schema and examples.
 
 For a repository still using GitHub's legacy subject format, coordinate these steps to avoid locking out its workflow:
 

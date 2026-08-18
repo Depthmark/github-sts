@@ -38,7 +38,7 @@ docker run -p 8080:8080 \
 The env-only example intentionally has no enterprise bundle. It emits the
 optional/YAML-only warning and posture signals. Production deployments should
 mount a config with `bundle_enforcement: required` and a pinned, verified
-global baseline — see [Enterprise Rego bundles]({{< relref "/reference/configuration#enterprise-rego-bundles" >}}).
+global baseline. See [Enterprise Rego bundles]({{< relref "/reference/configuration#enterprise-rego-bundles" >}}).
 
 ## TLS and mTLS
 
@@ -64,9 +64,9 @@ docker run -p 8443:8443 \
   github-sts:local
 ```
 
-> **Warning — self-signed certificates are for local development only.** In production, obtain certificates from a trusted CA — `cert-manager`/Let's Encrypt, your internal PKI, or a managed service such as AWS ACM or Azure Key Vault — and terminate TLS at the ingress/Gateway where possible.
+> **Warning: self-signed certificates are for local development only.** In production, obtain certificates from a trusted CA (`cert-manager`/Let's Encrypt, your internal PKI, or a managed service such as AWS ACM or Azure Key Vault) and terminate TLS at the ingress/Gateway where possible.
 
-For a complete walkthrough — including generating a local CA, signing server and client certificates, and verifying HTTPS and mTLS rejection with `curl` — see [Testing TLS and mTLS locally]({{< relref "/operations/tls-local-testing" >}}).
+For a complete walkthrough, including generating a local CA, signing server and client certificates, and verifying HTTPS and mTLS rejection with `curl`, see [Testing TLS and mTLS locally]({{< relref "/operations/tls-local-testing" >}}).
 
 See [Configuration]({{< relref "/reference/configuration" >}}) for the full TLS option reference.
 

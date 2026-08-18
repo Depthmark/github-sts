@@ -53,7 +53,7 @@ grep abc-123 /var/log/github-sts.log
 | **Exchange returns `403`** with `code: "trust_policy_invalid"` | The policy lacks a selector or exact GitHub source/target IDs, or another policy field is malformed. Validate and fix the target policy. |
 | **Exchange returns `403`** with `code: "policy_denied"` | A valid policy did not match the workload selector or immutable source-to-target relationship. Grep server logs for `trace_id` for the precise mismatch. |
 | **Exchange returns `403`** with `code: "org_policy_denied"` | Enterprise policy was evaluated and denied. Inspect audit `bundle_digest`, `bundle_decisions`, and the org decision fields at `trace_id`. |
-| **Exchange returns `404`** | Same root cause as `policy_not_found` — file path is wrong, or the GitHub App lacks read access to the policy file. |
+| **Exchange returns `404`** | Same root cause as `policy_not_found`: file path is wrong, or the GitHub App lacks read access to the policy file. |
 | **Exchange returns `503`** with `code: "bundle_stale"` | A fail-closed bundle exceeded `max_staleness`. Restore pull/verification and retry after a successful refresh. |
 | **Exchange returns `503`** with `code: "bundle_unavailable"` | Required enforcement could not prove mandatory baseline participation. Check `/health` per-bundle `mandatory`, `enabled`, digest, policy revision, and pull error fields. |
 | **Exchange returns `503`** with `code: "bundle_evaluation_failed"` | Evaluation faulted rather than returning a deny. Correlate `trace_id` for timeout, strict built-in, or malformed-result details. |

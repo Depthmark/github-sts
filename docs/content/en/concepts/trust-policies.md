@@ -122,7 +122,7 @@ permissions:
 
 **Repo A → repo B (cross-repository, same organization):**
 
-This policy file lives **in repo B** (`.github/sts/{app}/{identity}.sts.yaml` of the target repo) and lists repo A as an allowed source. Same `owner_id` on both sides means this authorizes purely on the trust policy — no enterprise bundle exception is required regardless of `bundle_enforcement` posture, because the `sts.enterprise.v1` baseline's `same_owner` rule allows it directly. `github.sources[]` accepts multiple entries, so repo B can trust several source repos at once:
+This policy file lives **in repo B** (`.github/sts/{app}/{identity}.sts.yaml` of the target repo) and lists repo A as an allowed source. Same `owner_id` on both sides means this authorizes purely on the trust policy: no enterprise bundle exception is required regardless of `bundle_enforcement` posture, because the `sts.enterprise.v1` baseline's `same_owner` rule allows it directly. `github.sources[]` accepts multiple entries, so repo B can trust several source repos at once:
 
 ```yaml
 # stored at repoB/.github/sts/default/cross-repo-ci.sts.yaml
@@ -146,7 +146,7 @@ See [`config/examples/cross-repo-ci.sts.yaml`](https://github.com/Depthmark/gith
 
 **Repo A → repo B (cross-organization):**
 
-`owner_id` differs between `source` and `target`, so this is a cross-organization relationship. The trust policy alone is enough under `bundle_enforcement: optional` (YAML-only authorization). Under `required` mode the mandatory `sts.enterprise.v1` baseline's `same_owner` check fails and the exchange is denied with `rule_id: sts.relationship.cross_org` **unless** the enterprise bundle's data document also carries a matching, unexpired `cross_org_exceptions` entry for this exact source/target/app/identity — see [Enterprise Rego bundles]({{< relref "/reference/configuration#enterprise-rego-bundles" >}}).
+`owner_id` differs between `source` and `target`, so this is a cross-organization relationship. The trust policy alone is enough under `bundle_enforcement: optional` (YAML-only authorization). Under `required` mode the mandatory `sts.enterprise.v1` baseline's `same_owner` check fails and the exchange is denied with `rule_id: sts.relationship.cross_org` **unless** the enterprise bundle's data document also carries a matching, unexpired `cross_org_exceptions` entry for this exact source/target/app/identity. See [Enterprise Rego bundles]({{< relref "/reference/configuration#enterprise-rego-bundles" >}}).
 
 ```yaml
 # stored at repoB/.github/sts/default/deploy.sts.yaml (target: org-b/repo-b)
@@ -167,7 +167,7 @@ permissions:
   statuses: write
 ```
 
-Required mode also needs a corresponding enterprise data entry — see [Enterprise Rego bundles]({{< relref "/reference/configuration#enterprise-rego-bundles" >}}) for the full `cross_org_exceptions` shape and admission rules.
+Required mode also needs a corresponding enterprise data entry. See [Enterprise Rego bundles]({{< relref "/reference/configuration#enterprise-rego-bundles" >}}) for the full `cross_org_exceptions` shape and admission rules.
 
 ## Organization-level scope
 
