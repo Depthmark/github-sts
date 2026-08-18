@@ -1,0 +1,97 @@
+---
+title: Dépannage
+description: Diagnostics basés sur les codes d'erreur, corrélation trace_id, vérifications OIDC, vérifications de politique et étapes de récupération.
+weight: 4
+translationKey: troubleshooting
+translationStatus: pending-review
+---
+
+Lorsqu'un échange échoue, la réponse d'erreur JSON porte deux champs utiles. `code` est le code d'erreur lisible par machine qui indique quelle couche a rejeté la requête. `trace_id` corrèle la réponse à une ligne de journal serveur qui porte la raison complète. `error` est délibérément générique ; branchez sur `code`, pas sur `error`.
+
+```json
+{ "error": "forbidden", "code": "policy_denied", "trace_id": "abc-123" }
+```
+
+```bash
+# Dans les journaux serveur / kubectl logs
+grep abc-123 /var/log/github-sts.log
+```
+
+## Erreurs courantes
+
+### Déploiement
+
+| Problème | Solution |
+|---|---|
+| **Échec de construction Docker** avec `go.mod requires go >= X` | Mettez à jour `FROM golang:X-alpine` dans le `Dockerfile` pour correspondre à `go.mod` |
+| **Échec de la vérification de santé** | Vérifiez que `GITHUBSTS_CONFIG_PATH` est défini et que le fichier existe |
+
+### Validation OIDC
+
+| Problème | Solution |
+|---|---|
+| **L'échange renvoie `401`** | En-tête `Authorization: Bearer` manquant ou malformé. Vérifiez que le workflow a réellement demandé un jeton OIDC (permission `id-token: write`). |
+| **L'échange renvoie `403`** avec `code: "oidc_invalid"` | Jeton OIDC rejeté. Vérifiez l'expiration du jeton, que `oidc.allowed_issuers` inclut l'émetteur, que `kid` est présent, et consultez les journaux serveur au `trace_id`. |
+| **Hôte JWKS rejeté** dans les journaux | L'hôte `jwks_uri` de l'émetteur diffère de l'hôte de l'émetteur. Ajoutez-le à `oidc.trusted_jwks_hosts` (voir [Émetteurs OIDC]({{< relref "/oidc-issuers" >}})). |
+
+### Audience
+
+| Problème | Solution |
+|---|---|
+| **L'échange renvoie `403`** avec `code: "audience_mismatch"` | L'`aud` du jeton ne correspond pas. Vérifiez que `core.getIDToken(<audience>)` dans le workflow utilise la même valeur que le champ `audience:` de la politique (et `oidc.required_audience` si configuré côté serveur). |
+
+### Politique
+
+| Problème | Solution |
+|---|---|
+| **L'échange renvoie `403`** avec `code: "app_unknown"` | `?app=` ne correspond à aucune App configurée. Vérifiez l'orthographe ou omettez-le lorsqu'une seule App est configurée. |
+| **L'échange renvoie `403`** avec `code: "policy_not_found"` | Vérifiez que la politique de confiance existe à `{base_path}/{app}/{identity}.sts.yaml` dans le dépôt cible (ou le dépôt de politiques d'organisation, selon `policy_resolution`). Un chemin de fichier incorrect ou une GitHub App sans accès en lecture au fichier de politique produit la même erreur. |
+| **L'échange renvoie `403`** avec `code: "policy_denied"` | La politique existe mais l'évaluation a échoué (subject, claim_pattern). Recherchez `trace_id` dans les journaux serveur pour l'écart précis. |
+
+### Rejeu
+
+| Problème | Solution |
+|---|---|
+| **L'échange renvoie `409`** avec `code: "replay_detected"` | Le `jti` du jeton OIDC a déjà été utilisé. Obtenez un nouveau jeton. Si vous exécutez plusieurs réplicas, définissez `GITHUBSTS_JTI_BACKEND=redis`. |
+
+### Amont et audit
+
+| Problème | Solution |
+|---|---|
+| **L'échange renvoie `502`** avec `code: "upstream_error"` | Échec de la récupération de politique ou de l'émission du jeton GitHub. Vérifiez la métrique `githubsts_github_reachable` et les journaux serveur au `trace_id`. |
+| **Événements d'audit abandonnés** (`githubsts_audit_events_dropped_total` en hausse) | Le puits d'audit ne suit pas. Augmentez `GITHUBSTS_AUDIT_BUFFER_SIZE`, assurez-vous que le chemin du journal d'audit est accessible en écriture, ou accélérez le consommateur d'audit. |
+
+## Déboguer un échange de bout en bout
+
+1. **Obtenez un jeton OIDC** auprès de votre fournisseur d'identité. Dans GitHub Actions, demandez-en un avec `id-token: write` et `core.getIDToken()` :
+
+   ```bash
+   # Dans une étape de workflow qui a id-token: write
+   #   const token = await core.getIDToken('https://sts.example.com')
+   # Ou, hors d'un workflow, utilisez la CLI de votre fournisseur (par ex. gcloud auth print-identity-token).
+   export OIDC_TOKEN="<le jeton>"
+   ```
+
+2. **Définissez `GITHUBSTS_SERVER_LOG_LEVEL=debug`** temporairement. Chaque échange journalise le pipeline de validation à ce niveau.
+3. **Décodez le jeton OIDC** localement pour confirmer `iss`, `sub`, `aud` et toute revendication personnalisée :
+   ```bash
+   echo "$OIDC_TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null | jq .
+   ```
+4. **Lisez la politique de confiance** que le serveur charge :
+   ```bash
+   gh api repos/myorg/myrepo/contents/.github/sts/default/ci.sts.yaml \
+     --jq .content | base64 -d
+   ```
+5. **Comparez les revendications à la politique ligne par ligne :**
+   - `policy.issuer == token.iss` (correspondance exacte)
+   - `policy.subject == token.sub` (ou la regex `subject_pattern` correspond à `token.sub`)
+   - `policy.audience == token.aud` (et `oidc.required_audience` si défini)
+   - Chaque regex `claim_pattern[k]` correspond à `token[k]`
+
+## Où chercher ensuite
+
+- [Référence API]({{< relref "/reference/api#error-responses" >}}) : tableau complet des codes d'erreur.
+- [Configuration]({{< relref "/reference/configuration" >}}) : chaque réglage YAML/d'environnement.
+- [Émetteurs OIDC]({{< relref "/oidc-issuers" >}}) : configuration émetteur/JWKS par fournisseur.
+- [Architecture]({{< relref "/concepts/architecture#authorization-pipeline" >}}) : ordre exact des vérifications.
+- Ouvrir une issue : <https://github.com/Depthmark/github-sts/issues>

@@ -1,9 +1,13 @@
-.PHONY: build test test-race test-rego test-oci-cosign-local lint coverage vuln-check clean docker ci act act-lint act-test act-build validate-examples validate-repository-policies
+.PHONY: build test test-race test-rego test-oci-cosign-local lint coverage vuln-check clean docker \
+        ci act act-actions hooks validate-examples validate-repository-policies \
+        docs-serve docs-build docs-check docs-links docs-translate
 
 SCHEMA       ?= internal/policy/yaml/schema_v1.json
 EXAMPLES_DIR ?= config/examples
 REGO_DIR     ?= policies
 REPOSITORY_POLICIES ?= $(wildcard .github/sts/*/*.sts.yaml)
+HUGO ?= hugo
+HUGO_SOURCE ?= docs
 
 # Build all packages
 build:
@@ -60,7 +64,7 @@ docker:
 
 # Clean build artifacts
 clean:
-	rm -rf bin/ coverage.out coverage.html
+	rm -rf bin/ coverage.out coverage.html docs/public/
 
 # Validate trust-policy examples against the v1 JSON Schema. Catches drift
 # between the TrustPolicy struct and the schema, and rejects new examples
@@ -81,12 +85,38 @@ ci: lint test-race test-rego vuln-check build bin/github-sts validate-examples
 act:
 	act pull_request --workflows .github/workflows/ci.yml
 
-# Run individual CI jobs locally with act
-act-lint:
-	act pull_request --workflows .github/workflows/ci.yml --job lint
+# Validate GitHub Actions workflows locally with the shared CI workflow
+act-actions:
+	act pull_request --workflows .github/workflows/ci-actions.yml
 
-act-test:
-	act pull_request --workflows .github/workflows/ci.yml --job test
+# Enable the repository's versioned Git hooks
+hooks:
+	git config core.hooksPath .githooks
 
-act-build:
-	act pull_request --workflows .github/workflows/ci.yml --job build
+# --- Documentation targets ---
+
+# Serve the documentation site locally
+docs-serve:
+	$(HUGO) server --source $(HUGO_SOURCE) --buildDrafts
+
+# Build the documentation site for production
+docs-build:
+	$(HUGO) --source $(HUGO_SOURCE) --gc --minify --panicOnWarning \
+		--baseURL https://depthmark.github.io/github-sts/
+
+# Validate documentation content, translation parity, and build
+docs-check:
+	python3 docs/scripts/check-translations.py || true
+	$(HUGO) --source $(HUGO_SOURCE) --gc --minify --panicOnWarning \
+		--baseURL https://depthmark.github.io/github-sts/
+	python3 docs/scripts/check-links.py --base docs/public --base-path /github-sts
+
+# Validate links in the generated site
+docs-links:
+	$(HUGO) --source $(HUGO_SOURCE) --gc --minify --panicOnWarning \
+		--baseURL https://depthmark.github.io/github-sts/
+	python3 docs/scripts/check-links.py --base docs/public --base-path /github-sts
+
+# Run the translation tool locally
+docs-translate:
+	python3 docs/scripts/translate-docs.py

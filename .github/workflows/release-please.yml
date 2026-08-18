@@ -11,17 +11,16 @@ permissions: {}
 jobs:
   release-please:
     name: Release Please
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
     permissions:
       contents: write
-      issues: write
       pull-requests: write
       id-token: write
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
-      - uses: Depthmark/github-sts-action@main
+      - uses: Depthmark/github-sts-action@11e9b4095d2f3033d0ee7e82bb9ac6a7bcbc9b48 # v0.2.0
         id: sts
         with:
           sts-url: https://github-sts-dev.adelisle.com
