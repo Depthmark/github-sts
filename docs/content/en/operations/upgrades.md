@@ -85,6 +85,20 @@ permissions:
   contents: read
 ```
 
+## Migration: immutable GitHub identity
+
+GitHub.com trust policies require `github.sources[]` and `github.target` (exact immutable `owner_id`/`repository_id` pairs) in addition to a workload selector (`subject`, `subject_pattern`, or `claim_pattern`). See [Trust Policies]({{< relref "/concepts/trust-policies" >}}) for the schema and examples.
+
+For a repository still using GitHub's legacy subject format, coordinate these steps to avoid locking out its workflow:
+
+1. Record the immutable owner and repository IDs.
+2. Opt the repository in to immutable subject claims in GitHub.
+3. Confirm a newly minted token contains the expected IDs in `sub`, `repository_owner_id`, and `repository_id`.
+4. Update its target trust policies to add `github.sources[]`/`github.target`.
+5. Deploy the default-on broker configuration (`oidc.require_immutable_subject_claims: true`).
+
+The checked-in `Depthmark/github-sts` release policy expects owner ID `268749784` and repository ID `1198676434`. Opt that repository in before merging the policy migration. The legacy server opt-out (`GITHUBSTS_OIDC_REQUIRE_IMMUTABLE_SUBJECT_CLAIMS=false`) does not make an exact immutable trust policy match a legacy token.
+
 ## Pre-upgrade checklist
 
 1. Read the release notes for breaking changes.

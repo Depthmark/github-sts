@@ -10,7 +10,7 @@ translationStatus: pending-review
 
 ```mermaid
 flowchart LR
-    W["Workload<br/>GitHub Actions / Azure / GCP"]
+    W["Workload<br/>GitHub Actions / Azure"]
 
     IDP["OIDC<br/>Identity Provider"]
 

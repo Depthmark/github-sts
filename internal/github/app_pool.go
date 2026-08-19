@@ -75,17 +75,25 @@ func NewAppPool(logicalName string, members []PoolMember, strategy string, minRe
 	}
 }
 
-// GetInstallationToken implements InstallationTokenProvider (and, via the
-// identical signature, policy.TokenProvider): it tries pool members in ring
-// order starting from an atomically-advanced cursor — advanced once per
-// request, not once per failover attempt, so a single request's retries
-// walk consecutive members instead of re-randomizing — skipping any member
-// the reachability checker currently reports down, and retrying on a
-// Retryable TokenMintError (§5.2.1) until max_attempts is exhausted or the
-// caller's ctx is no longer live. Returns the instance label of whichever
-// member actually served the request ("" on failure — see design doc §5.5
-// on why a failed exchange doesn't name one arbitrary tried instance).
-func (p *AppPool) GetInstallationToken(ctx context.Context, scope string, permissions map[string]string, repositories []string, caller string) (string, string, error) {
+// candidateRing returns this call's ring order, starting from an
+// atomically-advanced shared cursor, filtered by the baseline liveness
+// check. The cursor is advanced once per call to candidateRing, not once
+// per failover attempt, so one call's own retries walk consecutive members
+// instead of re-randomizing — but ResolveTarget and GetInstallationToken/
+// GetInstallationTokenForTarget each call this independently, so the two
+// halves of one exchange request (resolve, then mint) are not guaranteed to
+// land on the same instance. That's fine only because every pool member is
+// required to have identical permissions/installation access (see the
+// config docs' "Operational requirement") — otherwise it would be a bug.
+//
+// The liveness filter drops any candidate the reachability checker
+// currently reports down, so a fully-dead instance (revoked key, network
+// partition) doesn't eat a wasted live call on every single request. If
+// every candidate looks unreachable per (possibly stale) local state, it
+// does not fail pre-emptively — it falls back to the unfiltered ring and
+// makes a live attempt anyway. A live failure is authoritative; a
+// locally-cached "probably down" is not.
+func (p *AppPool) candidateRing() []int {
 	n := len(p.members)
 	start := int(p.cursor.Add(1) % uint64(n))
 
@@ -94,29 +102,35 @@ func (p *AppPool) GetInstallationToken(ctx context.Context, scope string, permis
 		ring[i] = (start + i) % n
 	}
 
-	// Baseline liveness filter (always on, independent of strategy): drop
-	// any candidate the reachability checker currently reports down, so a
-	// fully-dead instance (revoked key, network partition) doesn't eat a
-	// wasted live call on every single request.
-	candidates := ring
-	if p.reachability != nil {
-		filtered := make([]int, 0, n)
-		for _, idx := range ring {
-			m := p.members[idx]
-			if p.reachability.IsReachable(p.logicalName, m.Instance) {
-				filtered = append(filtered, idx)
-				continue
-			}
-			metrics.AppPoolSelectionTotal.WithLabelValues(p.logicalName, m.Instance, "skipped_unreachable").Inc()
-		}
-		// If every candidate looks unreachable per (possibly stale) local
-		// state, don't fail pre-emptively — fall back to the unfiltered
-		// ring and make a live attempt anyway. A live failure is
-		// authoritative; a locally-cached "probably down" is not.
-		if len(filtered) > 0 {
-			candidates = filtered
-		}
+	if p.reachability == nil {
+		return ring
 	}
+	filtered := make([]int, 0, n)
+	for _, idx := range ring {
+		m := p.members[idx]
+		if p.reachability.IsReachable(p.logicalName, m.Instance) {
+			filtered = append(filtered, idx)
+			continue
+		}
+		metrics.AppPoolSelectionTotal.WithLabelValues(p.logicalName, m.Instance, "skipped_unreachable").Inc()
+	}
+	if len(filtered) > 0 {
+		return filtered
+	}
+	return ring
+}
+
+// GetInstallationToken implements policy.TokenProvider (used for the
+// policy-read mint) and, via the identical method on ExchangeApp's sibling
+// shape, is the pattern GetInstallationTokenForTarget below follows too: try
+// candidates in ring order, skipping members the reachability checker
+// currently reports down, retrying on a Retryable TokenMintError (§5.2.1)
+// until max_attempts is exhausted or the caller's ctx is no longer live.
+// Returns the instance label of whichever member actually served the
+// request ("" on failure — see design doc §5.5 on why a failed exchange
+// doesn't name one arbitrary tried instance).
+func (p *AppPool) GetInstallationToken(ctx context.Context, scope string, permissions map[string]string, repositories []string, caller string) (string, string, error) {
+	candidates := p.candidateRing()
 
 	var lastErr error
 	attempts := 0
@@ -149,6 +163,85 @@ func (p *AppPool) GetInstallationToken(ctx context.Context, scope string, permis
 			return "", "", err
 		}
 		// Retryable and ctx still live — continue to the next candidate.
+	}
+
+	metrics.AppPoolExhaustedTotal.WithLabelValues(p.logicalName).Inc()
+	return "", "", lastErr
+}
+
+// ResolveTarget implements github.ExchangeApp: same ring/failover mechanics
+// as GetInstallationToken, applied to target-identity resolution. A
+// structural failure (invalid/non-canonical identity from GitHub) is not a
+// *TokenMintError, so it's correctly treated as non-retryable — a different
+// credential can't fix bad data, only a different network path or expired
+// credential can, and those cases already come back wrapped as retryable.
+func (p *AppPool) ResolveTarget(ctx context.Context, scope RepositoryScope) (TargetIdentity, error) {
+	candidates := p.candidateRing()
+
+	var lastErr error
+	attempts := 0
+	for i, idx := range candidates {
+		if attempts >= p.maxAttempts {
+			break
+		}
+		attempts++
+
+		m := p.members[idx]
+		outcome := "selected"
+		if i > 0 {
+			outcome = "failover"
+		}
+
+		identity, err := m.Provider.ResolveTarget(ctx, scope)
+		if err == nil {
+			metrics.AppPoolSelectionTotal.WithLabelValues(p.logicalName, m.Instance, outcome).Inc()
+			return identity, nil
+		}
+		lastErr = err
+
+		var mintErr *TokenMintError
+		retryable := errors.As(err, &mintErr) && mintErr.Retryable
+		if !retryable || ctx.Err() != nil {
+			return TargetIdentity{}, err
+		}
+	}
+
+	metrics.AppPoolExhaustedTotal.WithLabelValues(p.logicalName).Inc()
+	return TargetIdentity{}, lastErr
+}
+
+// GetInstallationTokenForTarget implements github.ExchangeApp: same
+// ring/failover mechanics as GetInstallationToken, applied to minting a
+// token restricted to an already-resolved immutable target.
+func (p *AppPool) GetInstallationTokenForTarget(ctx context.Context, target TargetIdentity, permissions map[string]string, caller string) (string, string, error) {
+	candidates := p.candidateRing()
+
+	var lastErr error
+	attempts := 0
+	for i, idx := range candidates {
+		if attempts >= p.maxAttempts {
+			break
+		}
+		attempts++
+
+		m := p.members[idx]
+		outcome := "selected"
+		if i > 0 {
+			outcome = "failover"
+		}
+
+		token, _, err := m.Provider.GetInstallationTokenForTarget(ctx, target, permissions, caller)
+		if err == nil {
+			metrics.AppPoolSelectionTotal.WithLabelValues(p.logicalName, m.Instance, outcome).Inc()
+			return token, m.Instance, nil
+		}
+		lastErr = err
+
+		var mintErr *TokenMintError
+		retryable := errors.As(err, &mintErr) && mintErr.Retryable
+		if !retryable || ctx.Err() != nil {
+			return "", "", err
+		}
 	}
 
 	metrics.AppPoolExhaustedTotal.WithLabelValues(p.logicalName).Inc()

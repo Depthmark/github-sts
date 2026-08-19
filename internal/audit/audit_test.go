@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/depthmark/github-sts/internal/bundle"
 )
 
 func TestFileLogger_WritesJSONLines(t *testing.T) {
@@ -15,13 +17,26 @@ func TestFileLogger_WritesJSONLines(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	immutable := true
+	required := false
 	fl.Log(Event{
-		Scope:    "myorg/myrepo",
-		AppName:  "default",
-		Identity: "ci",
-		Issuer:   "https://token.actions.githubusercontent.com",
-		Subject:  "repo:myorg/myrepo:ref:refs/heads/main",
-		Result:   ResultSuccess,
+		Scope:                    "myorg/myrepo",
+		AppName:                  "default",
+		Identity:                 "ci",
+		Issuer:                   "https://token.actions.githubusercontent.com",
+		Subject:                  "repo:myorg@1001/myrepo@2002:ref:refs/heads/main",
+		SourceRepositoryOwner:    "myorg",
+		SourceRepositoryOwnerID:  "1001",
+		SourceRepository:         "myorg/myrepo",
+		SourceRepositoryID:       "2002",
+		TargetRepositoryOwner:    "myorg",
+		TargetRepositoryOwnerID:  "1001",
+		TargetRepository:         "myorg/target",
+		TargetRepositoryID:       "3001",
+		ImmutableSubject:         &immutable,
+		ImmutableSubjectRequired: &required,
+		BundleEnforcement:        bundle.EnforcementOptional,
+		Result:                   ResultSuccess,
 	})
 
 	if err := fl.Close(); err != nil {
@@ -45,6 +60,21 @@ func TestFileLogger_WritesJSONLines(t *testing.T) {
 	}
 	if event.Timestamp.IsZero() {
 		t.Error("timestamp should be auto-set")
+	}
+	if event.SourceRepositoryID != "2002" || event.SourceRepositoryOwnerID != "1001" {
+		t.Errorf("canonical source identity missing: %+v", event)
+	}
+	if event.TargetRepositoryID != "3001" || event.TargetRepositoryOwnerID != "1001" {
+		t.Errorf("canonical target identity missing: %+v", event)
+	}
+	if event.ImmutableSubject == nil || !*event.ImmutableSubject {
+		t.Errorf("immutable_subject = %v, want true", event.ImmutableSubject)
+	}
+	if event.ImmutableSubjectRequired == nil || *event.ImmutableSubjectRequired {
+		t.Errorf("immutable_subject_required = %v, want explicit false", event.ImmutableSubjectRequired)
+	}
+	if event.BundleEnforcement != bundle.EnforcementOptional {
+		t.Errorf("bundle_enforcement = %q, want optional", event.BundleEnforcement)
 	}
 }
 
@@ -75,6 +105,32 @@ func TestFileLogger_OmitEmptyFields(t *testing.T) {
 	}
 	if _, ok := raw["error_reason"]; ok {
 		t.Error("error_reason should be omitted when empty")
+	}
+	for _, field := range []string{
+		"source_repository_owner",
+		"source_repository_owner_id",
+		"source_repository",
+		"source_repository_id",
+		"target_repository_owner",
+		"target_repository_owner_id",
+		"target_repository",
+		"target_repository_id",
+		"immutable_subject",
+		"immutable_subject_required",
+	} {
+		if _, ok := raw[field]; ok {
+			t.Errorf("%s should be omitted when source identity is absent", field)
+		}
+	}
+}
+
+func TestFromBundleDecisionPreservesSignedRevision(t *testing.T) {
+	decisions := FromBundleDecision(bundle.Decision{Packages: []bundle.PackageDecision{{
+		BundleName: "enterprise", Digest: "sha256:test", PolicyRevision: "42",
+		Package: "sts.enterprise.v1", Query: "data.sts.enterprise.v1.decision", Allow: true,
+	}}})
+	if len(decisions) != 1 || decisions[0].PolicyRevision != "42" || decisions[0].Digest != "sha256:test" {
+		t.Fatalf("bundle decisions = %+v", decisions)
 	}
 }
 

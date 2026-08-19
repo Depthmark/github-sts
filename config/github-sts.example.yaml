@@ -6,6 +6,12 @@
 # All values can be overridden by environment variables with the
 # GITHUBSTS_ prefix (e.g., GITHUBSTS_SERVER_LOG_LEVEL=debug).
 
+# Enterprise Rego bundles (mandatory; "required" or "optional"). "optional"
+# with no bundles configured runs YAML-only trust-policy authorization.
+# Production deployments should use "required" — see the Helm chart.
+bundle_enforcement: optional
+bundles: []
+
 server:
   host: "0.0.0.0"
   port: 8080
@@ -31,7 +37,7 @@ server:
     #   - TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
     #   - TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256
     #   - TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256
-    reload_interval: 0              # Hot-reload interval (e.g. "1h"). 0 = disabled; requires cert_file/key_file.
+    reload_interval: 0s             # Hot-reload interval (e.g. "1h"). 0 = disabled; requires cert_file/key_file.
 
 # GitHub Apps — define one or more apps
 # Each app has its own credentials and maps to a policy subdirectory:
@@ -89,7 +95,6 @@ oidc:
   allowed_issuers:                   # At least one issuer is required
     - "https://token.actions.githubusercontent.com"       # GitHub Actions
     # - "https://sts.windows.net/{tenant}/"              # Azure AD
-    # - "https://accounts.google.com"                    # Google Cloud
 
   # Server-wide required audience. When set, every incoming OIDC token MUST
   # carry this value in its `aud` claim — enforced before policy lookup.

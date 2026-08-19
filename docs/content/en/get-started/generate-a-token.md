@@ -21,17 +21,26 @@ Minimal example for a GitHub Actions workflow on `main`:
 
 ```yaml
 issuer: https://token.actions.githubusercontent.com
-subject: repo:myorg/myrepo:ref:refs/heads/main
+claim_pattern:
+  ref: refs/heads/main
 audience: https://sts.example.com
+github:
+  sources:
+    - owner_id: "123456"
+      repository_id: "456789"
+  target:
+    owner_id: "123456"
+    repository_id: "456789"
 permissions:
   contents: read
   pull_requests: write
 ```
 
+Replace the example IDs with `myorg`/`myrepo`'s immutable owner and repository IDs. See [OIDC Issuers → Getting the immutable owner and repository IDs](../../oidc-issuers/github-actions/#getting-the-immutable-owner-and-repository-ids). GitHub.com source repositories must opt in to immutable subject claims unless the server's explicit degraded migration posture is temporarily selected.
+
 > **`audience` is mandatory**, and it must match the audience the workload requests in its OIDC
 > token. It's what ties a token to *this* github-sts deployment and no other. See
-> [OIDC Issuers](../../oidc-issuers/) for how each provider's tokens are validated. Prefer exact
-> `subject` over `subject_pattern`: a pattern matches more identities than the one you tested with.
+> [OIDC Issuers](../../oidc-issuers/) for how each provider's tokens are validated. `github.sources[]`/`github.target` pin the policy to exact, immutable repositories so a rename or ownership transfer can't silently reauthorize a different repo.
 
 ## Request the OIDC token
 
@@ -78,8 +87,8 @@ curl -H "Authorization: Bearer $OIDC_TOKEN" \
 }
 ```
 
-The `ghs_…` token is a standard GitHub App installation token, scoped to exactly the repositories
-and permissions the policy declared. For a drop-in wrapper around this exchange in Actions, see
+The `ghs_…` token is a standard GitHub App installation token, scoped to the resolved target
+repository ID and the permissions the policy declared. For a drop-in wrapper around this exchange in Actions, see
 [Use the GitHub Action](../../integrations/use-github-action/). The manual `curl` form above works
 from any CI system that can produce an OIDC token.
 

@@ -1,0 +1,17 @@
+# Synthetic trust policy used by schema and Rego conformance tests.
+# Example request: app=default, identity=deploy, scope=example-org/example-repo.
+issuer: https://token.actions.githubusercontent.com
+claim_pattern:
+  ref: 'refs/heads/.*'
+audience: https://sts.example.com
+github:
+  sources:
+    - owner_id: "123456"
+      repository_id: "456789"
+  target:
+    owner_id: "123456"
+    repository_id: "456789"
+permissions:
+  contents: read
+  deployments: write
+  statuses: write

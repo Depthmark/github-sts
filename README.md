@@ -17,24 +17,28 @@
 
 ## Quick Start
 
-There is no published github-sts image yet, so this builds one locally from the repo's
-`Dockerfile`. You need a [GitHub App](https://docs.github.com/en/apps/creating-github-apps) with
-its App ID and private key.
+Pull the [published image](https://github.com/Depthmark/github-sts/pkgs/container/github-sts).
+You need a [GitHub App](https://docs.github.com/en/apps/creating-github-apps) with its App ID and
+private key.
 
 ```bash
 export GITHUBSTS_APP_DEFAULT_APP_ID="123456"
 export GITHUBSTS_APP_DEFAULT_PRIVATE_KEY="$(cat /path/to/private-key.pem)"
 export GITHUBSTS_OIDC_ALLOWED_ISSUERS="https://token.actions.githubusercontent.com"
+export GITHUBSTS_BUNDLE_ENFORCEMENT="optional"
 
-docker build -t github-sts:local .
 docker run -d --name github-sts-local -p 8080:8080 \
   -e GITHUBSTS_APP_DEFAULT_APP_ID \
   -e GITHUBSTS_APP_DEFAULT_PRIVATE_KEY \
   -e GITHUBSTS_OIDC_ALLOWED_ISSUERS \
-  github-sts:local
+  -e GITHUBSTS_BUNDLE_ENFORCEMENT \
+  ghcr.io/depthmark/github-sts:latest
 
-curl -s http://localhost:8080/health   # {"status":"ok"}
+curl -s http://localhost:8080/health   # includes liveness, security posture, and bundle state
 ```
+
+Pin a specific release with `ghcr.io/depthmark/github-sts:0.0.3` instead of `:latest`. Building
+from source instead: `docker build -t github-sts:local .`, then swap the image name above.
 
 For the full walkthrough, including installing the App, writing a trust policy, and exchanging a
 real token, start at [Get Started](https://depthmark.github.io/github-sts/get-started/).
@@ -47,13 +51,13 @@ single job needs, and a standing target if leaked.
 
 ## What it does
 
-github-sts lets a workload with an OIDC identity (GitHub Actions, Azure, GCP, or any OIDC issuer)
+github-sts lets a workload with an OIDC identity (GitHub Actions, Azure, or any OIDC issuer)
 trade that identity for a GitHub installation token scoped to exactly the repositories and
 permissions a trust policy allows, valid for one hour. Nothing is stored between requests.
 
 ```mermaid
 flowchart LR
-    W["Workload<br/>GitHub Actions / Azure / GCP"]
+    W["Workload<br/>GitHub Actions / Azure"]
     IDP["OIDC<br/>Identity Provider"]
 
     subgraph STS["github-sts"]
@@ -69,13 +73,16 @@ flowchart LR
     IDP -- "2. OIDC JWT" --> W
     W -- "3. Exchange OIDC JWT<br/>scope + identity + app" --> V
     A -. "Load trust policy" .-> GH
-    M -- "4. GitHub App authentication" --> GH
-    GH -- "5. Scoped installation token" --> M
-    M -- "6. Short-lived token" --> W
+    A -- "4. Approved scope + perms" --> H["Enterprise Rego<br/>guardrails"]
+    H -- "5. All bundles allow" --> M
+    M -- "6. GitHub App authentication" --> GH
+    GH -- "7. Scoped installation token" --> M
+    M -- "8. Short-lived token" --> W
 ```
 
 - **Zero-trust:** identity verified via OIDC JWT validation, no stored credentials
 - **Least-privilege:** YAML trust policies define exact permissions per workload identity
+- **Enterprise policy:** signed, digest-pinned Rego bundles add organization-wide deny-wins guardrails
 - **Multi-app:** route different workloads through different GitHub Apps
 - **Replay-safe:** in-memory or Redis-backed JTI tracking
 

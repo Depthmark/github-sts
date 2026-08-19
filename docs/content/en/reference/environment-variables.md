@@ -11,18 +11,18 @@ All variables use the `GITHUBSTS_` prefix. Per-app variables follow `GITHUBSTS_A
 
 | Variable | Default | Description |
 |---|---|---|
-| `GITHUBSTS_CONFIG_PATH` | — | Path to YAML config file |
+| `GITHUBSTS_CONFIG_PATH` | n/a | Path to YAML config file |
 | `GITHUBSTS_SERVER_HOST` | `0.0.0.0` | HTTP listen host |
 | `GITHUBSTS_SERVER_PORT` | `8080` | HTTP listen port |
 | `GITHUBSTS_SERVER_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 | `GITHUBSTS_SERVER_SUPPRESS_HEALTH_LOGS` | `true` | Suppress health endpoint access logs |
 | `GITHUBSTS_SERVER_SHUTDOWN_TIMEOUT` | `10s` | Graceful shutdown grace period |
 | `GITHUBSTS_SERVER_TRUST_FORWARDED_HEADERS` | `false` | Trust `X-Forwarded-For` for client IP |
-| `GITHUBSTS_SERVER_TLS_CERT_FILE` | — | Path to server certificate (PEM). HTTPS is enabled when both this and `_TLS_KEY_FILE` are set. |
-| `GITHUBSTS_SERVER_TLS_KEY_FILE` | — | Path to server private key (PEM) |
-| `GITHUBSTS_SERVER_TLS_CLIENT_CA_FILE` | — | Path to trusted client CA bundle (PEM). When set, client certificates are required and verified (mTLS). |
+| `GITHUBSTS_SERVER_TLS_CERT_FILE` | n/a | Path to server certificate (PEM). HTTPS is enabled when both this and `_TLS_KEY_FILE` are set. |
+| `GITHUBSTS_SERVER_TLS_KEY_FILE` | n/a | Path to server private key (PEM) |
+| `GITHUBSTS_SERVER_TLS_CLIENT_CA_FILE` | n/a | Path to trusted client CA bundle (PEM). When set, client certificates are required and verified (mTLS). |
 | `GITHUBSTS_SERVER_TLS_MIN_VERSION` | `1.2` | Minimum TLS version: `1.2` or `1.3`. |
-| `GITHUBSTS_SERVER_TLS_CIPHER_SUITES` | — | Comma-separated TLS 1.2 cipher suite allowlist (IANA names). Empty = Go defaults. Ignored when `min_version` is `1.3`. |
+| `GITHUBSTS_SERVER_TLS_CIPHER_SUITES` | n/a | Comma-separated TLS 1.2 cipher suite allowlist (IANA names). Empty = Go defaults. Ignored when `min_version` is `1.3`. |
 | `GITHUBSTS_SERVER_TLS_RELOAD_INTERVAL` | `0` | Cert hot-reload poll interval (e.g. `1h`). `0` disables hot-reload. Requires cert and key to be set. |
 
 ## GitHub App settings
@@ -31,8 +31,8 @@ All variables use the `GITHUBSTS_` prefix. Per-app variables follow `GITHUBSTS_A
 |---|---|---|
 | `GITHUBSTS_APP_{NAME}_APP_ID` | *required* | GitHub App numeric ID |
 | `GITHUBSTS_APP_{NAME}_PRIVATE_KEY` | *required* | PEM string (mutually exclusive with `_PATH`) |
-| `GITHUBSTS_APP_{NAME}_PRIVATE_KEY_PATH` | — | Path to PEM file |
-| `GITHUBSTS_APP_{NAME}_ORG_POLICY_REPO` | — | Repo for org-level policies (e.g. `.github`) |
+| `GITHUBSTS_APP_{NAME}_PRIVATE_KEY_PATH` | n/a | Path to PEM file |
+| `GITHUBSTS_APP_{NAME}_ORG_POLICY_REPO` | n/a | Central policy repository for repository-scoped requests (e.g. `.github`) |
 | `GITHUBSTS_APP_{NAME}_POLICY_RESOLUTION` | `org_first` | Resolution mode: `org_first`, `repo_first` (deprecated), or `org_only` |
 | `GITHUBSTS_APP_{NAME}_ROTATION_STRATEGY` | `round_robin` | Pool selection strategy: `round_robin` or `rate_limit_aware` (accepted, not yet implemented; see [Configuration]({{< relref "/reference/configuration#app-pools-multi-instance-rate-limit-rotation" >}})) |
 | `GITHUBSTS_APP_{NAME}_ROTATION_MIN_REMAINING_PCT` | `0` | `rate_limit_aware` only; currently has no effect |
@@ -53,10 +53,12 @@ Individual pool instances (`apps.<name>.instances[N]` in YAML) can also be set o
 |---|---|---|
 | `GITHUBSTS_POLICY_BASE_PATH` | `.github/sts` | Base path in repos for trust policies |
 | `GITHUBSTS_POLICY_CACHE_TTL` | `60s` | Policy cache TTL (`0` to disable) |
-| `GITHUBSTS_OIDC_ALLOWED_ISSUERS` | — | Comma-separated issuer allowlist. Required; an empty list is a validation error. |
-| `GITHUBSTS_OIDC_REQUIRED_AUDIENCE` | — | Server-wide required `aud` claim. When set, every token must carry this value (defense-in-depth on top of the per-policy `audience:` field). |
+| `GITHUBSTS_OIDC_ALLOWED_ISSUERS` | n/a | Comma-separated issuer allowlist. Required; an empty list is a validation error. |
+| `GITHUBSTS_OIDC_REQUIRED_AUDIENCE` | n/a | Server-wide required `aud` claim. When set, every token must carry this value (defense-in-depth on top of the per-policy `audience:` field). |
+| `GITHUBSTS_OIDC_REQUIRE_IMMUTABLE_SUBJECT_CLAIMS` | `true` | Require immutable IDs in GitHub.com `sub`. Exact `false` permits legacy formatting while separate immutable ID claims remain mandatory and emits degraded-posture signals. |
+| `GITHUBSTS_BUNDLE_ENFORCEMENT` | *required* | Overrides top-level `bundle_enforcement`. Exact values are `required` or `optional`; omission from both sources fails startup. |
 | `GITHUBSTS_JTI_BACKEND` | `memory` | `memory` or `redis` |
-| `GITHUBSTS_JTI_REDIS_URL` | — | Redis connection URL (when backend=`redis`) |
+| `GITHUBSTS_JTI_REDIS_URL` | n/a | Redis connection URL (when backend=`redis`) |
 | `GITHUBSTS_JTI_TTL` | `1h` | JTI replay protection window |
 
 ## Audit settings
@@ -72,7 +74,7 @@ Individual pool instances (`apps.<name>.instances[N]` in YAML) can also be set o
 | Variable | Default | Description |
 |---|---|---|
 | `GITHUBSTS_METRICS_ENABLED` | `true` | Enable Prometheus metrics |
-| `GITHUBSTS_METRICS_AUTH_TOKEN` | — | Bearer token for the `/metrics` endpoint (empty = unauthenticated) |
+| `GITHUBSTS_METRICS_AUTH_TOKEN` | n/a | Bearer token for the `/metrics` endpoint (empty = unauthenticated) |
 | `GITHUBSTS_METRICS_RATE_LIMIT_POLL_ENABLED` | `true` | Poll `GET /rate_limit` periodically |
 | `GITHUBSTS_METRICS_RATE_LIMIT_POLL_INTERVAL` | `60s` | Rate limit poll interval |
 | `GITHUBSTS_METRICS_REACHABILITY_PROBE_ENABLED` | `true` | Probe GitHub API reachability |
@@ -85,7 +87,7 @@ Individual pool instances (`apps.<name>.instances[N]` in YAML) can also be set o
 | `GITHUBSTS_RATE_LIMIT_ENABLED` | `false` | Enable per-IP rate limiting on `/sts/exchange` |
 | `GITHUBSTS_RATE_LIMIT_RATE` | `10` | Requests per second per IP |
 | `GITHUBSTS_RATE_LIMIT_BURST` | `20` | Maximum burst size per IP |
-| `GITHUBSTS_RATE_LIMIT_EXEMPT_CIDRS` | — | CIDR ranges exempt from rate limiting |
+| `GITHUBSTS_RATE_LIMIT_EXEMPT_CIDRS` | n/a | CIDR ranges exempt from rate limiting |
 
 ## Security notes
 

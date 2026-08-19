@@ -5,13 +5,13 @@
 # Pinned by multi-arch index digest so a registry-side retag cannot swap base.
 # Refresh with: docker buildx imagetools inspect cgr.dev/chainguard/go:latest
 # ─────────────────────────────────────────────────────────────────────────────
-FROM cgr.dev/chainguard/go:latest@sha256:b116b5f2d3f5e7556b66252f9ee7ef9988b84c2139c89d824efcebd6cadbf436 AS builder
+FROM cgr.dev/chainguard/go:latest@sha256:6d5010125095720198390ab38a3b5d174f1c748a122d5deda3a17590c8f3f9a7 AS builder
 
 WORKDIR /build
 
 # Pin module/build cache to fixed paths so BuildKit cache mounts are stable
 # regardless of the base image's GOPATH/HOME defaults.
-ENV GOMODCACHE=/cache/mod GOCACHE=/cache/build
+ENV GOMODCACHE=/cache/mod GOCACHE=/cache/build GOTOOLCHAIN=local
 
 COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/cache/mod,sharing=locked \

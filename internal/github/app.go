@@ -55,10 +55,12 @@ type AppTokenProvider struct {
 	apiURL            string
 	httpClient        *http.Client
 	installationCache map[string]*cachedInstallation // org → entry
+	targetCache       map[string]*cachedTarget       // canonical owner/repository → entry
 	mu                sync.RWMutex
 	jwtCache          cachedJWT
 	jwtMu             sync.Mutex
 	installSF         singleflight.Group
+	targetSF          singleflight.Group
 }
 
 // NewAppTokenProvider creates a server-side AppTokenProvider. instance
@@ -77,6 +79,7 @@ func NewAppTokenProvider(appName, instance string, appID int64, privateKey *rsa.
 		apiURL:            apiURL,
 		httpClient:        httpClient,
 		installationCache: make(map[string]*cachedInstallation),
+		targetCache:       make(map[string]*cachedTarget),
 	}
 }
 
@@ -263,6 +266,23 @@ func (p *AppTokenProvider) GetGrantedPermissions(scope string) map[string]string
 // requested-permissions problem, and an unrecognized failure mode fails
 // closed rather than being silently masked by blind cross-credential retries.
 func (p *AppTokenProvider) GetInstallationToken(ctx context.Context, scope string, permissions map[string]string, repositories []string, caller string) (string, error) {
+	if repositories != nil && len(repositories) == 0 {
+		return "", fmt.Errorf("refusing to create an unrestricted installation token from an empty repository list")
+	}
+	if repositories == nil && strings.Contains(scope, "/") {
+		parts := strings.SplitN(scope, "/", 2)
+		repositories = []string{parts[1]}
+	}
+	return p.getInstallationToken(ctx, scope, permissions, repositories, nil, caller)
+}
+
+func (p *AppTokenProvider) getInstallationToken(ctx context.Context, scope string, permissions map[string]string, repositories []string, repositoryIDs []int64, caller string) (string, error) {
+	if repositories != nil && repositoryIDs != nil {
+		return "", fmt.Errorf("repository names and IDs are mutually exclusive")
+	}
+	if repositoryIDs != nil && len(repositoryIDs) == 0 {
+		return "", fmt.Errorf("refusing to create an unrestricted installation token from an empty repository ID list")
+	}
 	installationID, err := p.GetInstallationID(ctx, scope)
 	if err != nil {
 		return "", err
@@ -280,10 +300,9 @@ func (p *AppTokenProvider) GetInstallationToken(ctx context.Context, scope strin
 	}
 	if repositories != nil {
 		body["repositories"] = repositories
-	} else if strings.Contains(scope, "/") {
-		// Repo-level scope: restrict to the target repository.
-		parts := strings.SplitN(scope, "/", 2)
-		body["repositories"] = []string{parts[1]}
+	}
+	if repositoryIDs != nil {
+		body["repository_ids"] = repositoryIDs
 	}
 
 	var reqBody bytes.Buffer
@@ -326,6 +345,7 @@ func (p *AppTokenProvider) GetInstallationToken(ctx context.Context, scope strin
 			"installation_id", installationID,
 			"requested_permissions", permissions,
 			"requested_repositories", repositories,
+			"requested_repository_ids", repositoryIDs,
 			"granted_permissions", granted,
 			"permissions_diff", diff,
 			"github_response", string(respBody),
