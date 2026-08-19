@@ -120,8 +120,8 @@ metrics:
 	if app.AppID != 12345 {
 		t.Errorf("app_id = %d, want 12345", app.AppID)
 	}
-	if app.ParsedKey == nil {
-		t.Error("ParsedKey is nil")
+	if len(app.Instances) != 1 || app.Instances[0].ParsedKey == nil {
+		t.Error("Instances[0].ParsedKey is nil")
 	}
 
 	if len(cfg.OIDC.AllowedIssuers) != 1 {
@@ -516,7 +516,7 @@ func TestServerClientAuthEnabled(t *testing.T) {
 
 func TestParsePrivateKeys_InvalidPEM(t *testing.T) {
 	cfg := defaults()
-	cfg.Apps["test"] = AppConfig{AppID: 1, PrivateKey: "not-a-pem"}
+	cfg.Apps["test"] = AppConfig{Instances: []AppInstanceConfig{{AppID: 1, PrivateKey: "not-a-pem"}}}
 	err := cfg.parsePrivateKeys()
 	if err == nil || !contains(err.Error(), "invalid PEM") {
 		t.Errorf("expected PEM error, got: %v", err)
@@ -596,6 +596,313 @@ func TestValidate_PolicyResolution_ExplicitOrgFirstAccepted(t *testing.T) {
 
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// --- Multi-instance pool config (instances:/rotation:) ---
+
+func TestLoad_LegacyFlatForm_NormalizesToPoolOfOne(t *testing.T) {
+	keyPath := writeTestKey(t)
+	yaml := `
+apps:
+  default:
+    app_id: 12345
+    private_key_path: "` + keyPath + `"
+oidc:
+  allowed_issuers:
+    - "https://test.example.com"
+`
+	cfg, err := Load(writeTestConfig(t, yaml))
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	app := cfg.Apps["default"]
+	if len(app.Instances) != 1 {
+		t.Fatalf("Instances len = %d, want 1", len(app.Instances))
+	}
+	inst := app.Instances[0]
+	if inst.AppID != 12345 {
+		t.Errorf("Instances[0].AppID = %d, want 12345", inst.AppID)
+	}
+	if inst.Name != "12345" {
+		t.Errorf("Instances[0].Name = %q, want %q (defaults to app_id)", inst.Name, "12345")
+	}
+	if inst.ParsedKey == nil {
+		t.Error("Instances[0].ParsedKey is nil")
+	}
+	if app.Rotation.Strategy != "round_robin" {
+		t.Errorf("Rotation.Strategy = %q, want round_robin", app.Rotation.Strategy)
+	}
+	if app.Rotation.MaxAttempts != 1 {
+		t.Errorf("Rotation.MaxAttempts = %d, want 1 (min(len(instances),3))", app.Rotation.MaxAttempts)
+	}
+}
+
+func TestLoad_InstancesForm_Parses(t *testing.T) {
+	key1, key2 := writeTestKey(t), writeTestKey(t)
+	yaml := `
+apps:
+  checkout:
+    org_policy_repo: ".github"
+    instances:
+      - name: checkout-1
+        app_id: 111111
+        private_key_path: "` + key1 + `"
+      - name: checkout-2
+        app_id: 222222
+        private_key_path: "` + key2 + `"
+    rotation:
+      strategy: round_robin
+      max_attempts: 2
+oidc:
+  allowed_issuers:
+    - "https://test.example.com"
+`
+	cfg, err := Load(writeTestConfig(t, yaml))
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	app := cfg.Apps["checkout"]
+	if len(app.Instances) != 2 {
+		t.Fatalf("Instances len = %d, want 2", len(app.Instances))
+	}
+	if app.Instances[0].Name != "checkout-1" || app.Instances[0].AppID != 111111 {
+		t.Errorf("Instances[0] = %+v", app.Instances[0])
+	}
+	if app.Instances[1].Name != "checkout-2" || app.Instances[1].AppID != 222222 {
+		t.Errorf("Instances[1] = %+v", app.Instances[1])
+	}
+	if app.Instances[0].ParsedKey == nil || app.Instances[1].ParsedKey == nil {
+		t.Error("expected both instances to have a ParsedKey")
+	}
+	if app.Rotation.MaxAttempts != 2 {
+		t.Errorf("Rotation.MaxAttempts = %d, want 2 (explicit)", app.Rotation.MaxAttempts)
+	}
+}
+
+func TestValidate_FlatAndInstances_MutuallyExclusive(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Apps["test"] = AppConfig{
+		AppID:      1,
+		PrivateKey: testPEM,
+		Instances:  []AppInstanceConfig{{AppID: 2, PrivateKey: testPEM}},
+	}
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), "mutually exclusive") {
+		t.Errorf("expected mutual exclusivity error, got: %v", err)
+	}
+}
+
+func TestValidate_Instances_MissingAppID(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Apps["test"] = AppConfig{Instances: []AppInstanceConfig{{PrivateKey: testPEM}}}
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), "app_id is required") {
+		t.Errorf("expected app_id error, got: %v", err)
+	}
+}
+
+func TestValidate_Instances_BothKeyAndPath(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Apps["test"] = AppConfig{Instances: []AppInstanceConfig{
+		{AppID: 1, PrivateKey: "x", PrivateKeyPath: "/y"},
+	}}
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), "mutually exclusive") {
+		t.Errorf("expected mutual exclusivity error, got: %v", err)
+	}
+}
+
+func TestValidate_Instances_InvalidNameChars(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Apps["test"] = AppConfig{Instances: []AppInstanceConfig{
+		{Name: "checkout 1;drop", AppID: 1, PrivateKey: testPEM},
+	}}
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), "invalid characters") {
+		t.Errorf("expected invalid-characters error, got: %v", err)
+	}
+}
+
+func TestValidate_Instances_DuplicateAppIDWithinPool(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Apps["test"] = AppConfig{Instances: []AppInstanceConfig{
+		{Name: "a", AppID: 1, PrivateKey: testPEM},
+		{Name: "b", AppID: 1, PrivateKey: testPEM},
+	}}
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), "duplicate app_id") {
+		t.Errorf("expected duplicate app_id error, got: %v", err)
+	}
+}
+
+func TestValidate_DuplicateAppIDAcrossPools_NotAnError(t *testing.T) {
+	// The same app_id reused across two different logical apps must NOT
+	// fail Validate() — only a within-pool duplicate is a hard error. This
+	// guards the backward-compatibility argument that adding pooling
+	// support cannot retroactively break an existing multi-app deployment
+	// that happens to reuse an app_id across apps.
+	cfg := validDefaults()
+	cfg.Apps["app1"] = AppConfig{AppID: 1, PrivateKey: testPEM}
+	cfg.Apps["app2"] = AppConfig{AppID: 1, PrivateKey: testPEM}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestDuplicateAppIDWarnings_CrossPoolReuse(t *testing.T) {
+	// validDefaults() seeds app "test" with app_id 1 — use a non-colliding
+	// ID here so the warning is a clean, isolated 2-way collision.
+	cfg := validDefaults()
+	cfg.Apps["app1"] = AppConfig{AppID: 101, PrivateKey: testPEM}
+	cfg.Apps["app2"] = AppConfig{AppID: 101, PrivateKey: testPEM}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	cfg.normalizeInstances()
+
+	warnings := cfg.DuplicateAppIDWarnings()
+	if len(warnings) != 1 {
+		t.Fatalf("warnings = %v, want exactly 1", warnings)
+	}
+	if !contains(warnings[0], "app1") || !contains(warnings[0], "app2") {
+		t.Errorf("warning = %q, want it to name both app1 and app2", warnings[0])
+	}
+}
+
+func TestDuplicateAppIDWarnings_NoReuse(t *testing.T) {
+	// validDefaults() already seeds app "test" with app_id 1, so pick
+	// non-colliding IDs here.
+	cfg := validDefaults()
+	cfg.Apps["app1"] = AppConfig{AppID: 101, PrivateKey: testPEM}
+	cfg.Apps["app2"] = AppConfig{AppID: 102, PrivateKey: testPEM}
+	cfg.normalizeInstances()
+	if warnings := cfg.DuplicateAppIDWarnings(); len(warnings) != 0 {
+		t.Errorf("warnings = %v, want none", warnings)
+	}
+}
+
+func TestValidate_Rotation_RejectedOnFlatForm(t *testing.T) {
+	cfg := validDefaults()
+	app := cfg.Apps["test"]
+	app.Rotation.Strategy = "round_robin"
+	cfg.Apps["test"] = app
+
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), "rotation has no effect") {
+		t.Errorf("expected rotation-without-instances error, got: %v", err)
+	}
+}
+
+func TestValidate_Rotation_DefaultsAndMaxAttemptsCap(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Apps["test"] = AppConfig{Instances: []AppInstanceConfig{
+		{AppID: 1, PrivateKey: testPEM},
+		{AppID: 2, PrivateKey: testPEM},
+		{AppID: 3, PrivateKey: testPEM},
+		{AppID: 4, PrivateKey: testPEM},
+	}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	app := cfg.Apps["test"]
+	if app.Rotation.Strategy != "round_robin" {
+		t.Errorf("Rotation.Strategy = %q, want round_robin default", app.Rotation.Strategy)
+	}
+	if app.Rotation.MaxAttempts != 3 {
+		t.Errorf("Rotation.MaxAttempts = %d, want 3 (capped, 4 instances)", app.Rotation.MaxAttempts)
+	}
+}
+
+func TestValidate_Rotation_InvalidStrategy(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Apps["test"] = AppConfig{
+		Instances: []AppInstanceConfig{{AppID: 1, PrivateKey: testPEM}},
+		Rotation:  RotationConfig{Strategy: "bogus"},
+	}
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), "rotation.strategy") {
+		t.Errorf("expected rotation.strategy error, got: %v", err)
+	}
+}
+
+func TestValidate_Rotation_RateLimitAwareAccepted(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Apps["test"] = AppConfig{
+		Instances: []AppInstanceConfig{{AppID: 1, PrivateKey: testPEM}},
+		Rotation:  RotationConfig{Strategy: "rate_limit_aware"},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestValidate_Rotation_MinRemainingPctOutOfRange(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Apps["test"] = AppConfig{
+		Instances: []AppInstanceConfig{{AppID: 1, PrivateKey: testPEM}},
+		Rotation:  RotationConfig{MinRemainingPct: 100},
+	}
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), "min_remaining_pct") {
+		t.Errorf("expected min_remaining_pct error, got: %v", err)
+	}
+}
+
+func TestValidate_Rotation_NegativeMaxAttempts(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Apps["test"] = AppConfig{
+		Instances: []AppInstanceConfig{{AppID: 1, PrivateKey: testPEM}},
+		Rotation:  RotationConfig{MaxAttempts: -1},
+	}
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), "max_attempts") {
+		t.Errorf("expected max_attempts error, got: %v", err)
+	}
+}
+
+func TestLoad_EnvOverrides_IndexedInstances(t *testing.T) {
+	keyPath := writeTestKey(t)
+	yaml := `
+apps:
+  checkout: {}
+oidc:
+  allowed_issuers:
+    - "https://test.example.com"
+`
+	path := writeTestConfig(t, yaml)
+
+	t.Setenv("GITHUBSTS_APP_CHECKOUT_INSTANCE_1_APP_ID", "111111")
+	t.Setenv("GITHUBSTS_APP_CHECKOUT_INSTANCE_1_PRIVATE_KEY_PATH", keyPath)
+	t.Setenv("GITHUBSTS_APP_CHECKOUT_INSTANCE_1_NAME", "checkout-1")
+	t.Setenv("GITHUBSTS_APP_CHECKOUT_INSTANCE_2_APP_ID", "222222")
+	t.Setenv("GITHUBSTS_APP_CHECKOUT_INSTANCE_2_PRIVATE_KEY_PATH", keyPath)
+	t.Setenv("GITHUBSTS_APP_CHECKOUT_ROTATION_STRATEGY", "round_robin")
+	t.Setenv("GITHUBSTS_APP_CHECKOUT_ROTATION_MAX_ATTEMPTS", "2")
+	t.Setenv("GITHUBSTS_APP_CHECKOUT_ROTATION_MIN_REMAINING_PCT", "5")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	app := cfg.Apps["checkout"]
+	if len(app.Instances) != 2 {
+		t.Fatalf("Instances len = %d, want 2", len(app.Instances))
+	}
+	if app.Instances[0].AppID != 111111 || app.Instances[0].Name != "checkout-1" {
+		t.Errorf("Instances[0] = %+v", app.Instances[0])
+	}
+	if app.Instances[1].AppID != 222222 {
+		t.Errorf("Instances[1] = %+v", app.Instances[1])
+	}
+	if app.Rotation.MaxAttempts != 2 {
+		t.Errorf("Rotation.MaxAttempts = %d, want 2", app.Rotation.MaxAttempts)
+	}
+	if app.Rotation.MinRemainingPct != 5 {
+		t.Errorf("Rotation.MinRemainingPct = %v, want 5", app.Rotation.MinRemainingPct)
 	}
 }
 

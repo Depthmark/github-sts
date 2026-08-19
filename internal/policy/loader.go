@@ -19,9 +19,14 @@ type Loader interface {
 	Load(ctx context.Context, scope, appName, identity string) (*TrustPolicy, error)
 }
 
-// TokenProvider provides GitHub installation tokens for accessing policy files.
+// TokenProvider provides GitHub installation tokens for accessing policy
+// files. The instance return value (which pool member served the call) is
+// not needed for policy fetches today — the one caller, fetchFrom, discards
+// it — but the signature has to match InstallationTokenProvider
+// (internal/handler) so *github.AppPool satisfies both interfaces with one
+// method.
 type TokenProvider interface {
-	GetInstallationToken(ctx context.Context, scope string, permissions map[string]string, repositories []string, caller string) (string, error)
+	GetInstallationToken(ctx context.Context, scope string, permissions map[string]string, repositories []string, caller string) (string, string, error)
 }
 
 type cacheEntry struct {
@@ -269,7 +274,7 @@ func (l *GitHubPolicyLoader) fetchRepoLevel(ctx context.Context, tp TokenProvide
 // policy file at filePath from that repo. Returns (nil, nil) if the policy
 // file does not exist (404).
 func (l *GitHubPolicyLoader) fetchFrom(ctx context.Context, tp TokenProvider, scope, repo, filePath, appName, identity string) (*TrustPolicy, error) {
-	token, err := tp.GetInstallationToken(ctx, repo,
+	token, _, err := tp.GetInstallationToken(ctx, repo,
 		map[string]string{"contents": "read"}, nil, "policy_loader")
 	if err != nil {
 		metrics.PolicyLoadsTotal.WithLabelValues(appName, "github", "token_error").Inc()

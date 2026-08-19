@@ -42,6 +42,45 @@ Les niveaux de journal valides sont en minuscules : `debug | info | warn | error
 
 En production, déployez github-sts avec le chart Helm plutôt que de gérer ce fichier à la main. Consultez [Déployer avec Helm]({{< relref "/integrations/deploy-with-helm" >}}).
 
+## Pools d'Apps (rotation multi-instances pour la limite de débit)
+
+Un nom d'App logique (`apps.<name>`) peut être adossé à une seule GitHub App (`app_id` / `private_key` / `private_key_path`, comme ci-dessus) ou à un pool de plusieurs GitHub Apps physiques sous `instances:`. Chaque instance possède ses propres identifiants de GitHub App, donc son propre quota de limite de débit primaire GitHub indépendant : le plafond effectif d'une App poolée sur le trafic `/sts/exchange` augmente avec le nombre d'instances. (Cette « instance » est une GitHub App physique, sans rapport avec un réplica du serveur github-sts ; voir [Architecture]({{< relref "/concepts/architecture#pools-dapps-et-basculement" >}}).) Les appelants ne voient jamais que le nom d'App logique dans `?app=` ; quelle instance a servi une requête donnée reste interne, et n'apparaît que dans l'étiquette `instance` des métriques et dans le journal d'audit (voir [Métriques]({{< relref "/reference/metrics#métriques-de-pool-dapps" >}})).
+
+```yaml
+apps:
+  checkout:
+    org_policy_repo: ".github"
+    instances:
+      - name: checkout-1          # optionnel ; par défaut app_id si omis
+        app_id: 111111
+        private_key_path: "/etc/github-sts/keys/checkout-1.pem"
+      - name: checkout-2
+        app_id: 222222
+        private_key_path: "/etc/github-sts/keys/checkout-2.pem"
+      - name: checkout-3
+        app_id: 333333
+        private_key_path: "/etc/github-sts/keys/checkout-3.pem"
+    rotation:
+      strategy: round_robin        # round_robin (défaut) | rate_limit_aware
+      min_remaining_pct: 5         # rate_limit_aware uniquement
+      max_attempts: 3              # limite le nombre de bascules par requête
+```
+
+Par défaut, github-sts fait tourner les instances d'un pool en round-robin (un curseur par requête, pour que les tentatives d'une même requête parcourent des membres consécutifs plutôt que de retirer au hasard), écarte toute instance actuellement signalée comme inaccessible par la sonde d'accessibilité, et bascule vers l'instance suivante lorsque celle tentée renvoie une erreur réessayable. Réessayable signifie une erreur réseau/timeout, une réponse 5xx, ou un 403 portant un signal de limite de débit (`Retry-After` ou `X-RateLimit-Remaining: 0`) ; un 422 (les autorisations ou dépôts demandés dépassent ce que cette installation accorde) ou tout autre 4xx n'est pas réessayé, car un identifiant différent ne peut pas corriger une incohérence d'autorisations. `rotation.max_attempts` limite le nombre d'instances tentées par requête (par défaut : taille du pool, plafonnée à 3).
+
+Règles :
+
+- `instances` et les champs plats `app_id` / `private_key` / `private_key_path` sont mutuellement exclusifs sur une App. Une App en forme plate est traitée comme un pool d'une instance.
+- `rotation` n'a de sens que sur une App poolée (`instances` défini) : le définir sur une App en forme plate est une erreur de validation, car cela serait autrement du YAML sans aucun effet.
+- Chaque instance nécessite `app_id` et exactement un des deux champs `private_key` / `private_key_path`.
+- `app_id` doit être unique **au sein** du pool d'une App. Le même `app_id` réutilisé entre les pools de deux Apps logiques différentes est autorisé (elles partagent déjà un quota de limite de débit par construction) mais journalise un avertissement au démarrage, car c'est plus souvent un copier-coller erroné qu'une configuration intentionnelle.
+- `name` est optionnel et vaut par défaut `app_id` (converti en chaîne). Comme il devient une valeur d'étiquette Prometheus, il est limité à 100 caractères parmi `[a-zA-Z0-9._/-]`.
+- `rotation.strategy` vaut `round_robin` (défaut) ou `rate_limit_aware`. **`rate_limit_aware` est accepté aujourd'hui mais pas encore implémenté** : un pool ainsi configuré se comporte exactement comme `round_robin`, et github-sts journalise un avertissement au démarrage à ce sujet. Cette valeur est réservée à une stratégie de contournement proactif qui classera les instances selon leur pourcentage de limite de débit restant observé en dernier, plutôt que de seulement réagir à un échec en direct.
+- `rotation.min_remaining_pct` (plage `[0, 100)`) ne s'applique qu'à `rate_limit_aware` et n'a actuellement aucun effet pour la raison ci-dessus.
+- `rotation.max_attempts` vaut par défaut `min(len(instances), 3)` lorsqu'il est omis ou à `0`.
+
+**Exigence opérationnelle :** chaque instance d'un pool doit être installée avec des autorisations et un accès aux dépôts identiques. github-sts traite les membres du pool comme interchangeables ; il ne vérifie pas actuellement qu'ils le sont réellement, donc une instance mal configurée ne se manifeste que par un 422 intermittent ou un échec d'accessibilité, sur la fraction des requêtes qui tombent dessus.
+
 ## TLS natif et mTLS
 
 github-sts peut servir HTTPS directement, mais ne gère pas le cycle de vie des certificats. Le TLS est **activé implicitement** lorsque vous fournissez à la fois un certificat et une clé ; fournissez un bundle de CA clientes pour exiger et vérifier les certificats clients (mTLS) :

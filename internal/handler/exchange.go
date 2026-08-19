@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/depthmark/github-sts/internal/audit"
-	"github.com/depthmark/github-sts/internal/github"
 	"github.com/depthmark/github-sts/internal/jti"
 	"github.com/depthmark/github-sts/internal/metrics"
 	"github.com/depthmark/github-sts/internal/oidc"
@@ -65,11 +64,11 @@ const (
 
 	// 403 — token rejected. Coarse on purpose; the matching trace_id log line
 	// carries the precise reason.
-	CodeOIDCInvalid      = "oidc_invalid"       // missing/expired/bad-signature/unknown-issuer/missing-kid/malformed
-	CodeAudienceMismatch = "audience_mismatch"  // token aud did not match policy.audience
-	CodeAppUnknown       = "app_unknown"        // requested ?app= is not configured on the server
-	CodePolicyNotFound   = "policy_not_found"   // no .sts.yaml for this scope/app/identity
-	CodePolicyDenied     = "policy_denied"      // policy exists but evaluation failed (subject/claim_pattern)
+	CodeOIDCInvalid      = "oidc_invalid"      // missing/expired/bad-signature/unknown-issuer/missing-kid/malformed
+	CodeAudienceMismatch = "audience_mismatch" // token aud did not match policy.audience
+	CodeAppUnknown       = "app_unknown"       // requested ?app= is not configured on the server
+	CodePolicyNotFound   = "policy_not_found"  // no .sts.yaml for this scope/app/identity
+	CodePolicyDenied     = "policy_denied"     // policy exists but evaluation failed (subject/claim_pattern)
 
 	// Other status codes.
 	CodeMethodNotAllowed = "method_not_allowed" // 405
@@ -84,11 +83,23 @@ type contextKey string
 // TraceIDKey is the context key for the trace ID.
 const TraceIDKey contextKey = "trace_id"
 
+// InstallationTokenProvider is the minimal interface ExchangeHandler needs
+// from an app: mint a permission-scoped installation token, returning which
+// physical instance served the request (for audit/metrics attribution — see
+// design doc §5.4.1). *github.AppPool satisfies this; every configured app
+// is wrapped in one regardless of pool size, so this is the only provider
+// type the handler ever holds.
+type InstallationTokenProvider interface {
+	GetInstallationToken(ctx context.Context, scope string,
+		permissions map[string]string, repositories []string, caller string,
+	) (token, instance string, err error)
+}
+
 // ExchangeHandler orchestrates the token exchange flow.
 type ExchangeHandler struct {
 	jtiCache              jti.Cache
 	policyLoader          policy.Loader
-	appProviders          map[string]*github.AppTokenProvider
+	appProviders          map[string]InstallationTokenProvider
 	allowedIssuers        []string
 	requiredAudience      string
 	auditLogger           audit.Logger
@@ -102,7 +113,7 @@ type ExchangeHandler struct {
 func NewExchangeHandler(
 	jtiCache jti.Cache,
 	policyLoader policy.Loader,
-	appProviders map[string]*github.AppTokenProvider,
+	appProviders map[string]InstallationTokenProvider,
 	allowedIssuers []string,
 	requiredAudience string,
 	auditLogger audit.Logger,
@@ -394,7 +405,7 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Step 5: Issue GitHub token.
 	subject, _ := claims["sub"].(string)
 	repositories := buildRepositories(req.Scope, pol, subject)
-	token, err := provider.GetInstallationToken(r.Context(), req.Scope, pol.Permissions, repositories, traceID)
+	token, instance, err := provider.GetInstallationToken(r.Context(), req.Scope, pol.Permissions, repositories, traceID)
 	if err != nil {
 		event.Result = audit.ResultGitHubError
 		event.ErrorReason = fmt.Sprintf("github token issuance failed: %v", err)
@@ -416,6 +427,7 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	jtiReserved = false
 
 	// Success.
+	event.Instance = instance
 	event.Result = audit.ResultSuccess
 	event.DurationMS = msSince(start)
 	h.emitResult(event, req, start)
@@ -430,7 +442,7 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // resolveApp determines which app provider to use.
-func (h *ExchangeHandler) resolveApp(requestedApp string) (string, *github.AppTokenProvider, error) {
+func (h *ExchangeHandler) resolveApp(requestedApp string) (string, InstallationTokenProvider, error) {
 	if requestedApp != "" {
 		provider, ok := h.appProviders[requestedApp]
 		if !ok {
@@ -457,12 +469,12 @@ func (h *ExchangeHandler) emitResult(event audit.Event, req ExchangeRequest, sta
 
 	result := string(event.Result)
 	metrics.TokenExchangesTotal.WithLabelValues(
-		event.AppName, req.Scope, req.Identity, event.Issuer, result,
+		event.AppName, event.Instance, req.Scope, req.Identity, event.Issuer, result,
 	).Inc()
 
 	if event.Result == audit.ResultSuccess {
 		metrics.TokenExchangeLatency.WithLabelValues(
-			event.AppName, req.Scope, req.Identity, event.Issuer,
+			event.AppName, event.Instance, req.Scope, req.Identity, event.Issuer,
 		).Observe(time.Since(start).Seconds())
 	}
 }

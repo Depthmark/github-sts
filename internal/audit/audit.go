@@ -40,10 +40,19 @@ const (
 
 // Event represents a single token exchange audit event.
 type Event struct {
-	Timestamp   time.Time      `json:"timestamp"`
-	TraceID     string         `json:"trace_id"`
-	Scope       string         `json:"scope"`
-	AppName     string         `json:"app"`
+	Timestamp time.Time `json:"timestamp"`
+	TraceID   string    `json:"trace_id"`
+	Scope     string    `json:"scope"`
+	AppName   string    `json:"app"`
+	// Instance is which physical pool member minted the token (design doc
+	// §5.4.1/§5.5) — the forensic hook for scoping an incident to one
+	// credential (e.g. "grep instance=checkout-2" if that key is suspected
+	// compromised) instead of the whole logical app. Empty on any failed
+	// exchange: ErrorReason already carries the failure detail, and for a
+	// pool-exhaustion failure naming one arbitrary tried instance out of
+	// several that all failed would misleadingly suggest it was uniquely
+	// implicated.
+	Instance    string         `json:"instance,omitempty"`
 	Identity    string         `json:"identity"`
 	Issuer      string         `json:"issuer"`
 	Subject     string         `json:"subject"`
@@ -153,6 +162,7 @@ func (fl *FileLogger) writer() {
 				"trace_id", event.TraceID,
 				"scope", event.Scope,
 				"app", event.AppName,
+				"instance", event.Instance,
 				"identity", event.Identity,
 				"issuer", event.Issuer,
 				"subject", event.Subject,

@@ -3,17 +3,26 @@ package handler
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/depthmark/github-sts/internal/audit"
-	gh "github.com/depthmark/github-sts/internal/github"
+	"github.com/depthmark/github-sts/internal/github"
+	"github.com/depthmark/github-sts/internal/oidc"
 	"github.com/depthmark/github-sts/internal/policy"
+	"github.com/golang-jwt/jwt/v5"
 )
 
 // mockJTICache implements jti.Cache for testing.
@@ -73,7 +82,7 @@ func newTestHandler(jtiNew bool, jtiErr error, pol *policy.TrustPolicy, polErr e
 	h := &ExchangeHandler{
 		jtiCache:       &mockJTICache{isNew: jtiNew, reserveErr: jtiErr},
 		policyLoader:   &mockPolicyLoader{pol: pol, err: polErr},
-		appProviders:   map[string]*gh.AppTokenProvider{},
+		appProviders:   map[string]InstallationTokenProvider{},
 		allowedIssuers: []string{},
 		auditLogger:    al,
 	}
@@ -179,7 +188,7 @@ func TestExchange_MultiAppWithoutParam(t *testing.T) {
 	h := &ExchangeHandler{
 		jtiCache:     &mockJTICache{isNew: true},
 		policyLoader: &mockPolicyLoader{},
-		appProviders: map[string]*gh.AppTokenProvider{
+		appProviders: map[string]InstallationTokenProvider{
 			"app1": nil,
 			"app2": nil,
 		},
@@ -195,7 +204,7 @@ func TestExchange_MultiAppWithoutParam(t *testing.T) {
 
 func TestResolveApp_SingleApp(t *testing.T) {
 	h := &ExchangeHandler{
-		appProviders: map[string]*gh.AppTokenProvider{
+		appProviders: map[string]InstallationTokenProvider{
 			"default": nil,
 		},
 	}
@@ -210,7 +219,7 @@ func TestResolveApp_SingleApp(t *testing.T) {
 
 func TestResolveApp_UnknownApp(t *testing.T) {
 	h := &ExchangeHandler{
-		appProviders: map[string]*gh.AppTokenProvider{
+		appProviders: map[string]InstallationTokenProvider{
 			"default": nil,
 		},
 	}
@@ -496,6 +505,187 @@ func TestExchange_ValidScopeChars(t *testing.T) {
 
 	if w.Code != http.StatusForbidden {
 		t.Errorf("status = %d, want %d (should fail at auth, not validation)", w.Code, http.StatusForbidden)
+	}
+}
+
+// --- End-to-end exchange flow over a 2-instance AppPool ---
+//
+// Everything else in this file mocks the app provider (resolveApp is
+// exercised in isolation). This exercises the real *github.AppPool wired in
+// the way server.go wires it, with a real OIDC-validated token, to prove
+// the exchange still succeeds when the first instance a request lands on
+// always 403s, and that the response/audit event correctly attribute the
+// success to whichever instance actually served it (design doc §5.4.1).
+
+// oidcTestProvider stands up a mock OIDC discovery+JWKS endpoint and can
+// sign tokens against it.
+type oidcTestProvider struct {
+	key *rsa.PrivateKey
+	srv *httptest.Server
+}
+
+func newOIDCTestProvider(t *testing.T) *oidcTestProvider {
+	t.Helper()
+	oidc.ResetCacheForTesting()
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generating RSA key: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"jwks_uri": fmt.Sprintf("http://%s/jwks", r.Host),
+		})
+	})
+	mux.HandleFunc("/jwks", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"keys": []map[string]string{{
+				"kty": "RSA",
+				"kid": "test-kid-1",
+				"n":   base64.RawURLEncoding.EncodeToString(key.N.Bytes()),
+				"e":   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(key.E)).Bytes()),
+			}},
+		})
+	})
+
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return &oidcTestProvider{key: key, srv: srv}
+}
+
+func (p *oidcTestProvider) sign(t *testing.T, claims jwt.MapClaims) string {
+	t.Helper()
+	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	tok.Header["kid"] = "test-kid-1"
+	signed, err := tok.SignedString(p.key)
+	if err != nil {
+		t.Fatalf("signing token: %v", err)
+	}
+	return signed
+}
+
+// newGitHubInstanceServer returns a mock GitHub API server that resolves
+// any installation lookup to installationID and delegates token-minting
+// requests to tokenHandler.
+func newGitHubInstanceServer(installationID int64, tokenHandler http.HandlerFunc) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/installation"):
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]int64{"id": installationID})
+		case strings.Contains(r.URL.Path, "/access_tokens"):
+			tokenHandler(w, r)
+		}
+	}))
+}
+
+func TestExchange_TwoInstancePool_FailsOverAndAttributesInstance(t *testing.T) {
+	oidcProvider := newOIDCTestProvider(t)
+
+	var failCalls int32
+	failSrv := newGitHubInstanceServer(1, func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&failCalls, 1)
+		w.Header().Set("X-RateLimit-Remaining", "0")
+		w.WriteHeader(http.StatusForbidden)
+	})
+	defer failSrv.Close()
+	okSrv := newGitHubInstanceServer(1, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]string{"token": "ghs_from_checkout_2"})
+	})
+	defer okSrv.Close()
+
+	newMember := func(instance, apiURL string) github.PoolMember {
+		key, err := rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			t.Fatalf("generating RSA key: %v", err)
+		}
+		return github.PoolMember{
+			Instance: instance,
+			Provider: github.NewAppTokenProvider("checkout", instance, 1, key, apiURL, nil),
+		}
+	}
+	// Ring index 1 (the first candidate a fresh pool's cursor lands on) is
+	// checkout-1, so this exercises a real failover to checkout-2 whenever
+	// the ring starts there.
+	pool := github.NewAppPool("checkout",
+		[]github.PoolMember{
+			newMember("checkout-2", okSrv.URL),
+			newMember("checkout-1", failSrv.URL),
+		},
+		"round_robin", 0, 2, nil,
+	)
+
+	pol := &policy.TrustPolicy{
+		Issuer:      oidcProvider.srv.URL,
+		Audience:    "test-audience",
+		Permissions: map[string]string{"contents": "read"},
+	}
+
+	al := &recordingAuditLogger{}
+	h := NewExchangeHandler(
+		&mockJTICache{isNew: true},
+		&mockPolicyLoader{pol: pol},
+		map[string]InstallationTokenProvider{"checkout": pool},
+		[]string{oidcProvider.srv.URL},
+		"",
+		al,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		false,
+	)
+
+	sawFailover := false
+	for i := 0; i < 2; i++ {
+		now := time.Now()
+		token := oidcProvider.sign(t, jwt.MapClaims{
+			"iss": oidcProvider.srv.URL,
+			"sub": "repo:myorg/myrepo:ref:refs/heads/main",
+			"aud": "test-audience",
+			"exp": now.Add(10 * time.Minute).Unix(),
+			"iat": now.Unix(),
+			"jti": fmt.Sprintf("test-jti-%d", i),
+		})
+
+		req := httptest.NewRequest(http.MethodGet, "/sts/exchange?scope=myorg/myrepo&identity=ci&app=checkout", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("call %d: status = %d, body = %s", i, w.Code, w.Body.String())
+		}
+
+		var resp ExchangeResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("call %d: decoding response: %v", i, err)
+		}
+		if resp.Token != "ghs_from_checkout_2" {
+			t.Errorf("call %d: token = %q, want ghs_from_checkout_2 (must always resolve to the succeeding instance)", i, resp.Token)
+		}
+		if resp.App != "checkout" {
+			t.Errorf("call %d: app = %q, want checkout (the logical name, never an instance)", i, resp.App)
+		}
+
+		event := al.lastEvent()
+		if event.Result != audit.ResultSuccess {
+			t.Errorf("call %d: audit result = %q, want success", i, event.Result)
+		}
+		if event.Instance != "checkout-2" {
+			t.Errorf("call %d: audit instance = %q, want checkout-2", i, event.Instance)
+		}
+		if event.AppName != "checkout" {
+			t.Errorf("call %d: audit app = %q, want checkout", i, event.AppName)
+		}
+
+		if atomic.LoadInt32(&failCalls) > 0 {
+			sawFailover = true
+		}
+	}
+
+	if !sawFailover {
+		t.Fatal("checkout-1 was never tried across 2 calls — this test never actually exercised failover")
 	}
 }
 

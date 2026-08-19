@@ -59,6 +59,31 @@ apps:
   #   private_key_path: "/etc/github-sts/keys/deploy-bot.pem"
   #   org_policy_repo: ".github"
 
+  # Example: a logical app backed by a pool of physical GitHub Apps, for
+  # spreading /sts/exchange traffic (and its downstream API calls) across
+  # multiple independent GitHub primary rate-limit buckets. github-sts
+  # round-robins across instances and fails over around one that's
+  # exhausted or unreachable — callers only ever see the logical name
+  # ("checkout"), never which instance served a given request.
+  # checkout:
+  #   org_policy_repo: ".github"
+  #   instances:
+  #     - name: checkout-1          # optional; defaults to app_id if omitted
+  #       app_id: 111111
+  #       private_key_path: "/etc/github-sts/keys/checkout-1.pem"
+  #     - name: checkout-2
+  #       app_id: 222222
+  #       private_key_path: "/etc/github-sts/keys/checkout-2.pem"
+  #     - name: checkout-3
+  #       app_id: 333333
+  #       private_key_path: "/etc/github-sts/keys/checkout-3.pem"
+  #   rotation:
+  #     strategy: round_robin        # round_robin (default) | rate_limit_aware
+  #     min_remaining_pct: 5         # rate_limit_aware only
+  #     max_attempts: 3              # bound failover fan-out per request
+  #   # All instances must be installed with identical permissions and
+  #   # repository access — they're interchangeable by construction.
+
 # OIDC token validation
 oidc:
   allowed_issuers:                   # At least one issuer is required

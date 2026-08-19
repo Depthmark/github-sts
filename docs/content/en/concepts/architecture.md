@@ -235,8 +235,53 @@ config/examples/          Ready-to-use trust policy templates
 
 Installation tokens themselves are not cached; each exchange mints a fresh token.
 
+## App pools and failover
+
+A logical app name can be backed by a pool of several physical GitHub Apps (`apps.<name>.instances`) instead of one, so the effective GitHub primary rate-limit ceiling for that app scales with the number of instances. See [Configuration]({{< relref "/reference/configuration#app-pools-multi-instance-rate-limit-rotation" >}}) for the schema. A single-instance app is, internally, a pool of one: every app goes through the same selection path, so there is no separate code path to fall out of sync.
+
+An "instance" here is one physical GitHub App inside one logical app's pool, not a github-sts server replica. The two are unrelated: a pool exists independently of how many github-sts replicas are running, and each replica selects across the same configured pool. See [Multi-replica considerations](#multi-replica-considerations) below for the replica concept.
+
+```mermaid
+flowchart TD
+    A["Request arrives for app 'checkout'"]
+    B["Advance pool cursor,<br/>build ring order"]
+    C{"Reachability prober:<br/>any candidate reachable?"}
+    D["Filter out instances<br/>reported unreachable"]
+    E["Try next candidate<br/>in ring order"]
+    F{"Result"}
+    G["Return token +<br/>instance label"]
+    H{"Error retryable?<br/>(network/5xx/rate-limited)"}
+    I["Return error<br/>(no failover)"]
+    J{"max_attempts<br/>reached?"}
+    K["githubsts_app_pool_exhausted_total++"]
+
+    A --> B --> C
+    C -->|yes| D
+    C -->|no, all look down| E
+    D --> E
+    E --> F
+    F -->|success| G
+    F -->|failure| H
+    H -->|no| I
+    H -->|yes| J
+    J -->|no| E
+    J -->|yes| K
+```
+
+Per request, `AppPool`:
+
+1. Advances a shared cursor and builds a ring starting from it, so a request's own retries walk consecutive members instead of re-randomizing.
+2. Drops any candidate the reachability prober currently reports unreachable, unless that would drop every candidate, in which case it tries the unfiltered ring anyway. A live failure is authoritative; a locally-cached "probably down" is not.
+3. Tries candidates in order. On success, returns the token and the serving instance's label. On a retryable failure (network/timeout, 5xx, or a 403 carrying a rate-limit signal), it moves to the next candidate, up to `rotation.max_attempts`. On a non-retryable failure (422 permission/repository mismatch, or any other unclassified error), it returns immediately: a different credential cannot fix a permissions problem.
+4. If every tried candidate fails, the request fails and `githubsts_app_pool_exhausted_total` increments. That's the metric worth alerting on, since any single instance's rate-limit gauge dropping doesn't by itself mean requests are failing.
+
+Callers never see which instance served a request; it appears only in the `instance` label on metrics and in the audit log (empty on a failed exchange, since naming one arbitrarily-tried instance out of several that all failed would misleadingly suggest it was uniquely at fault).
+
+The default `rotation.strategy` is `round_robin`, not a rate-limit-aware ranking, deliberately: with R replicas sharing one pool, any single replica's view of an instance's remaining rate limit reflects only the roughly `1/R` slice of traffic it personally routed there, and that blind spot gets worse, not better, as replica count grows. The baseline reachability filter above doesn't have this problem: each replica derives it from its own periodic probe against GitHub's API, not from request traffic, so it stays accurate regardless of replica count. `rate_limit_aware` is accepted as a config value but not yet implemented (github-sts logs a startup warning if it's set); a pool configured with it currently behaves exactly like `round_robin`.
+
 ## Multi-replica considerations
 
 - Use `GITHUBSTS_JTI_BACKEND=redis` so JTI replay protection is shared across instances. With `memory`, an attacker who reaches a different replica can replay an OIDC token.
 - Trust policy cache is per-instance; instances may briefly serve different policies after a `.sts.yaml` change. Lower `GITHUBSTS_POLICY_CACHE_TTL` if this matters.
 - `/ready` returns `503` with `{"ready":false}` while the server is not yet serving and `200` with `{"ready":true}` once it is; use it for load balancer health checks.
+- App pool reachability state (used for the baseline liveness filter above) is also per-replica, but unlike the rate-limit-aware strategy, this isn't a meaningful blind spot; see the reasoning above.
