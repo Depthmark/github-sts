@@ -89,7 +89,7 @@ curl -H "Authorization: Bearer $OIDC_TOKEN" \
 
 The `ghs_…` token is a standard GitHub App installation token, scoped to the resolved target
 repository ID and the permissions the policy declared. For a drop-in wrapper around this exchange in Actions, see
-[Use the GitHub Action](../../integrations/use-github-action/). The manual `curl` form above works
+[the GitHub Action quickstart]({{< relref "/integrations/github-action/quickstart" >}}). The manual `curl` form above works
 from any CI system that can produce an OIDC token.
 
 ## Security checklist

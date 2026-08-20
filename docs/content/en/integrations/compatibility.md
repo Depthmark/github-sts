@@ -11,7 +11,7 @@ This page documents verified combinations of github-sts, github-sts-helm, and gi
 
 | github-sts | github-sts-helm | github-sts-action | End-to-end test | Status |
 |---|---|---|---|---|
-| `v0.0.3` | `v0.1.0` | `v0.1.0` | Pending | **Supported** |
+| `v0.0.3` | `v0.1.0` | `v0.2.0` | Pending | **Supported** |
 
 Rows marked **Supported** have passed the end-to-end integration test: Helm install, trust policy evaluation, token exchange, and job-end verification.
 
@@ -58,6 +58,6 @@ Results are published in the [github-sts-helm](https://github.com/Depthmark/gith
 
 ## Ecosystem links
 
-- **github-sts Helm chart:** <https://depthmark.github.io/github-sts-helm/>
-- **github-sts Action documentation:** <https://depthmark.github.io/github-sts-action/>
+- **github-sts Helm chart:** <https://github.com/Depthmark/github-sts-helm>
+- **github-sts Action documentation:** [GitHub Action]({{< relref "/integrations/github-action" >}}) (published in this site from the action repository)
 - **github-sts Action marketplace:** <https://github.com/marketplace/actions/github-sts>

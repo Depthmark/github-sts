@@ -147,3 +147,35 @@ img[src*="logo.svg"] { height: 2.25rem; width: auto; }
   display: flex; justify-content: space-between; flex-wrap: wrap; gap: .5rem;
   font-size: .75rem; color: var(--gg-sub);
 }
+
+/* ---------------------------------------------------------------------------
+   Navbar utilities: search, theme toggle, language switch
+   --------------------------------------------------------------------------- */
+
+/* Hextra sizes the navbar search with hx:md:w-64, but between md and lg the
+   seven section links plus the two toggles leave it no room and flex shrinks it
+   to a few pixels. Below lg the left sidebar already lists every section, so
+   the section links are redundant there: hide them and let search keep its
+   width. */
+@media (min-width: 768px) and (max-width: 1023.98px) {
+  .hextra-nav-container nav > a[href]:not(:first-child) { display: none; }
+}
+
+.hextra-search-wrapper { flex: 0 0 auto; min-width: 12rem; }
+@media (max-width: 767.98px) {
+  /* Search on small screens lives in the sidebar drawer, not the navbar. */
+  .hextra-nav-container .hextra-search-wrapper { display: none; }
+}
+
+/* WCAG 2.2 AA 2.5.8 Target Size (Minimum): the sidebar section chevrons render
+   at 18x18. Pad the hit area to 24x24 without changing the glyph. */
+.hextra-sidebar-collapsible-button {
+  min-width: 24px;
+  min-height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Landing hero badges wrap instead of overflowing on narrow screens. */
+.gg-hero__badges { flex-wrap: wrap; justify-content: center; }

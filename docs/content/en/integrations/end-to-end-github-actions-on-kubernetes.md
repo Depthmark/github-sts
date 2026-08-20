@@ -71,7 +71,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - uses: Depthmark/github-sts-action@v0.1.0
+      - uses: Depthmark/github-sts-action@v0.2.0
         id: sts
         with:
           sts-url: https://sts.example.com
@@ -79,10 +79,11 @@ jobs:
           scope: ${{ github.repository }}
           identity: ci
 
-      - name: Verify token
+      - name: Verify the exchange
         run: |
-          echo "Scope: ${{ steps.sts.outputs.scope }}"
-          echo "Permissions: ${{ steps.sts.outputs.permissions }}"
+          # token is registered as a secret, so it prints as *** in the log.
+          # Testing that it is non-empty still works.
+          test -n "${{ steps.sts.outputs.token }}" && echo "Token received"
 
       - name: Use the token
         run: |
@@ -167,5 +168,5 @@ See [Troubleshooting]({{< relref "/operations/troubleshooting" >}}) for the comp
 ## Next
 
 - [Compatibility]({{< relref "/integrations/compatibility" >}}): verified component combinations
-- [Use the GitHub Action]({{< relref "/integrations/use-github-action" >}}): action input/output reference
+- [Action inputs and outputs]({{< relref "/integrations/github-action/reference" >}}): every input and output, with defaults and validation rules
 - [Deploy with Helm]({{< relref "/integrations/deploy-with-helm" >}}): complete Helm values reference

@@ -160,7 +160,7 @@ Or via the Go client:
 err := client.RevokeToken(ctx, token, "https://api.github.com")
 ```
 
-When you use the `github-sts-action`, the token is revoked automatically at the end of the job. See [Use the GitHub Action]({{< relref "/integrations/use-github-action" >}}) for details.
+When you use the `github-sts-action`, the token is revoked automatically at the end of the job. See [Job Lifecycle]({{< relref "/integrations/github-action/job-lifecycle" >}}) for details.
 
 ## Health & Readiness
 

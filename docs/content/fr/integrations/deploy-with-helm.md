@@ -110,6 +110,6 @@ Pour la référence complète des valeurs, consultez le [README de github-sts-he
 
 ## Suivant
 
-- [Utiliser la GitHub Action]({{< relref "/integrations/use-github-action" >}}): intégrez l'action dans vos workflows
+- [Démarrage rapide de la GitHub Action]({{< relref "/integrations/github-action/quickstart" >}}) : intégrez l'action dans vos workflows
 - [De bout en bout sur Kubernetes]({{< relref "/integrations/end-to-end-github-actions-on-kubernetes" >}}): procédure complète
 - [Compatibilité]({{< relref "/integrations/compatibility" >}}): combinaisons de composants vérifiées

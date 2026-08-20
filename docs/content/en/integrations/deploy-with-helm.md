@@ -109,6 +109,6 @@ For the complete values reference, see the [github-sts-helm README](https://gith
 
 ## Next
 
-- [Use the GitHub Action]({{< relref "/integrations/use-github-action" >}}): integrate the action in your workflows
+- [GitHub Action quickstart]({{< relref "/integrations/github-action/quickstart" >}}): integrate the action in your workflows
 - [End-to-End on Kubernetes]({{< relref "/integrations/end-to-end-github-actions-on-kubernetes" >}}): complete walkthrough
 - [Compatibility]({{< relref "/integrations/compatibility" >}}): verified component combinations
