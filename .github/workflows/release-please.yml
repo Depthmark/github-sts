@@ -11,26 +11,25 @@ permissions: {}
 jobs:
   release-please:
     name: Release Please
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
     permissions:
       contents: write
-      issues: write
       pull-requests: write
       id-token: write
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
-      - uses: Depthmark/github-sts-action@main
+      - uses: Depthmark/github-sts-action@11e9b4095d2f3033d0ee7e82bb9ac6a7bcbc9b48 # v0.2.0
         id: sts
         with:
-          sts-url: https://github-sts-dev.adelisle.com
+          sts-url: https://github-sts.adelisle.com
           scope: Depthmark/github-sts
           identity: release
           app: depthmark-release-bot
       - name: Run Release Please
         id: release
-        uses: googleapis/release-please-action@16a9c90856f42705d54a6fda1823352bdc62cf38 # v4.4.0
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json

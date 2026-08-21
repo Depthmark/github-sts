@@ -12,18 +12,22 @@ import (
 	"time"
 
 	"github.com/depthmark/github-sts/internal/audit"
+	"github.com/depthmark/github-sts/internal/bundle"
 	gh "github.com/depthmark/github-sts/internal/github"
+	"github.com/depthmark/github-sts/internal/oidc"
 	"github.com/depthmark/github-sts/internal/policy"
 )
 
 // mockJTICache implements jti.Cache for testing.
 type mockJTICache struct {
-	isNew      bool
-	reserveErr error
-	releaseErr error
+	isNew        bool
+	reserveErr   error
+	releaseErr   error
+	reserveCalls int
 }
 
 func (m *mockJTICache) Reserve(_ context.Context, _ string, _ time.Time) (bool, error) {
+	m.reserveCalls++
 	return m.isNew, m.reserveErr
 }
 
@@ -33,17 +37,57 @@ func (m *mockJTICache) Release(_ context.Context, _ string) error {
 
 // mockPolicyLoader implements policy.Loader for testing.
 type mockPolicyLoader struct {
-	pol *policy.TrustPolicy
-	err error
+	pol       *policy.TrustPolicy
+	err       error
+	loadCalls int
+	last      policy.LoadRequest
 }
 
-func (m *mockPolicyLoader) Load(_ context.Context, _, _, _ string) (*policy.TrustPolicy, error) {
+func (m *mockPolicyLoader) Load(_ context.Context, request policy.LoadRequest) (*policy.TrustPolicy, error) {
+	m.loadCalls++
+	m.last = request
 	return m.pol, m.err
 }
 
-// mockAppTokenProvider wraps github.AppTokenProvider for testing.
-// We can't easily mock github.AppTokenProvider since it's a struct,
-// so we test via the handler's integration with httptest servers.
+type mockExchangeApp struct {
+	target       gh.TargetIdentity
+	resolveErr   error
+	token        string
+	mintErr      error
+	resolveCalls int
+	mintCalls    int
+	lastScope    gh.RepositoryScope
+	lastTarget   gh.TargetIdentity
+	lastPerms    map[string]string
+}
+
+func (m *mockExchangeApp) ResolveTarget(_ context.Context, scope gh.RepositoryScope) (gh.TargetIdentity, error) {
+	m.resolveCalls++
+	m.lastScope = scope
+	if m.resolveErr != nil {
+		return gh.TargetIdentity{}, m.resolveErr
+	}
+	if m.target.Scope == "" {
+		return gh.TargetIdentity{
+			Scope: scope.String(), Owner: scope.Owner, OwnerID: "1001",
+			Repository: scope.Repository, RepositoryID: "2002",
+		}, nil
+	}
+	return m.target, nil
+}
+
+func (m *mockExchangeApp) GetInstallationTokenForTarget(_ context.Context, target gh.TargetIdentity, permissions map[string]string, _ string) (string, error) {
+	m.mintCalls++
+	m.lastTarget = target
+	m.lastPerms = permissions
+	if m.mintErr != nil {
+		return "", m.mintErr
+	}
+	if m.token == "" {
+		return "ghs_test", nil
+	}
+	return m.token, nil
+}
 
 // recordingAuditLogger captures audit events for assertion.
 type recordingAuditLogger struct {
@@ -71,11 +115,12 @@ func (r *recordingAuditLogger) lastEvent() audit.Event {
 func newTestHandler(jtiNew bool, jtiErr error, pol *policy.TrustPolicy, polErr error) (*ExchangeHandler, *recordingAuditLogger) {
 	al := &recordingAuditLogger{}
 	h := &ExchangeHandler{
-		jtiCache:       &mockJTICache{isNew: jtiNew, reserveErr: jtiErr},
-		policyLoader:   &mockPolicyLoader{pol: pol, err: polErr},
-		appProviders:   map[string]*gh.AppTokenProvider{},
-		allowedIssuers: []string{},
-		auditLogger:    al,
+		jtiCache:                      &mockJTICache{isNew: jtiNew, reserveErr: jtiErr},
+		policyLoader:                  &mockPolicyLoader{pol: pol, err: polErr},
+		appProviders:                  map[string]gh.ExchangeApp{},
+		allowedIssuers:                []string{},
+		requireImmutableSubjectClaims: true,
+		auditLogger:                   al,
 	}
 	return h, al
 }
@@ -132,6 +177,304 @@ func TestExchange_InvalidAuth(t *testing.T) {
 	}
 }
 
+func TestExchange_GitHubIdentityInvalidBeforeStateOrPolicy(t *testing.T) {
+	jtiCache := &mockJTICache{isNew: true}
+	loader := &mockPolicyLoader{}
+	al := &recordingAuditLogger{}
+	h := &ExchangeHandler{
+		jtiCache:                      jtiCache,
+		policyLoader:                  loader,
+		appProviders:                  map[string]gh.ExchangeApp{},
+		allowedIssuers:                []string{oidc.GitHubActionsIssuer},
+		requireImmutableSubjectClaims: true,
+		auditLogger:                   al,
+		validator: func(_ context.Context, _ string, _ []string) (oidc.Claims, error) {
+			return oidc.Claims{
+				"iss":                 oidc.GitHubActionsIssuer,
+				"sub":                 "repo:org/repo:ref:refs/heads/main",
+				"repository":          "org/repo",
+				"repository_owner":    "org",
+				"repository_id":       "2002",
+				"repository_owner_id": "1001",
+			}, nil
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/sts/exchange?scope=org/repo&identity=ci", nil)
+	req.Header.Set("Authorization", "Bearer validator-accepts")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", w.Code)
+	}
+	var resp ErrorResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Code != CodeGitHubIdentityInvalid {
+		t.Fatalf("code = %q, want %q", resp.Code, CodeGitHubIdentityInvalid)
+	}
+	if jtiCache.reserveCalls != 0 {
+		t.Fatalf("JTI Reserve calls = %d, want 0", jtiCache.reserveCalls)
+	}
+	if loader.loadCalls != 0 {
+		t.Fatalf("policy Load calls = %d, want 0", loader.loadCalls)
+	}
+	event := al.lastEvent()
+	if event.ImmutableSubjectRequired == nil || !*event.ImmutableSubjectRequired {
+		t.Fatalf("audit immutable_subject_required = %v, want true", event.ImmutableSubjectRequired)
+	}
+}
+
+func TestExchange_LegacySubjectOptOutStillRequiresIDs(t *testing.T) {
+	jtiCache := &mockJTICache{isNew: true}
+	loader := &mockPolicyLoader{}
+	al := &recordingAuditLogger{}
+	h := &ExchangeHandler{
+		jtiCache:                      jtiCache,
+		policyLoader:                  loader,
+		appProviders:                  map[string]gh.ExchangeApp{},
+		allowedIssuers:                []string{oidc.GitHubActionsIssuer},
+		requireImmutableSubjectClaims: false,
+		auditLogger:                   al,
+		validator: func(_ context.Context, _ string, _ []string) (oidc.Claims, error) {
+			return oidc.Claims{
+				"iss":              oidc.GitHubActionsIssuer,
+				"sub":              "repo:org/repo:ref:refs/heads/main",
+				"repository":       "org/repo",
+				"repository_owner": "org",
+			}, nil
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/sts/exchange?scope=org/repo&identity=ci", nil)
+	req.Header.Set("Authorization", "Bearer validator-accepts")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	var resp ErrorResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Code != CodeGitHubIdentityInvalid {
+		t.Fatalf("code = %q, want %q", resp.Code, CodeGitHubIdentityInvalid)
+	}
+	if jtiCache.reserveCalls != 0 || loader.loadCalls != 0 {
+		t.Fatalf("invalid legacy identity reached state or policy: reserve=%d load=%d", jtiCache.reserveCalls, loader.loadCalls)
+	}
+	event := al.lastEvent()
+	if event.ImmutableSubjectRequired == nil || *event.ImmutableSubjectRequired {
+		t.Fatalf("audit immutable_subject_required = %v, want false", event.ImmutableSubjectRequired)
+	}
+}
+
+func TestExchange_LegacySubjectOptOutWithIDsPassesIdentityValidation(t *testing.T) {
+	jtiCache := &mockJTICache{isNew: true}
+	al := &recordingAuditLogger{}
+	h := &ExchangeHandler{
+		jtiCache:                      jtiCache,
+		policyLoader:                  &mockPolicyLoader{},
+		appProviders:                  map[string]gh.ExchangeApp{},
+		allowedIssuers:                []string{oidc.GitHubActionsIssuer},
+		requireImmutableSubjectClaims: false,
+		auditLogger:                   al,
+		validator: func(_ context.Context, _ string, _ []string) (oidc.Claims, error) {
+			return oidc.Claims{
+				"iss":                 oidc.GitHubActionsIssuer,
+				"sub":                 "repo:org/repo:ref:refs/heads/main",
+				"repository":          "org/repo",
+				"repository_owner":    "org",
+				"repository_id":       "2002",
+				"repository_owner_id": "1001",
+				"jti":                 "legacy-valid",
+			}, nil
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/sts/exchange?scope=org/repo&identity=ci", nil)
+	req.Header.Set("Authorization", "Bearer validator-accepts")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if jtiCache.reserveCalls != 1 {
+		t.Fatalf("JTI Reserve calls = %d, want 1 after valid identity", jtiCache.reserveCalls)
+	}
+	event := al.lastEvent()
+	if event.SourceRepositoryID != "2002" || event.SourceRepositoryOwnerID != "1001" {
+		t.Fatalf("audit source identity missing: %+v", event)
+	}
+	if event.ImmutableSubject == nil || *event.ImmutableSubject {
+		t.Fatalf("audit immutable_subject = %v, want false", event.ImmutableSubject)
+	}
+	if event.ImmutableSubjectRequired == nil || *event.ImmutableSubjectRequired {
+		t.Fatalf("audit immutable_subject_required = %v, want false", event.ImmutableSubjectRequired)
+	}
+}
+
+func TestExchange_ExactSourceToTargetRelationship(t *testing.T) {
+	app := &mockExchangeApp{target: gh.TargetIdentity{
+		Scope: "org/target", Owner: "org", OwnerID: "1001", Repository: "target", RepositoryID: "3001",
+	}}
+	loader := &mockPolicyLoader{pol: validExchangePolicy("2001", "3001")}
+	al := &recordingAuditLogger{}
+	h := authorizedExchangeHandler(app, loader, al)
+
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, authorizedExchangeRequest())
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	if app.resolveCalls != 1 || app.mintCalls != 1 {
+		t.Fatalf("resolve calls=%d mint calls=%d, want 1 each", app.resolveCalls, app.mintCalls)
+	}
+	if app.lastTarget.RepositoryID != "3001" {
+		t.Fatalf("mint target = %+v", app.lastTarget)
+	}
+	if loader.last.TargetOwnerID != "1001" || loader.last.TargetRepositoryID != "3001" || loader.last.Scope != "org/target" {
+		t.Fatalf("policy load request = %+v", loader.last)
+	}
+	event := al.lastEvent()
+	if event.TargetRepositoryOwnerID != "1001" || event.TargetRepositoryID != "3001" || event.TargetRepository != "org/target" {
+		t.Fatalf("audit target identity missing: %+v", event)
+	}
+}
+
+func TestExchange_SourceRelationshipMismatchDeniesBeforeMint(t *testing.T) {
+	app := &mockExchangeApp{target: gh.TargetIdentity{
+		Scope: "org/target", Owner: "org", OwnerID: "1001", Repository: "target", RepositoryID: "3001",
+	}}
+	loader := &mockPolicyLoader{pol: validExchangePolicy("9999", "3001")}
+	h := authorizedExchangeHandler(app, loader, &recordingAuditLogger{})
+
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, authorizedExchangeRequest())
+
+	assertErrorCode(t, w, http.StatusForbidden, CodePolicyDenied)
+	if app.mintCalls != 0 {
+		t.Fatalf("mint calls = %d, want 0", app.mintCalls)
+	}
+}
+
+func TestExchange_TargetRelationshipMismatchDeniesBeforeMint(t *testing.T) {
+	app := &mockExchangeApp{target: gh.TargetIdentity{
+		Scope: "org/target", Owner: "org", OwnerID: "1001", Repository: "target", RepositoryID: "3001",
+	}}
+	loader := &mockPolicyLoader{pol: validExchangePolicy("2001", "9999")}
+	h := authorizedExchangeHandler(app, loader, &recordingAuditLogger{})
+
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, authorizedExchangeRequest())
+
+	assertErrorCode(t, w, http.StatusForbidden, CodePolicyDenied)
+	if app.mintCalls != 0 {
+		t.Fatalf("mint calls = %d, want 0", app.mintCalls)
+	}
+}
+
+func TestExchange_SourceRenamePreservingIDsAllows(t *testing.T) {
+	app := &mockExchangeApp{target: gh.TargetIdentity{
+		Scope: "org/target", Owner: "org", OwnerID: "1001", Repository: "target", RepositoryID: "3001",
+	}}
+	h := authorizedExchangeHandler(app, &mockPolicyLoader{pol: validExchangePolicy("2001", "3001")}, &recordingAuditLogger{})
+	h.validator = func(_ context.Context, _ string, _ []string) (oidc.Claims, error) {
+		return oidc.Claims{
+			"iss": oidc.GitHubActionsIssuer,
+			"sub": "repo:renamed-org@1001/renamed-source@2001:ref:refs/heads/main",
+			"aud": "https://example.test/sts", "jti": "renamed-source-jti", "ref": "refs/heads/main",
+			"repository": "renamed-org/renamed-source", "repository_owner": "renamed-org",
+			"repository_id": "2001", "repository_owner_id": "1001",
+		}, nil
+	}
+
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, authorizedExchangeRequest())
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	if app.mintCalls != 1 {
+		t.Fatalf("mint calls = %d, want 1", app.mintCalls)
+	}
+}
+
+func TestExchange_InvalidTrustPolicyHasDistinctCode(t *testing.T) {
+	app := &mockExchangeApp{target: gh.TargetIdentity{
+		Scope: "org/target", Owner: "org", OwnerID: "1001", Repository: "target", RepositoryID: "3001",
+	}}
+	loader := &mockPolicyLoader{pol: &policy.TrustPolicy{
+		Issuer: oidc.GitHubActionsIssuer, Subject: authorizedSubject,
+		Audience: "https://example.test/sts", Permissions: map[string]string{"contents": "read"},
+	}}
+	al := &recordingAuditLogger{}
+	h := authorizedExchangeHandler(app, loader, al)
+
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, authorizedExchangeRequest())
+
+	assertErrorCode(t, w, http.StatusForbidden, CodeTrustPolicyInvalid)
+	if app.mintCalls != 0 {
+		t.Fatalf("mint calls = %d, want 0", app.mintCalls)
+	}
+	if al.lastEvent().Result != audit.ResultPolicyInvalid {
+		t.Fatalf("audit result = %q, want %q", al.lastEvent().Result, audit.ResultPolicyInvalid)
+	}
+}
+
+const authorizedSubject = "repo:org@1001/source@2001:ref:refs/heads/main"
+
+func authorizedExchangeHandler(app gh.ExchangeApp, loader *mockPolicyLoader, al *recordingAuditLogger) *ExchangeHandler {
+	return &ExchangeHandler{
+		jtiCache:                      &mockJTICache{isNew: true},
+		policyLoader:                  loader,
+		appProviders:                  map[string]gh.ExchangeApp{"test-app": app},
+		allowedIssuers:                []string{oidc.GitHubActionsIssuer},
+		requireImmutableSubjectClaims: true,
+		auditLogger:                   al,
+		bundleManager:                 bundle.Disabled{},
+		validator: func(_ context.Context, _ string, _ []string) (oidc.Claims, error) {
+			return oidc.Claims{
+				"iss": oidc.GitHubActionsIssuer, "sub": authorizedSubject,
+				"aud": "https://example.test/sts", "jti": "authorized-jti", "ref": "refs/heads/main",
+				"repository": "org/source", "repository_owner": "org",
+				"repository_id": "2001", "repository_owner_id": "1001",
+			}, nil
+		},
+	}
+}
+
+func authorizedExchangeRequest() *http.Request {
+	req := httptest.NewRequest(http.MethodGet, "/sts/exchange?scope=org/target&identity=ci&app=test-app", nil)
+	req.Header.Set("Authorization", "Bearer accepted")
+	return req
+}
+
+func validExchangePolicy(sourceRepositoryID, targetRepositoryID string) *policy.TrustPolicy {
+	return &policy.TrustPolicy{
+		Issuer: oidc.GitHubActionsIssuer, ClaimPattern: map[string]string{"ref": "refs/heads/main"},
+		Audience: "https://example.test/sts", Permissions: map[string]string{"contents": "read"},
+		GitHub: &policy.GitHubPolicy{
+			Sources: []policy.GitHubRepository{{OwnerID: "1001", RepositoryID: policy.GitHubID(sourceRepositoryID)}},
+			Target:  policy.GitHubRepository{OwnerID: "1001", RepositoryID: policy.GitHubID(targetRepositoryID)},
+		},
+	}
+}
+
+func assertErrorCode(t *testing.T, w *httptest.ResponseRecorder, status int, code string) {
+	t.Helper()
+	if w.Code != status {
+		t.Fatalf("status = %d, want %d; body=%s", w.Code, status, w.Body.String())
+	}
+	var resp ErrorResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Code != code {
+		t.Fatalf("code = %q, want %q", resp.Code, code)
+	}
+}
+
 func TestExchange_PostInvalidJSON(t *testing.T) {
 	h, _ := newTestHandler(true, nil, nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "/sts/exchange", bytes.NewBufferString("{invalid"))
@@ -179,7 +522,7 @@ func TestExchange_MultiAppWithoutParam(t *testing.T) {
 	h := &ExchangeHandler{
 		jtiCache:     &mockJTICache{isNew: true},
 		policyLoader: &mockPolicyLoader{},
-		appProviders: map[string]*gh.AppTokenProvider{
+		appProviders: map[string]gh.ExchangeApp{
 			"app1": nil,
 			"app2": nil,
 		},
@@ -195,7 +538,7 @@ func TestExchange_MultiAppWithoutParam(t *testing.T) {
 
 func TestResolveApp_SingleApp(t *testing.T) {
 	h := &ExchangeHandler{
-		appProviders: map[string]*gh.AppTokenProvider{
+		appProviders: map[string]gh.ExchangeApp{
 			"default": nil,
 		},
 	}
@@ -210,7 +553,7 @@ func TestResolveApp_SingleApp(t *testing.T) {
 
 func TestResolveApp_UnknownApp(t *testing.T) {
 	h := &ExchangeHandler{
-		appProviders: map[string]*gh.AppTokenProvider{
+		appProviders: map[string]gh.ExchangeApp{
 			"default": nil,
 		},
 	}
@@ -268,21 +611,21 @@ func TestAudienceMatches(t *testing.T) {
 	}
 }
 
-func TestBuildRepositories(t *testing.T) {
-	pol := &policy.TrustPolicy{
-		Repositories: []string{"repo1", "repo2"},
-	}
+func TestExchange_OrganizationScopeRejectedBeforeAuth(t *testing.T) {
+	h, _ := newTestHandler(true, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/sts/exchange?scope=org&identity=ci", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
 
-	// Repo-level scope.
-	repos := buildRepositories("org/myrepo", pol)
-	if len(repos) != 1 || repos[0] != "myrepo" {
-		t.Errorf("repo-level: got %v, want [myrepo]", repos)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", w.Code)
 	}
-
-	// Org-level scope.
-	repos = buildRepositories("org", pol)
-	if len(repos) != 2 {
-		t.Errorf("org-level: got %v, want [repo1 repo2]", repos)
+	var resp ErrorResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Code != CodeBadRequest {
+		t.Fatalf("code = %q, want %q", resp.Code, CodeBadRequest)
 	}
 }
 
@@ -366,10 +709,47 @@ func TestClaimExpiry(t *testing.T) {
 
 // Ensure ErrorResponse has the right JSON shape.
 func TestErrorResponse_JSON(t *testing.T) {
+	// code/trace_id are omitempty — bare error keeps the legacy shape.
 	resp := ErrorResponse{Error: "something failed"}
 	data, _ := json.Marshal(resp)
 	if string(data) != `{"error":"something failed"}` {
 		t.Errorf("unexpected JSON: %s", data)
+	}
+
+	// With code + trace_id populated.
+	resp = ErrorResponse{Error: "forbidden", Code: CodePolicyDenied, TraceID: "abc-123"}
+	data, _ = json.Marshal(resp)
+	want := `{"error":"forbidden","code":"policy_denied","trace_id":"abc-123"}`
+	if string(data) != want {
+		t.Errorf("unexpected JSON:\n got: %s\nwant: %s", data, want)
+	}
+}
+
+// TestErrorCodes_Stable pins the wire values of the public error codes.
+// These appear in operator runbooks; renaming them is a breaking change.
+func TestErrorCodes_Stable(t *testing.T) {
+	pairs := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{"CodeBadRequest", CodeBadRequest, "bad_request"},
+		{"CodeOIDCInvalid", CodeOIDCInvalid, "oidc_invalid"},
+		{"CodeGitHubIdentityInvalid", CodeGitHubIdentityInvalid, "github_identity_invalid"},
+		{"CodeAudienceMismatch", CodeAudienceMismatch, "audience_mismatch"},
+		{"CodeAppUnknown", CodeAppUnknown, "app_unknown"},
+		{"CodePolicyNotFound", CodePolicyNotFound, "policy_not_found"},
+		{"CodeTrustPolicyInvalid", CodeTrustPolicyInvalid, "trust_policy_invalid"},
+		{"CodePolicyDenied", CodePolicyDenied, "policy_denied"},
+		{"CodeMethodNotAllowed", CodeMethodNotAllowed, "method_not_allowed"},
+		{"CodeReplay", CodeReplay, "replay_detected"},
+		{"CodeInternal", CodeInternal, "internal_error"},
+		{"CodeUpstream", CodeUpstream, "upstream_error"},
+	}
+	for _, p := range pairs {
+		if p.got != p.want {
+			t.Errorf("%s = %q, want %q", p.name, p.got, p.want)
+		}
 	}
 }
 

@@ -1,0 +1,23 @@
+# Libellés de section
+[sectionGetStarted]
+other = "Démarrage"
+[sectionConcepts]
+other = "Concepts"
+[sectionIntegrations]
+other = "Intégrations"
+[sectionIssuers]
+other = "Émetteurs OIDC"
+[sectionOperations]
+other = "Exploitation"
+[sectionReference]
+other = "Référence"
+[sectionResources]
+other = "Ressources"
+
+# Bannière d'environnement
+[envLocalTitle]
+other = "Développement local uniquement, pas pour la production"
+[envLocalBody]
+other = "Cette page configure github-sts pour la rapidité de mise en place, pas pour la sécurité. TLS est désactivé et la protection contre le rejeu ne survit pas à un redémarrage."
+[envLocalLink]
+other = "Voir comment déployer en production →"

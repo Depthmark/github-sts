@@ -37,6 +37,8 @@ rC8dJV1CH2nSPGPYnqD9rYVyLkA5eYOXE+hENXEgpAvvPzHtcXQsa8wy6e3FSNE6
 hLAjpuJh79q2JhYArvCdjQA=
 -----END PRIVATE KEY-----`
 
+const testPinnedBundleRef = "oci://ghcr.io/org/sts-policy@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
 func writeTestConfig(t *testing.T, content string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -60,6 +62,7 @@ func writeTestKey(t *testing.T) string {
 func TestLoad_FullYAML(t *testing.T) {
 	keyPath := writeTestKey(t)
 	yaml := `
+bundle_enforcement: optional
 server:
   host: "127.0.0.1"
   port: 9090
@@ -74,6 +77,7 @@ apps:
 oidc:
   allowed_issuers:
     - "https://token.actions.githubusercontent.com"
+  require_immutable_subject_claims: false
 jti:
   backend: "memory"
   ttl: 30m
@@ -127,6 +131,9 @@ metrics:
 	if len(cfg.OIDC.AllowedIssuers) != 1 {
 		t.Fatalf("allowed_issuers len = %d, want 1", len(cfg.OIDC.AllowedIssuers))
 	}
+	if cfg.OIDC.RequireImmutableSubjectClaims {
+		t.Error("require_immutable_subject_claims should be false from YAML")
+	}
 
 	if cfg.JTI.TTL != 30*time.Minute {
 		t.Errorf("jti.ttl = %v, want 30m", cfg.JTI.TTL)
@@ -143,6 +150,7 @@ metrics:
 func TestLoad_Defaults(t *testing.T) {
 	keyPath := writeTestKey(t)
 	yaml := `
+bundle_enforcement: optional
 apps:
   default:
     app_id: 1
@@ -172,11 +180,15 @@ oidc:
 	if cfg.Audit.BufferSize != 1024 {
 		t.Errorf("default buffer_size = %d, want 1024", cfg.Audit.BufferSize)
 	}
+	if !cfg.OIDC.RequireImmutableSubjectClaims {
+		t.Error("require_immutable_subject_claims default = false, want true")
+	}
 }
 
 func TestLoad_EnvOverrides(t *testing.T) {
 	keyPath := writeTestKey(t)
 	yaml := `
+bundle_enforcement: optional
 apps:
   default:
     app_id: 1
@@ -190,6 +202,7 @@ oidc:
 	t.Setenv("GITHUBSTS_SERVER_PORT", "3000")
 	t.Setenv("GITHUBSTS_SERVER_LOG_LEVEL", "warn")
 	t.Setenv("GITHUBSTS_OIDC_ALLOWED_ISSUERS", "https://issuer1.com, https://issuer2.com")
+	t.Setenv("GITHUBSTS_OIDC_REQUIRE_IMMUTABLE_SUBJECT_CLAIMS", "false")
 	t.Setenv("GITHUBSTS_JTI_TTL", "2h")
 	t.Setenv("GITHUBSTS_AUDIT_FILE_ENABLED", "false")
 
@@ -210,6 +223,9 @@ oidc:
 	if cfg.OIDC.AllowedIssuers[1] != "https://issuer2.com" {
 		t.Errorf("issuer[1] = %q, want https://issuer2.com", cfg.OIDC.AllowedIssuers[1])
 	}
+	if cfg.OIDC.RequireImmutableSubjectClaims {
+		t.Error("require_immutable_subject_claims env override = true, want false")
+	}
 	if cfg.JTI.TTL != 2*time.Hour {
 		t.Errorf("jti.ttl = %v, want 2h", cfg.JTI.TTL)
 	}
@@ -218,17 +234,436 @@ oidc:
 	}
 }
 
+func TestLoad_BundleEnforcementEnvOverride(t *testing.T) {
+	keyPath := writeTestKey(t)
+	path := writeTestConfig(t, `
+bundle_enforcement: optional
+apps:
+  default:
+    app_id: 1
+    private_key_path: "`+keyPath+`"
+oidc:
+  allowed_issuers:
+    - "https://token.actions.githubusercontent.com"
+bundles:
+  - name: enterprise
+    ref: "`+testPinnedBundleRef+`"
+    expected_policy_revision: "1"
+    cosign:
+      public_key_ref: cosign.pub
+`)
+	t.Setenv("GITHUBSTS_BUNDLE_ENFORCEMENT", BundleEnforcementRequired)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.BundleEnforcement != BundleEnforcementRequired {
+		t.Errorf("bundle_enforcement = %q, want %q", cfg.BundleEnforcement, BundleEnforcementRequired)
+	}
+}
+
+func TestLoad_BundleEnforcementOmitted(t *testing.T) {
+	keyPath := writeTestKey(t)
+	path := writeTestConfig(t, `
+apps:
+  default:
+    app_id: 1
+    private_key_path: "`+keyPath+`"
+oidc:
+  allowed_issuers:
+    - "https://token.actions.githubusercontent.com"
+`)
+
+	_, err := Load(path)
+	if err == nil || !contains(err.Error(), "bundle_enforcement") {
+		t.Fatalf("expected bundle_enforcement error, got: %v", err)
+	}
+}
+
+func TestLoad_InvalidImmutableSubjectEnvFails(t *testing.T) {
+	keyPath := writeTestKey(t)
+	path := writeTestConfig(t, `
+bundle_enforcement: optional
+apps:
+  default:
+    app_id: 1
+    private_key_path: "`+keyPath+`"
+oidc:
+  allowed_issuers:
+    - "https://token.actions.githubusercontent.com"
+`)
+	t.Setenv("GITHUBSTS_OIDC_REQUIRE_IMMUTABLE_SUBJECT_CLAIMS", "treu")
+
+	_, err := Load(path)
+	if err == nil || !contains(err.Error(), "GITHUBSTS_OIDC_REQUIRE_IMMUTABLE_SUBJECT_CLAIMS") {
+		t.Fatalf("expected strict immutable-subject env error, got: %v", err)
+	}
+}
+
+func TestLoad_StrictYAML(t *testing.T) {
+	keyPath := writeTestKey(t)
+	base := `
+bundle_enforcement: optional
+apps:
+  default:
+    app_id: 1
+    private_key_path: "` + keyPath + `"
+oidc:
+  allowed_issuers:
+    - https://issuer.example.com
+`
+	tests := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{name: "unknown top level", content: base + "bundels: []\n", want: "field bundels not found"},
+		{name: "unknown nested", content: base + "  claim_patern: true\n", want: "field claim_patern not found"},
+		{name: "duplicate key", content: base + "oidc:\n  allowed_issuers: [https://other.example.com]\n", want: "already defined"},
+		{name: "multiple documents", content: base + "---\n{}\n", want: "multiple YAML documents"},
+		{name: "singular bundle", content: base + "bundle: {}\n", want: "field bundle is no longer supported; use bundles"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Load(writeTestConfig(t, tt.content))
+			if err == nil || !contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want substring %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestLoad_InvalidTypedEnvironmentOverridesFail(t *testing.T) {
+	keyPath := writeTestKey(t)
+	path := writeTestConfig(t, `
+bundle_enforcement: optional
+apps:
+  default:
+    app_id: 1
+    private_key_path: "`+keyPath+`"
+oidc:
+  allowed_issuers:
+    - https://issuer.example.com
+`)
+	tests := []struct {
+		name  string
+		value string
+	}{
+		{name: "GITHUBSTS_SERVER_PORT", value: "eighty"},
+		{name: "GITHUBSTS_SERVER_SUPPRESS_HEALTH_LOGS", value: "sometimes"},
+		{name: "GITHUBSTS_JTI_TTL", value: "tomorrow"},
+		{name: "GITHUBSTS_RATE_LIMIT_RATE", value: "fast"},
+		{name: "GITHUBSTS_RATE_LIMIT_RATE", value: "NaN"},
+		{name: "GITHUBSTS_RATE_LIMIT_RATE", value: "+Inf"},
+		{name: "GITHUBSTS_APP_DEFAULT_APP_ID", value: "one"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(tt.name, tt.value)
+			_, err := Load(path)
+			if err == nil || !contains(err.Error(), tt.name) {
+				t.Fatalf("error = %v, want variable name %q", err, tt.name)
+			}
+		})
+	}
+}
+
+func TestLoad_EnvOverrides_TLS(t *testing.T) {
+	keyPath := writeTestKey(t)
+	yaml := `
+bundle_enforcement: optional
+apps:
+  default:
+    app_id: 1
+    private_key_path: "` + keyPath + `"
+oidc:
+  allowed_issuers:
+    - "https://placeholder.example.com"
+`
+	path := writeTestConfig(t, yaml)
+
+	t.Setenv("GITHUBSTS_SERVER_TLS_CERT_FILE", "/etc/tls/tls.crt")
+	t.Setenv("GITHUBSTS_SERVER_TLS_KEY_FILE", "/etc/tls/tls.key")
+	t.Setenv("GITHUBSTS_SERVER_TLS_CLIENT_CA_FILE", "/etc/tls/ca.crt")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	if cfg.Server.TLS.CertFile != "/etc/tls/tls.crt" {
+		t.Errorf("tls.cert_file = %q, want /etc/tls/tls.crt", cfg.Server.TLS.CertFile)
+	}
+	if cfg.Server.TLS.KeyFile != "/etc/tls/tls.key" {
+		t.Errorf("tls.key_file = %q, want /etc/tls/tls.key", cfg.Server.TLS.KeyFile)
+	}
+	if cfg.Server.TLS.ClientCAFile != "/etc/tls/ca.crt" {
+		t.Errorf("tls.client_ca_file = %q, want /etc/tls/ca.crt", cfg.Server.TLS.ClientCAFile)
+	}
+}
+
 // validDefaults returns a defaults() config with the minimum required
 // fields populated to pass validation.
 func validDefaults() *Settings {
 	cfg := defaults()
+	cfg.BundleEnforcement = BundleEnforcementOptional
 	cfg.Apps["test"] = AppConfig{AppID: 1, PrivateKey: testPEM}
 	cfg.OIDC.AllowedIssuers = []string{"https://test.example.com"}
 	return cfg
 }
 
+func validRequiredBundle(name string) BundleConfig {
+	return BundleConfig{
+		Name:                   name,
+		Ref:                    testPinnedBundleRef,
+		ExpectedPolicyRevision: "1",
+		Cosign: CosignConfig{
+			PublicKeyRef: "cosign.pub",
+		},
+	}
+}
+
+func TestValidate_BundleEnforcementInvalid(t *testing.T) {
+	cfg := validDefaults()
+	cfg.BundleEnforcement = "sometimes"
+
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), "bundle_enforcement") {
+		t.Fatalf("expected bundle_enforcement error, got: %v", err)
+	}
+}
+
+func TestValidate_BundleEnforcementOptionalAllowsNoBundles(t *testing.T) {
+	cfg := validDefaults()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidate_BundleEnforcementRequiredRejectsNoBundles(t *testing.T) {
+	cfg := validDefaults()
+	cfg.BundleEnforcement = BundleEnforcementRequired
+
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), "at least one bundle") {
+		t.Fatalf("expected required bundle error, got: %v", err)
+	}
+}
+
+func TestValidate_BundleExpectedPolicyRevision(t *testing.T) {
+	t.Run("required rejects missing global revision", func(t *testing.T) {
+		cfg := validDefaults()
+		cfg.BundleEnforcement = BundleEnforcementRequired
+		bundle := validRequiredBundle("enterprise")
+		bundle.ExpectedPolicyRevision = ""
+		cfg.Bundles = []BundleConfig{bundle}
+		if err := cfg.Validate(); err == nil || !contains(err.Error(), "expected_policy_revision is required") {
+			t.Fatalf("error = %v, want required expected revision", err)
+		}
+	})
+
+	t.Run("required rejects missing additive revision", func(t *testing.T) {
+		cfg := validDefaults()
+		cfg.BundleEnforcement = BundleEnforcementRequired
+		additive := validRequiredBundle("additive")
+		additive.Apps = []string{"test"}
+		additive.ExpectedPolicyRevision = ""
+		cfg.Bundles = []BundleConfig{validRequiredBundle("enterprise"), additive}
+		if err := cfg.Validate(); err == nil || !contains(err.Error(), "bundles[1].expected_policy_revision is required") {
+			t.Fatalf("error = %v, want additive expected revision requirement", err)
+		}
+	})
+
+	t.Run("optional permits omitted revision", func(t *testing.T) {
+		cfg := validDefaults()
+		cfg.Bundles = []BundleConfig{{Name: "legacy", Ref: "file:///tmp/bundle.tar.gz"}}
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("Validate: %v", err)
+		}
+	})
+
+	for _, revision := range []string{"0", "00", "01", "+1", "-1", " 1", "1 ", "one", "18446744073709551616"} {
+		revision := revision
+		t.Run("optional rejects invalid "+revision, func(t *testing.T) {
+			cfg := validDefaults()
+			cfg.Bundles = []BundleConfig{{
+				Name: "revision", Ref: "file:///tmp/bundle.tar.gz", ExpectedPolicyRevision: revision,
+			}}
+			if err := cfg.Validate(); err == nil || !contains(err.Error(), "expected_policy_revision is invalid") {
+				t.Fatalf("error = %v, want invalid expected revision", err)
+			}
+		})
+	}
+}
+
+func TestValidate_BundleEnforcementRequiredRejectsAppOnlyBaseline(t *testing.T) {
+	cfg := validDefaults()
+	cfg.BundleEnforcement = BundleEnforcementRequired
+	bundle := validRequiredBundle("app-policy")
+	bundle.Apps = []string{"test"}
+	cfg.Bundles = []BundleConfig{bundle}
+
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), "exactly one globally applicable bundle") {
+		t.Fatalf("expected global baseline error, got: %v", err)
+	}
+}
+
+func TestValidate_BundleEnforcementRequiredRejectsMultipleGlobalBaselines(t *testing.T) {
+	cfg := validDefaults()
+	cfg.BundleEnforcement = BundleEnforcementRequired
+	cfg.Bundles = []BundleConfig{
+		validRequiredBundle("enterprise-a"),
+		validRequiredBundle("enterprise-b"),
+	}
+
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), "exactly one globally applicable bundle") {
+		t.Fatalf("expected global baseline error, got: %v", err)
+	}
+}
+
+func TestValidate_BundleEnforcementRequiredAcceptsPinnedVerifiedGlobalBaseline(t *testing.T) {
+	cfg := validDefaults()
+	cfg.BundleEnforcement = BundleEnforcementRequired
+	additive := validRequiredBundle("app-policy")
+	additive.Apps = []string{"test"}
+	cfg.Bundles = []BundleConfig{
+		validRequiredBundle("enterprise"),
+		additive,
+	}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Bundles[0].FailMode != BundleFailModeClosed {
+		t.Errorf("global baseline fail_mode = %q, want %q", cfg.Bundles[0].FailMode, BundleFailModeClosed)
+	}
+}
+
+func TestValidate_BundleEnforcementRequiredRejectsUnsafeBundles(t *testing.T) {
+	tests := []struct {
+		name      string
+		configure func(*BundleConfig)
+		want      string
+	}{
+		{
+			name: "filesystem ref",
+			configure: func(bundle *BundleConfig) {
+				bundle.Ref = "file:///tmp/bundle.tar.gz"
+			},
+			want: "pinned exactly",
+		},
+		{
+			name: "tag ref",
+			configure: func(bundle *BundleConfig) {
+				bundle.Ref = "oci://ghcr.io/org/sts-policy:v1"
+			},
+			want: "pinned exactly",
+		},
+		{
+			name: "skipped verification",
+			configure: func(bundle *BundleConfig) {
+				bundle.Cosign = CosignConfig{SkipVerification: true}
+			},
+			want: "skip_verification",
+		},
+		{
+			name: "open fail mode",
+			configure: func(bundle *BundleConfig) {
+				bundle.FailMode = BundleFailModeOpen
+			},
+			want: "fail_mode",
+		},
+		{
+			name: "mutable ref opt-in",
+			configure: func(bundle *BundleConfig) {
+				bundle.AllowMutableRef = true
+			},
+			want: "allow_mutable_ref",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validDefaults()
+			cfg.BundleEnforcement = BundleEnforcementRequired
+			bundle := validRequiredBundle("enterprise")
+			tt.configure(&bundle)
+			cfg.Bundles = []BundleConfig{bundle}
+
+			err := cfg.Validate()
+			if err == nil || !contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want substring %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidate_BundleEnforcementOptionalMutableRefOptIn(t *testing.T) {
+	tests := []struct {
+		name      string
+		configure func(*BundleConfig)
+		want      string
+	}{
+		{
+			name: "tag requires opt-in",
+			configure: func(bundle *BundleConfig) {
+				bundle.Ref = "oci://ghcr.io/org/sts-policy:v1"
+			},
+			want: "allow_mutable_ref",
+		},
+		{
+			name: "tag with opt-in",
+			configure: func(bundle *BundleConfig) {
+				bundle.Ref = "oci://ghcr.io/org/sts-policy:v1"
+				bundle.AllowMutableRef = true
+			},
+		},
+		{
+			name: "pinned ref rejects opt-in",
+			configure: func(bundle *BundleConfig) {
+				bundle.AllowMutableRef = true
+			},
+			want: "digest-pinned",
+		},
+		{
+			name: "filesystem ref rejects opt-in",
+			configure: func(bundle *BundleConfig) {
+				bundle.Ref = "file:///tmp/bundle.tar.gz"
+				bundle.AllowMutableRef = true
+			},
+			want: "only be true for mutable OCI refs",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validDefaults()
+			bundle := validRequiredBundle("enterprise")
+			tt.configure(&bundle)
+			cfg.Bundles = []BundleConfig{bundle}
+
+			err := cfg.Validate()
+			if tt.want == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want substring %q", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestValidate_NoApps(t *testing.T) {
 	cfg := defaults()
+	cfg.BundleEnforcement = BundleEnforcementOptional
 	cfg.OIDC.AllowedIssuers = []string{"https://test.example.com"}
 	if err := cfg.Validate(); err == nil {
 		t.Error("expected error for no apps")
@@ -273,6 +708,7 @@ func TestValidate_InvalidLogLevel(t *testing.T) {
 
 func TestValidate_EmptyAllowedIssuers(t *testing.T) {
 	cfg := defaults()
+	cfg.BundleEnforcement = BundleEnforcementOptional
 	cfg.Apps["test"] = AppConfig{AppID: 1, PrivateKey: testPEM}
 	err := cfg.Validate()
 	if err == nil || !contains(err.Error(), "allowed_issuers") {
@@ -303,12 +739,496 @@ func TestValidate_RateLimitValidCIDR(t *testing.T) {
 	}
 }
 
+func TestValidate_BundlesDefaultsAndValidation(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Bundles = []BundleConfig{{
+		Name: "enterprise-security",
+		Ref:  "file:///tmp/bundle.tar.gz",
+	}}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := cfg.Bundles[0].PollInterval; got != 5*time.Minute {
+		t.Errorf("poll_interval default = %s, want 5m", got)
+	}
+	if got := cfg.Bundles[0].MaxStaleness; got != 10*time.Minute {
+		t.Errorf("max_staleness default = %s, want 10m", got)
+	}
+	if got := cfg.Bundles[0].FailMode; got != BundleFailModeClosed {
+		t.Errorf("fail_mode default = %q, want closed", got)
+	}
+}
+
+func TestValidate_BundlesDuplicateNameRejected(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Bundles = []BundleConfig{
+		{Name: "enterprise", Ref: "file:///tmp/a.tar.gz"},
+		{Name: "enterprise", Ref: "file:///tmp/b.tar.gz"},
+	}
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), "duplicated") {
+		t.Errorf("expected duplicate bundle name error, got: %v", err)
+	}
+}
+
+func TestValidate_BundlesOCIRequiresCosign(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Bundles = []BundleConfig{{
+		Name:            "enterprise",
+		Ref:             "oci://ghcr.io/org/sts-policy:v1",
+		AllowMutableRef: true,
+	}}
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), "skip_verification") {
+		t.Errorf("expected cosign identity requirement, got: %v", err)
+	}
+}
+
+func TestValidate_BundlesOCIAcceptsSkipVerification(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Bundles = []BundleConfig{{
+		Name:            "enterprise",
+		Ref:             "oci://harbor.local/org/sts-policy:v1",
+		AllowMutableRef: true,
+		Cosign: CosignConfig{
+			SkipVerification: true,
+		},
+	}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidate_BundlesOCIRejectsSkipVerificationWithCosignMode(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Bundles = []BundleConfig{{
+		Name:            "enterprise",
+		Ref:             "oci://harbor.local/org/sts-policy:v1",
+		AllowMutableRef: true,
+		Cosign: CosignConfig{
+			PublicKeyRef:     "cosign.pub",
+			SkipVerification: true,
+		},
+	}}
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), "cannot be combined") {
+		t.Errorf("expected skip verification conflict error, got: %v", err)
+	}
+}
+
+func TestValidate_BundlesOCIAcceptsPublicKeyRef(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Bundles = []BundleConfig{{
+		Name:            "enterprise",
+		Ref:             "oci://ghcr.io/org/sts-policy:v1",
+		AllowMutableRef: true,
+		Cosign: CosignConfig{
+			PublicKeyRef: "cosign.pub",
+		},
+	}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidate_BundlesAcceptsKnownAppScope(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Bundles = []BundleConfig{{
+		Name: "enterprise",
+		Ref:  "file:///tmp/bundle.tar.gz",
+		Apps: []string{"test"},
+	}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidate_BundlesRejectsUnknownAppScope(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Bundles = []BundleConfig{{
+		Name: "enterprise",
+		Ref:  "file:///tmp/bundle.tar.gz",
+		Apps: []string{"missing"},
+	}}
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), "unknown app") {
+		t.Errorf("expected unknown app scope error, got: %v", err)
+	}
+}
+
+func TestValidate_BundlesRejectsDuplicateAppScope(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Bundles = []BundleConfig{{
+		Name: "enterprise",
+		Ref:  "file:///tmp/bundle.tar.gz",
+		Apps: []string{"test", "test"},
+	}}
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), "duplicate app") {
+		t.Errorf("expected duplicate app scope error, got: %v", err)
+	}
+}
+
+func TestValidate_BundlesOCIRejectsMixedCosignModes(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Bundles = []BundleConfig{{
+		Name:            "enterprise",
+		Ref:             "oci://ghcr.io/org/sts-policy:v1",
+		AllowMutableRef: true,
+		Cosign: CosignConfig{
+			CertificateIdentityRegexp: "^https://github.com/org/repo/.*$",
+			CertificateOIDCIssuer:     "https://token.actions.githubusercontent.com",
+			PublicKeyRef:              "cosign.pub",
+		},
+	}}
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), "not both") {
+		t.Errorf("expected mixed cosign mode error, got: %v", err)
+	}
+}
+
+func TestValidate_BundlesOCIAcceptsBasicRegistryAuthPasswordFile(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Bundles = []BundleConfig{{
+		Name:            "enterprise",
+		Ref:             "oci://ghcr.io/org/sts-policy:v1",
+		AllowMutableRef: true,
+		Cosign: CosignConfig{
+			PublicKeyRef: "cosign.pub",
+		},
+		Registry: RegistryConfig{Auth: RegistryAuthConfig{
+			Mode:         "basic",
+			Username:     "robot$github-sts",
+			PasswordFile: "/var/run/secrets/harbor/password",
+		}},
+	}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidate_BundlesOCIAcceptsBasicRegistryAuthPasswordEnv(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Bundles = []BundleConfig{{
+		Name:            "enterprise",
+		Ref:             "oci://ghcr.io/org/sts-policy:v1",
+		AllowMutableRef: true,
+		Cosign: CosignConfig{
+			PublicKeyRef: "cosign.pub",
+		},
+		Registry: RegistryConfig{Auth: RegistryAuthConfig{
+			Mode:        "basic",
+			Username:    "robot$github-sts",
+			PasswordEnv: "HARBOR_PASSWORD",
+		}},
+	}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidate_BundlesOCIRejectsBasicRegistryAuthWithoutSecretRef(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Bundles = []BundleConfig{{
+		Name:            "enterprise",
+		Ref:             "oci://ghcr.io/org/sts-policy:v1",
+		AllowMutableRef: true,
+		Cosign: CosignConfig{
+			PublicKeyRef: "cosign.pub",
+		},
+		Registry: RegistryConfig{Auth: RegistryAuthConfig{
+			Mode:     "basic",
+			Username: "robot$github-sts",
+		}},
+	}}
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), "password_file or password_env") {
+		t.Errorf("expected registry auth secret ref error, got: %v", err)
+	}
+}
+
+func TestValidate_BundlesOCIRejectsUnsupportedRegistryAuthMode(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Bundles = []BundleConfig{{
+		Name:            "enterprise",
+		Ref:             "oci://ghcr.io/org/sts-policy:v1",
+		AllowMutableRef: true,
+		Cosign: CosignConfig{
+			PublicKeyRef: "cosign.pub",
+		},
+		Registry: RegistryConfig{Auth: RegistryAuthConfig{
+			Mode:        "oidc",
+			Username:    "robot$github-sts",
+			PasswordEnv: "HARBOR_PASSWORD",
+		}},
+	}}
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), "registry.auth.mode") {
+		t.Errorf("expected registry auth mode error, got: %v", err)
+	}
+}
+
+func TestValidate_TLSCertWithoutKey(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Server.TLS.CertFile = "/path/tls.crt"
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), "must be set together") {
+		t.Errorf("expected cert/key together error, got: %v", err)
+	}
+}
+
+func TestValidate_TLSKeyWithoutCert(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Server.TLS.KeyFile = "/path/tls.key"
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), "must be set together") {
+		t.Errorf("expected cert/key together error, got: %v", err)
+	}
+}
+
+func TestValidate_TLSClientCAWithoutTLS(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Server.TLS.ClientCAFile = "/path/ca.crt"
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), "client_ca_file") {
+		t.Errorf("expected client_ca_file requires TLS error, got: %v", err)
+	}
+}
+
+func TestValidate_TLSValid(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Server.TLS.CertFile = "/path/tls.crt"
+	cfg.Server.TLS.KeyFile = "/path/tls.key"
+	cfg.Server.TLS.ClientCAFile = "/path/ca.crt"
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestValidate_TLSMinVersionInvalid(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Server.TLS.CertFile = "/path/tls.crt"
+	cfg.Server.TLS.KeyFile = "/path/tls.key"
+	cfg.Server.TLS.MinVersion = "1.1"
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), "min_version") {
+		t.Errorf("expected min_version error, got: %v", err)
+	}
+}
+
+func TestValidate_TLSMinVersionTLS13Valid(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Server.TLS.CertFile = "/path/tls.crt"
+	cfg.Server.TLS.KeyFile = "/path/tls.key"
+	cfg.Server.TLS.MinVersion = "1.3"
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestValidate_TLSCipherSuitesInvalid(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Server.TLS.CertFile = "/path/tls.crt"
+	cfg.Server.TLS.KeyFile = "/path/tls.key"
+	cfg.Server.TLS.CipherSuites = []string{"NOT_A_REAL_SUITE"}
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), "cipher_suites") {
+		t.Errorf("expected cipher_suites error, got: %v", err)
+	}
+}
+
+func TestValidate_TLSCipherSuitesValid(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Server.TLS.CertFile = "/path/tls.crt"
+	cfg.Server.TLS.KeyFile = "/path/tls.key"
+	cfg.Server.TLS.CipherSuites = []string{
+		"TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+		"TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestValidate_TLSCipherSuitesWithTLS13MinVersion(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Server.TLS.CertFile = "/path/tls.crt"
+	cfg.Server.TLS.KeyFile = "/path/tls.key"
+	cfg.Server.TLS.MinVersion = "1.3"
+	cfg.Server.TLS.CipherSuites = []string{"TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"}
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), "cipher_suites") {
+		t.Errorf("expected cipher_suites+min_version error, got: %v", err)
+	}
+}
+
+func TestValidate_TLSReloadIntervalWithoutTLS(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Server.TLS.ReloadInterval = 30 * time.Second
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), "reload_interval") {
+		t.Errorf("expected reload_interval error, got: %v", err)
+	}
+}
+
+func TestValidate_TLSReloadIntervalValid(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Server.TLS.CertFile = "/path/tls.crt"
+	cfg.Server.TLS.KeyFile = "/path/tls.key"
+	cfg.Server.TLS.ReloadInterval = 30 * time.Second
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestServerTLSMinVersion_Default(t *testing.T) {
+	cfg := defaults()
+	if got := cfg.Server.TLSMinVersion(); got != 0x0303 { // tls.VersionTLS12 = 0x0303
+		t.Errorf("TLSMinVersion() = %#x, want TLS 1.2 (%#x)", got, uint16(0x0303))
+	}
+}
+
+func TestServerTLSMinVersion_TLS13(t *testing.T) {
+	cfg := defaults()
+	cfg.Server.TLS.MinVersion = "1.3"
+	if got := cfg.Server.TLSMinVersion(); got != 0x0304 { // tls.VersionTLS13 = 0x0304
+		t.Errorf("TLSMinVersion() = %#x, want TLS 1.3 (%#x)", got, uint16(0x0304))
+	}
+}
+
+func TestServerTLSCipherSuiteIDs_Empty(t *testing.T) {
+	cfg := defaults()
+	if ids := cfg.Server.TLSCipherSuiteIDs(); ids != nil {
+		t.Errorf("expected nil IDs when no cipher suites configured, got %v", ids)
+	}
+}
+
+func TestServerTLSCipherSuiteIDs_Known(t *testing.T) {
+	cfg := defaults()
+	cfg.Server.TLS.CipherSuites = []string{
+		"TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+		"TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
+	}
+	ids := cfg.Server.TLSCipherSuiteIDs()
+	if len(ids) != 2 {
+		t.Errorf("expected 2 cipher suite IDs, got %d", len(ids))
+	}
+	for i, id := range ids {
+		if id == 0 {
+			t.Errorf("cipher suite ID[%d] is zero (unknown name)", i)
+		}
+	}
+}
+
+func TestServerTLSEnabled(t *testing.T) {
+	cfg := defaults()
+	if cfg.Server.TLSEnabled() {
+		t.Error("TLSEnabled() should be false when no cert/key configured")
+	}
+	cfg.Server.TLS.CertFile = "/path/tls.crt"
+	if cfg.Server.TLSEnabled() {
+		t.Error("TLSEnabled() should be false when only cert is configured")
+	}
+	cfg.Server.TLS.KeyFile = "/path/tls.key"
+	if !cfg.Server.TLSEnabled() {
+		t.Error("TLSEnabled() should be true when cert and key are configured")
+	}
+}
+
+func TestServerClientAuthEnabled(t *testing.T) {
+	cfg := defaults()
+	if cfg.Server.ClientAuthEnabled() {
+		t.Error("ClientAuthEnabled() should be false by default")
+	}
+	cfg.Server.TLS.ClientCAFile = "/path/ca.crt"
+	if !cfg.Server.ClientAuthEnabled() {
+		t.Error("ClientAuthEnabled() should be true when client CA is configured")
+	}
+}
+
 func TestParsePrivateKeys_InvalidPEM(t *testing.T) {
 	cfg := defaults()
 	cfg.Apps["test"] = AppConfig{AppID: 1, PrivateKey: "not-a-pem"}
 	err := cfg.parsePrivateKeys()
 	if err == nil || !contains(err.Error(), "invalid PEM") {
 		t.Errorf("expected PEM error, got: %v", err)
+	}
+}
+
+func TestValidate_PolicyResolution_DefaultsToOrgFirst(t *testing.T) {
+	cfg := validDefaults()
+	app := cfg.Apps["test"]
+	app.OrgPolicyRepo = ".github"
+	cfg.Apps["test"] = app
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := cfg.Apps["test"].PolicyResolution; got != "org_first" {
+		t.Errorf("policy_resolution default = %q, want org_first", got)
+	}
+}
+
+func TestValidate_PolicyResolution_UnknownValueRejected(t *testing.T) {
+	cfg := validDefaults()
+	app := cfg.Apps["test"]
+	app.OrgPolicyRepo = ".github"
+	app.PolicyResolution = "bogus"
+	cfg.Apps["test"] = app
+
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), "policy_resolution") {
+		t.Errorf("expected policy_resolution error, got: %v", err)
+	}
+}
+
+func TestValidate_PolicyResolution_OrgFirstRequiresOrgRepo(t *testing.T) {
+	cfg := validDefaults()
+	app := cfg.Apps["test"]
+	app.PolicyResolution = "org_first" // no OrgPolicyRepo set
+	cfg.Apps["test"] = app
+
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), "requires org_policy_repo") {
+		t.Errorf("expected org_policy_repo requirement error, got: %v", err)
+	}
+}
+
+func TestValidate_PolicyResolution_OrgOnlyRequiresOrgRepo(t *testing.T) {
+	cfg := validDefaults()
+	app := cfg.Apps["test"]
+	app.PolicyResolution = "org_only"
+	cfg.Apps["test"] = app
+
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), "requires org_policy_repo") {
+		t.Errorf("expected org_policy_repo requirement error, got: %v", err)
+	}
+}
+
+func TestValidate_PolicyResolution_RepoFirstAllowedWithoutOrgRepo(t *testing.T) {
+	// repo_first is meaningful even without an org repo (it just degenerates
+	// to repo-only). Keep this allowed for parity with the legacy default.
+	cfg := validDefaults()
+	app := cfg.Apps["test"]
+	app.PolicyResolution = "repo_first"
+	cfg.Apps["test"] = app
+
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestValidate_PolicyResolution_ExplicitOrgFirstAccepted(t *testing.T) {
+	cfg := validDefaults()
+	app := cfg.Apps["test"]
+	app.OrgPolicyRepo = ".github"
+	app.PolicyResolution = "org_first"
+	cfg.Apps["test"] = app
+
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("unexpected error: %v", err)
 	}
 }
 

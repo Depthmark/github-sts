@@ -160,6 +160,15 @@ func TestAppTokenProvider_GetInstallationToken_RepoRestriction(t *testing.T) {
 	}
 }
 
+func TestAppTokenProvider_GetInstallationToken_RejectsEmptyRepositoryList(t *testing.T) {
+	p := NewAppTokenProvider("test-app", 12345, generateTestKey(t), "https://api.invalid", nil)
+
+	_, err := p.GetInstallationToken(context.Background(), "myorg", map[string]string{"contents": "read"}, []string{}, "test")
+	if err == nil || !strings.Contains(err.Error(), "empty repository list") {
+		t.Fatalf("expected empty repository list error, got: %v", err)
+	}
+}
+
 func TestExtractRateLimitHeaders(t *testing.T) {
 	resp := &http.Response{
 		StatusCode: http.StatusOK,
@@ -200,6 +209,136 @@ func TestExtractRateLimitHeaders_403_SecondaryLimit(t *testing.T) {
 
 	// Should not panic — logs a warning.
 	ExtractRateLimitHeaders(resp, "test-app", "test")
+}
+
+func TestDiffPermissions(t *testing.T) {
+	tests := []struct {
+		name      string
+		requested map[string]string
+		granted   map[string]string
+		want      map[string]string // permission → status
+	}{
+		{
+			name:      "all ok",
+			requested: map[string]string{"contents": "read"},
+			granted:   map[string]string{"contents": "read", "metadata": "read"},
+			want:      map[string]string{"contents": "ok"},
+		},
+		{
+			name:      "granted exceeds requested",
+			requested: map[string]string{"contents": "read"},
+			granted:   map[string]string{"contents": "write"},
+			want:      map[string]string{"contents": "ok"},
+		},
+		{
+			name:      "insufficient",
+			requested: map[string]string{"contents": "write"},
+			granted:   map[string]string{"contents": "read"},
+			want:      map[string]string{"contents": "insufficient"},
+		},
+		{
+			name:      "missing",
+			requested: map[string]string{"administration": "write"},
+			granted:   map[string]string{"contents": "read"},
+			want:      map[string]string{"administration": "missing"},
+		},
+		{
+			name:      "mixed",
+			requested: map[string]string{"contents": "write", "metadata": "read", "issues": "write"},
+			granted:   map[string]string{"contents": "read", "metadata": "read"},
+			want:      map[string]string{"contents": "insufficient", "issues": "missing", "metadata": "ok"},
+		},
+		{
+			name:      "granted nil → unknown",
+			requested: map[string]string{"contents": "read"},
+			granted:   nil,
+			want:      map[string]string{"contents": "unknown"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			diff := DiffPermissions(tt.requested, tt.granted)
+			if len(diff) != len(tt.want) {
+				t.Fatalf("len(diff) = %d, want %d (%v)", len(diff), len(tt.want), diff)
+			}
+			for _, e := range diff {
+				if got := e.Status; got != tt.want[e.Permission] {
+					t.Errorf("%s status = %q, want %q", e.Permission, got, tt.want[e.Permission])
+				}
+			}
+			// Verify deterministic alphabetical ordering.
+			for i := 1; i < len(diff); i++ {
+				if diff[i-1].Permission > diff[i].Permission {
+					t.Errorf("diff not sorted: %s before %s", diff[i-1].Permission, diff[i].Permission)
+				}
+			}
+		})
+	}
+}
+
+func TestAppTokenProvider_GetInstallationToken_422CapturesDiff(t *testing.T) {
+	key := generateTestKey(t)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/installation"):
+			// Installation has only contents:read.
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id": 42,
+				"permissions": map[string]string{
+					"contents": "read",
+					"metadata": "read",
+				},
+			})
+
+		case strings.Contains(r.URL.Path, "/access_tokens"):
+			// Reject — caller asked for administration:write which isn't granted.
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_, _ = w.Write([]byte(`{"message":"The permissions requested are not granted to this installation."}`))
+		}
+	}))
+	defer srv.Close()
+
+	p := NewAppTokenProvider("test-app", 12345, key, srv.URL, nil)
+
+	_, err := p.GetInstallationToken(context.Background(), "myorg/myrepo",
+		map[string]string{"administration": "write", "contents": "write"}, nil, "test")
+	if err == nil {
+		t.Fatal("expected error from 422")
+	}
+	if !strings.Contains(err.Error(), "HTTP 422") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Granted permissions should now be cached and queryable for diff.
+	granted := p.GetGrantedPermissions("myorg/myrepo")
+	if granted == nil {
+		t.Fatal("expected cached granted permissions, got nil")
+	}
+	if granted["contents"] != "read" || granted["metadata"] != "read" {
+		t.Errorf("unexpected granted perms: %v", granted)
+	}
+	if _, found := granted["administration"]; found {
+		t.Errorf("administration should not be in granted perms: %v", granted)
+	}
+
+	// And the diff should classify the failure correctly.
+	diff := DiffPermissions(map[string]string{"administration": "write", "contents": "write"}, granted)
+	if len(diff) != 2 {
+		t.Fatalf("expected 2 diff entries, got %d", len(diff))
+	}
+	statuses := map[string]string{}
+	for _, e := range diff {
+		statuses[e.Permission] = e.Status
+	}
+	if statuses["administration"] != "missing" {
+		t.Errorf("administration status = %q, want missing", statuses["administration"])
+	}
+	if statuses["contents"] != "insufficient" {
+		t.Errorf("contents status = %q, want insufficient", statuses["contents"])
+	}
 }
 
 func TestExtractOrg(t *testing.T) {

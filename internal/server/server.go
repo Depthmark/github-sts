@@ -5,22 +5,29 @@ package server
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/depthmark/github-sts/internal/audit"
+	"github.com/depthmark/github-sts/internal/bundle"
 	"github.com/depthmark/github-sts/internal/config"
 	"github.com/depthmark/github-sts/internal/github"
 	"github.com/depthmark/github-sts/internal/handler"
 	"github.com/depthmark/github-sts/internal/jti"
 	"github.com/depthmark/github-sts/internal/metrics"
+	"github.com/depthmark/github-sts/internal/oidc"
 	"github.com/depthmark/github-sts/internal/policy"
 	"github.com/depthmark/github-sts/internal/ratelimit"
 
@@ -40,7 +47,9 @@ type Server struct {
 	reachabilityProber *github.ReachabilityProber
 	ipRateLimiter      *ratelimit.IPRateLimiter
 	redisClient        *redis.Client
+	bundleManager      bundle.LifecycleManager // nil when bundle integration is disabled
 	slogger            *slog.Logger
+	certReloader       *certReloader
 }
 
 // New creates a new Server with all services initialized.
@@ -49,6 +58,11 @@ func New(cfg *config.Settings, slogger *slog.Logger) (*Server, error) {
 		cfg:     cfg,
 		slogger: slogger,
 	}
+
+	// Install per-issuer JWKS host overrides for providers that publish their
+	// JWKS on a different host than the issuer (e.g., Google). Default
+	// behavior with no overrides is strict same-host pinning.
+	oidc.SetTrustedJWKSHosts(cfg.OIDC.TrustedJWKSHosts)
 
 	// Initialize JTI cache.
 	switch cfg.JTI.Backend {
@@ -80,13 +94,27 @@ func New(cfg *config.Settings, slogger *slog.Logger) (*Server, error) {
 	}
 	s.auditLogger = al
 
+	// Shared HTTP transport tuned for high-throughput GitHub API calls.
+	// Default Go transport uses MaxIdleConnsPerHost=2, which causes
+	// excessive TCP+TLS handshakes at scale. Most connections target
+	// api.github.com, so a higher per-host pool avoids this bottleneck.
+	githubTransport := &http.Transport{
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 20,
+		IdleConnTimeout:     90 * time.Second,
+	}
+	githubHTTPClient := &http.Client{
+		Timeout:   15 * time.Second,
+		Transport: githubTransport,
+	}
+
 	// Initialize GitHub App token providers.
 	appProviders := make(map[string]*github.AppTokenProvider, len(cfg.Apps))
 	appConfigs := make(map[string]github.AppConfig, len(cfg.Apps))
 	apiURL := "https://api.github.com"
 
 	for name, app := range cfg.Apps {
-		provider := github.NewAppTokenProvider(name, app.AppID, app.ParsedKey, apiURL, nil)
+		provider := github.NewAppTokenProvider(name, app.AppID, app.ParsedKey, apiURL, githubHTTPClient)
 		appProviders[name] = provider
 		appConfigs[name] = github.AppConfig{
 			AppID:         app.AppID,
@@ -96,9 +124,11 @@ func New(cfg *config.Settings, slogger *slog.Logger) (*Server, error) {
 		slogger.Info("github app initialized", "app", name, "app_id", app.AppID)
 	}
 
-	// Initialize policy loader with per-app token providers and org policy repos.
+	// Initialize policy loader with per-app token providers, org policy
+	// repos, and resolution modes.
 	policyTPs := make(map[string]policy.TokenProvider, len(appProviders))
 	orgPolicyRepos := make(map[string]string, len(cfg.Apps))
+	policyModes := make(map[string]policy.Resolution, len(cfg.Apps))
 	for name, provider := range appProviders {
 		policyTPs[name] = provider
 	}
@@ -106,14 +136,19 @@ func New(cfg *config.Settings, slogger *slog.Logger) (*Server, error) {
 		if app.OrgPolicyRepo != "" {
 			orgPolicyRepos[name] = app.OrgPolicyRepo
 		}
+		if app.PolicyResolution != "" {
+			policyModes[name] = app.PolicyResolution
+		}
 	}
 	policyLoader := policy.NewGitHubLoader(
 		policyTPs,
 		orgPolicyRepos,
+		policyModes,
 		apiURL,
 		cfg.Policy.BasePath,
 		cfg.Policy.CacheTTL,
 		slogger,
+		githubHTTPClient,
 	)
 
 	// Initialize rate limit poller.
@@ -142,6 +177,37 @@ func New(cfg *config.Settings, slogger *slog.Logger) (*Server, error) {
 
 	// Register metrics.
 	metrics.Register()
+	if cfg.RequireImmutableSubjectClaims() {
+		metrics.ImmutableSubjectClaimsRequired.Set(1)
+	} else {
+		metrics.ImmutableSubjectClaimsRequired.Set(0)
+		slogger.Warn("immutable GitHub subject claims are not required",
+			"setting", "oidc.require_immutable_subject_claims",
+			"risk", "legacy subject format is vulnerable to repository namespace reuse",
+		)
+	}
+	yamlOnlyAuthorization := yamlOnlyAuthorizationPossible(cfg)
+	if cfg.BundleEnforcement == config.BundleEnforcementRequired {
+		metrics.BundleEnforcementRequired.Set(1)
+	} else {
+		metrics.BundleEnforcementRequired.Set(0)
+		slogger.Warn("enterprise bundle enforcement is explicitly optional",
+			"setting", "bundle_enforcement",
+			"yaml_only_authorization", yamlOnlyAuthorization,
+			"risk", "token exchange does not require enterprise policy participation",
+		)
+	}
+
+	// Initialize bundle manager. When bundle.enabled=false the handler
+	// receives the no-op Disabled manager and skips the engine call
+	// entirely. When enabled, Init() pulls/verifies/compiles synchronously;
+	// any failure here causes server creation to fail with a clear error
+	// — silent degrade to YAML-only would mask a security misconfiguration.
+	bundleMgr, liveBundleMgr, err := initBundleManager(cfg, slogger)
+	if err != nil {
+		return nil, fmt.Errorf("initializing bundle manager: %w", err)
+	}
+	s.bundleManager = liveBundleMgr
 
 	// Create exchange handler.
 	exchangeHandler := handler.NewExchangeHandler(
@@ -149,9 +215,12 @@ func New(cfg *config.Settings, slogger *slog.Logger) (*Server, error) {
 		policyLoader,
 		appProviders,
 		cfg.AllowedIssuers(),
+		cfg.RequiredAudience(),
+		cfg.RequireImmutableSubjectClaims(),
 		s.auditLogger,
 		slogger,
 		cfg.Server.TrustForwardedHeaders,
+		bundleMgr,
 	)
 
 	// Wrap exchange handler with rate limiting if enabled.
@@ -164,7 +233,26 @@ func New(cfg *config.Settings, slogger *slog.Logger) (*Server, error) {
 	mux := http.NewServeMux()
 	mux.Handle("GET /sts/exchange", exchangeH)
 	mux.Handle("POST /sts/exchange", exchangeH)
-	mux.HandleFunc("GET /health", handler.HealthHandler())
+	// Trust-policy schema, served from the loaded bundle. 503 when
+	// bundle integration is disabled; see SchemaHandler for codes.
+	schemaHandler := handler.NewSchemaHandler(bundleMgr)
+	mux.Handle("GET /sts/v1/trust-policy.json", schemaHandler)
+	mux.Handle("HEAD /sts/v1/trust-policy.json", schemaHandler)
+	mux.Handle("POST /sts/v1/trust-policy/validate", handler.NewPolicyValidationHandler())
+	// /health includes bundle status when the integration is enabled.
+	// liveBundleMgr is nil when bundle.enabled=false; HealthHandler
+	// degrades gracefully in that case (just returns status: ok).
+	var bundleReporter handler.BundleHealthReporter
+	if liveBundleMgr != nil {
+		bundleReporter = liveBundleMgr
+	}
+	mux.HandleFunc("GET /health", handler.HealthHandler(bundleReporter, handler.SecurityPosture{
+		RequireImmutableSubjectClaims: cfg.RequireImmutableSubjectClaims(),
+		LegacySubjectOptOut:           !cfg.RequireImmutableSubjectClaims(),
+		BundleEnforcement:             cfg.BundleEnforcement,
+		EnterprisePolicyRequired:      cfg.BundleEnforcement == config.BundleEnforcementRequired,
+		YAMLOnlyAuthorization:         yamlOnlyAuthorization,
+	}))
 	mux.HandleFunc("GET /ready", handler.ReadinessHandler(&s.ready))
 	if cfg.Metrics.Enabled {
 		mux.Handle("GET /metrics", handler.MetricsHandler(cfg.Metrics.AuthToken))
@@ -177,9 +265,19 @@ func New(cfg *config.Settings, slogger *slog.Logger) (*Server, error) {
 	h = traceIDMiddleware(h)
 	h = securityHeadersMiddleware(h)
 
+	tlsCfg, reloader, err := buildTLSConfig(cfg, slogger)
+	if err != nil {
+		return nil, err
+	}
+	s.certReloader = reloader
+	if reloader != nil && cfg.Server.TLS.ReloadInterval > 0 {
+		slogger.Info("tls cert hot-reload enabled", "interval", cfg.Server.TLS.ReloadInterval)
+	}
+
 	s.httpServer = &http.Server{
 		Addr:              net.JoinHostPort(cfg.Server.Host, strconv.Itoa(cfg.Server.Port)),
 		Handler:           h,
+		TLSConfig:         tlsCfg,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -187,6 +285,154 @@ func New(cfg *config.Settings, slogger *slog.Logger) (*Server, error) {
 	}
 
 	return s, nil
+}
+
+func yamlOnlyAuthorizationPossible(cfg *config.Settings) bool {
+	if cfg.BundleEnforcement == config.BundleEnforcementRequired {
+		return false
+	}
+	for app := range cfg.Apps {
+		covered := false
+		for _, configuredBundle := range cfg.Bundles {
+			if len(configuredBundle.Apps) == 0 || slices.Contains(configuredBundle.Apps, app) {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			return true
+		}
+	}
+	return false
+}
+
+// buildTLSConfig loads TLS configuration and, when TLS is enabled, creates a
+// certReloader that serves the certificate via GetCertificate. It returns nil
+// for both outputs when native TLS is not configured.
+func buildTLSConfig(cfg *config.Settings, slogger *slog.Logger) (*tls.Config, *certReloader, error) {
+	if !cfg.Server.TLSEnabled() {
+		return nil, nil, nil
+	}
+
+	reloader, err := newCertReloader(
+		cfg.Server.TLS.CertFile,
+		cfg.Server.TLS.KeyFile,
+		cfg.Server.TLS.ReloadInterval,
+		slogger,
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("loading TLS key pair: %w", err)
+	}
+
+	tlsCfg := &tls.Config{
+		MinVersion:     cfg.Server.TLSMinVersion(),
+		GetCertificate: reloader.GetCertificate,
+	}
+
+	if ids := cfg.Server.TLSCipherSuiteIDs(); len(ids) > 0 {
+		tlsCfg.CipherSuites = ids
+	}
+
+	if cfg.Server.ClientAuthEnabled() {
+		caPEM, err := os.ReadFile(cfg.Server.TLS.ClientCAFile)
+		if err != nil {
+			reloader.Stop()
+			return nil, nil, fmt.Errorf("reading client CA file: %w", err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(caPEM) {
+			reloader.Stop()
+			return nil, nil, fmt.Errorf("client CA file contains no valid certificates")
+		}
+		tlsCfg.ClientAuth = tls.RequireAndVerifyClientCert
+		tlsCfg.ClientCAs = pool
+	}
+
+	return tlsCfg, reloader, nil
+}
+
+// certReloader holds a TLS certificate in memory and optionally refreshes it
+// from disk on an interval, enabling zero-downtime certificate rotation.
+type certReloader struct {
+	mu       sync.RWMutex
+	cert     *tls.Certificate
+	certFile string
+	keyFile  string
+	stop     chan struct{}
+}
+
+func newCertReloader(certFile, keyFile string, interval time.Duration, slogger *slog.Logger) (*certReloader, error) {
+	r := &certReloader{certFile: certFile, keyFile: keyFile}
+	if err := r.load(); err != nil {
+		return nil, err
+	}
+	if interval > 0 {
+		r.stop = make(chan struct{})
+		go r.watch(interval, slogger)
+	}
+	return r, nil
+}
+
+// GetCertificate implements tls.Config.GetCertificate and always returns the
+// currently loaded certificate.
+func (r *certReloader) GetCertificate(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.cert, nil
+}
+
+func (r *certReloader) load() error {
+	cert, err := tls.LoadX509KeyPair(r.certFile, r.keyFile)
+	if err != nil {
+		return err
+	}
+	r.mu.Lock()
+	r.cert = &cert
+	r.mu.Unlock()
+	return nil
+}
+
+func (r *certReloader) watch(interval time.Duration, slogger *slog.Logger) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	lastCertMod := modTime(r.certFile)
+	lastKeyMod := modTime(r.keyFile)
+
+	for {
+		select {
+		case <-ticker.C:
+			certMod := modTime(r.certFile)
+			keyMod := modTime(r.keyFile)
+			if certMod.Equal(lastCertMod) && keyMod.Equal(lastKeyMod) {
+				continue
+			}
+			if err := r.load(); err != nil {
+				slogger.Error("tls cert reload failed", "error", err)
+				continue
+			}
+			lastCertMod, lastKeyMod = certMod, keyMod
+			slogger.Info("tls cert reloaded")
+		case <-r.stop:
+			return
+		}
+	}
+}
+
+// Stop halts the background reload goroutine, if one was started.
+func (r *certReloader) Stop() {
+	if r.stop != nil {
+		close(r.stop)
+	}
+}
+
+// modTime returns the modification time of path, or zero if stat fails.
+func modTime(path string) time.Time {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return time.Time{}
+	}
+	return fi.ModTime()
 }
 
 // ListenAndServe starts the server and blocks until the context is cancelled.
@@ -200,16 +446,30 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		s.reachabilityProber.Start()
 		s.slogger.Info("reachability prober started")
 	}
+	if s.bundleManager != nil {
+		// Use background context so the poll loop keeps running even if
+		// ListenAndServe's ctx is cancelled on shutdown — Stop() below
+		// is the authoritative drain.
+		s.bundleManager.Start(context.Background())
+	}
 
 	// Mark ready.
 	s.ready.Store(true)
 	metrics.Ready.Set(1)
-	s.slogger.Info("server ready", "addr", s.httpServer.Addr)
+	s.slogger.Info("server ready", "addr", s.httpServer.Addr, "tls", s.httpServer.TLSConfig != nil)
 
 	// Start HTTP server in a goroutine.
 	errCh := make(chan error, 1)
 	go func() {
-		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		var err error
+		if s.httpServer.TLSConfig != nil {
+			// Certificates are pre-loaded in TLSConfig, so the file paths are
+			// intentionally empty here.
+			err = s.httpServer.ListenAndServeTLS("", "")
+		} else {
+			err = s.httpServer.ListenAndServe()
+		}
+		if err != nil && err != http.ErrServerClosed {
 			errCh <- err
 		}
 		close(errCh)
@@ -223,6 +483,19 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	case err := <-errCh:
 		return err
 	}
+}
+
+// ReloadBundle triggers an on-demand bundle reload. Used by the SIGHUP
+// handler. No-op (returns nil) when bundle integration is disabled,
+// rather than an error, so SIGHUP behaviour is consistent regardless
+// of config — operators get a single signal they can wire into any ops
+// runbook.
+func (s *Server) ReloadBundle(ctx context.Context) error {
+	if s.bundleManager == nil {
+		return nil
+	}
+	_, err := s.bundleManager.Reload(ctx)
+	return err
 }
 
 // Shutdown performs ordered graceful shutdown.
@@ -240,6 +513,9 @@ func (s *Server) Shutdown() error {
 	}
 
 	// Stop background services.
+	if s.bundleManager != nil {
+		s.bundleManager.Stop()
+	}
 	if s.reachabilityProber != nil {
 		s.reachabilityProber.Stop()
 		s.slogger.Info("reachability prober stopped")
@@ -250,6 +526,11 @@ func (s *Server) Shutdown() error {
 	}
 	if s.ipRateLimiter != nil {
 		s.ipRateLimiter.Stop()
+	}
+
+	// Stop cert reloader.
+	if s.certReloader != nil {
+		s.certReloader.Stop()
 	}
 
 	// Close audit logger.
@@ -266,6 +547,71 @@ func (s *Server) Shutdown() error {
 
 	s.slogger.Info("server shutdown complete")
 	return nil
+}
+
+// initBundleManager constructs and initializes a bundle.Manager based on
+// configuration. Returns bundle.Disabled{} when bundle integration is
+// off; otherwise constructs a LiveManager and runs Init synchronously
+// — a failed Init returns a non-nil error and the server fails to come
+// up. This is intentional: a misconfigured bundle is a security
+// configuration error, not something to silently degrade through.
+//
+// The returned *LiveManager (if any) is wrapped as bundle.Manager for
+// dependency injection but exposed separately so server lifecycle code
+// can call Start/Stop/Reload on it.
+func initBundleManager(cfg *config.Settings, slogger *slog.Logger) (bundle.Manager, bundle.LifecycleManager, error) {
+	bundles := cfg.EffectiveBundles()
+	if len(bundles) == 0 {
+		slogger.Info("bundle integration disabled")
+		return bundle.Disabled{}, nil, nil
+	}
+	children := make([]bundle.LifecycleManager, 0, len(bundles))
+	for _, bc := range bundles {
+		src := bundle.Source{Raw: bc.Ref}
+		loader, err := bundle.NewLoader(src)
+		if err != nil {
+			return nil, nil, fmt.Errorf("constructing bundle loader for %q: %w", bc.Ref, err)
+		}
+		verify := bundle.VerifyConfig{
+			CertificateIdentityRegexp: bc.Cosign.CertificateIdentityRegexp,
+			CertificateOIDCIssuer:     bc.Cosign.CertificateOIDCIssuer,
+			PublicKeyRef:              bc.Cosign.PublicKeyRef,
+			SkipVerification:          bc.Cosign.SkipVerification,
+			RegistryAuth: bundle.RegistryAuthConfig{
+				Mode:         bc.Registry.Auth.Mode,
+				Username:     bc.Registry.Auth.Username,
+				PasswordFile: bc.Registry.Auth.PasswordFile,
+				PasswordEnv:  bc.Registry.Auth.PasswordEnv,
+			},
+		}
+		mgr := bundle.NewLiveManager(loader, src, verify, slogger.With("bundle", bc.Name), bundle.LiveOpts{
+			Name:                   bc.Name,
+			Apps:                   bc.Apps,
+			Mandatory:              cfg.BundleEnforcement == config.BundleEnforcementRequired && len(bc.Apps) == 0,
+			ExpectedPolicyRevision: bc.ExpectedPolicyRevision,
+			PollInterval:           bc.PollInterval,
+			MaxStaleness:           bc.MaxStaleness,
+			FailMode:               bc.FailMode,
+		})
+		initCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		if err := mgr.Init(initCtx); err != nil {
+			cancel()
+			return nil, nil, err
+		}
+		cancel()
+		children = append(children, mgr)
+		slogger.Info("bundle integration enabled",
+			"bundle", bc.Name,
+			"source", bc.Ref,
+			"apps", bc.Apps,
+			"digest", mgr.Digest(),
+			"poll_interval", bc.PollInterval,
+			"max_staleness", bc.MaxStaleness,
+			"fail_mode", bc.FailMode,
+		)
+	}
+	mgr := bundle.NewMultiManager(children, cfg.BundleEnforcement)
+	return mgr, mgr, nil
 }
 
 // securityHeadersMiddleware sets security headers on all responses.
@@ -413,6 +759,10 @@ func routePattern(r *http.Request) string {
 	switch {
 	case strings.HasPrefix(path, "/sts/exchange"):
 		return "/sts/exchange"
+	case path == "/sts/v1/trust-policy.json":
+		return "/sts/v1/trust-policy.json"
+	case path == "/sts/v1/trust-policy/validate":
+		return "/sts/v1/trust-policy/validate"
 	case path == "/health":
 		return "/health"
 	case path == "/ready":
@@ -423,4 +773,3 @@ func routePattern(r *http.Request) string {
 		return "other"
 	}
 }
-

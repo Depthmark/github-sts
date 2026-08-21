@@ -1,12 +1,26 @@
 package server
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"io"
 	"log/slog"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/depthmark/github-sts/internal/config"
 	"github.com/depthmark/github-sts/internal/handler"
 )
 
@@ -209,5 +223,362 @@ func TestRoutePattern(t *testing.T) {
 		if got := routePattern(req); got != tt.want {
 			t.Errorf("routePattern(%q) = %q, want %q", tt.path, got, tt.want)
 		}
+	}
+}
+
+func TestYAMLOnlyAuthorizationPossible(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  config.Settings
+		want bool
+	}{
+		{
+			name: "optional no bundles",
+			cfg: config.Settings{
+				BundleEnforcement: config.BundleEnforcementOptional,
+				Apps:              map[string]config.AppConfig{"app": {}},
+			},
+			want: true,
+		},
+		{
+			name: "optional partial coverage",
+			cfg: config.Settings{
+				BundleEnforcement: config.BundleEnforcementOptional,
+				Apps:              map[string]config.AppConfig{"covered": {}, "uncovered": {}},
+				Bundles:           []config.BundleConfig{{Apps: []string{"covered"}}},
+			},
+			want: true,
+		},
+		{
+			name: "optional complete scoped coverage",
+			cfg: config.Settings{
+				BundleEnforcement: config.BundleEnforcementOptional,
+				Apps:              map[string]config.AppConfig{"one": {}, "two": {}},
+				Bundles:           []config.BundleConfig{{Apps: []string{"one", "two"}}},
+			},
+		},
+		{
+			name: "optional global coverage",
+			cfg: config.Settings{
+				BundleEnforcement: config.BundleEnforcementOptional,
+				Apps:              map[string]config.AppConfig{"one": {}, "two": {}},
+				Bundles:           []config.BundleConfig{{Apps: nil}},
+			},
+		},
+		{
+			name: "required",
+			cfg: config.Settings{
+				BundleEnforcement: config.BundleEnforcementRequired,
+				Apps:              map[string]config.AppConfig{"app": {}},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := yamlOnlyAuthorizationPossible(&tt.cfg); got != tt.want {
+				t.Fatalf("yamlOnlyAuthorizationPossible() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestInitBundleManager_WiresExpectedPolicyRevision(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bundle.tar.gz")
+	writeServerTestBundle(t, path, "3")
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	cfg := &config.Settings{
+		BundleEnforcement: config.BundleEnforcementOptional,
+		Bundles: []config.BundleConfig{{
+			Name: "revision", Ref: "file://" + path, ExpectedPolicyRevision: "4",
+			PollInterval: time.Minute, MaxStaleness: time.Minute, FailMode: config.BundleFailModeClosed,
+		}},
+	}
+	_, lifecycle, err := initBundleManager(cfg, logger)
+	if lifecycle != nil {
+		lifecycle.Stop()
+	}
+	if err == nil || !bytes.Contains([]byte(err.Error()), []byte("expected policy revision \"4\" does not match bundle manifest revision \"3\"")) {
+		t.Fatalf("initBundleManager error = %v, want wired revision mismatch", err)
+	}
+}
+
+func writeServerTestBundle(t *testing.T, path, revision string) {
+	t.Helper()
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gzipWriter := gzip.NewWriter(file)
+	tarWriter := tar.NewWriter(gzipWriter)
+	files := map[string]string{
+		"policies/policy.rego": `package sts.enterprise.server_test
+import rego.v1
+decision := {"allow": false, "reasons": ["deny"]}
+`,
+		".manifest": `{"revision":"` + revision + `"}`,
+	}
+	for name, body := range files {
+		if err := tarWriter.WriteHeader(&tar.Header{Name: name, Mode: 0o600, Size: int64(len(body))}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tarWriter.Write([]byte(body)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tarWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gzipWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// writeTestTLSFiles generates a self-signed server certificate and key and
+// writes them to temporary files, returning their paths.
+func writeTestTLSFiles(t *testing.T) (certFile, keyFile string) {
+	t.Helper()
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generating RSA key: %v", err)
+	}
+
+	tmpl := x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "github-sts"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("creating certificate: %v", err)
+	}
+
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+
+	dir := t.TempDir()
+	certFile = filepath.Join(dir, "tls.crt")
+	keyFile = filepath.Join(dir, "tls.key")
+	if err := os.WriteFile(certFile, certPEM, 0600); err != nil {
+		t.Fatalf("writing cert: %v", err)
+	}
+	if err := os.WriteFile(keyFile, keyPEM, 0600); err != nil {
+		t.Fatalf("writing key: %v", err)
+	}
+	return certFile, keyFile
+}
+
+func TestBuildTLSConfig_Disabled(t *testing.T) {
+	cfg := &config.Settings{}
+	tlsCfg, reloader, err := buildTLSConfig(cfg, slog.Default())
+	if err != nil {
+		t.Fatalf("buildTLSConfig() error: %v", err)
+	}
+	if tlsCfg != nil {
+		t.Error("expected nil TLS config when TLS is disabled")
+	}
+	if reloader != nil {
+		t.Error("expected nil cert reloader when TLS is disabled")
+	}
+}
+
+func TestBuildTLSConfig_ServerOnly(t *testing.T) {
+	certFile, keyFile := writeTestTLSFiles(t)
+	cfg := &config.Settings{}
+	cfg.Server.TLS.CertFile = certFile
+	cfg.Server.TLS.KeyFile = keyFile
+
+	tlsCfg, reloader, err := buildTLSConfig(cfg, slog.Default())
+	if err != nil {
+		t.Fatalf("buildTLSConfig() error: %v", err)
+	}
+	if tlsCfg == nil {
+		t.Fatal("expected non-nil TLS config")
+	}
+	if reloader == nil {
+		t.Fatal("expected non-nil cert reloader")
+	}
+	if tlsCfg.GetCertificate == nil {
+		t.Error("expected GetCertificate to be set")
+	}
+	if len(tlsCfg.Certificates) != 0 {
+		t.Errorf("expected empty Certificates (hot-reload uses GetCertificate), got %d", len(tlsCfg.Certificates))
+	}
+	if tlsCfg.MinVersion != tls.VersionTLS12 {
+		t.Errorf("min version = %d, want %d", tlsCfg.MinVersion, tls.VersionTLS12)
+	}
+	if tlsCfg.ClientAuth != tls.NoClientCert {
+		t.Errorf("client auth = %d, want NoClientCert", tlsCfg.ClientAuth)
+	}
+}
+
+func TestBuildTLSConfig_WithClientCA(t *testing.T) {
+	certFile, keyFile := writeTestTLSFiles(t)
+	cfg := &config.Settings{}
+	cfg.Server.TLS.CertFile = certFile
+	cfg.Server.TLS.KeyFile = keyFile
+	// Reuse the self-signed cert as the trusted client CA for the test.
+	cfg.Server.TLS.ClientCAFile = certFile
+
+	tlsCfg, _, err := buildTLSConfig(cfg, slog.Default())
+	if err != nil {
+		t.Fatalf("buildTLSConfig() error: %v", err)
+	}
+	if tlsCfg.ClientAuth != tls.RequireAndVerifyClientCert {
+		t.Errorf("client auth = %d, want RequireAndVerifyClientCert", tlsCfg.ClientAuth)
+	}
+	if tlsCfg.ClientCAs == nil {
+		t.Error("expected non-nil client CA pool")
+	}
+}
+
+func TestBuildTLSConfig_InvalidCert(t *testing.T) {
+	cfg := &config.Settings{}
+	cfg.Server.TLS.CertFile = "/does/not/exist.crt"
+	cfg.Server.TLS.KeyFile = "/does/not/exist.key"
+
+	if _, _, err := buildTLSConfig(cfg, slog.Default()); err == nil {
+		t.Error("expected error for invalid certificate paths")
+	}
+}
+
+func TestBuildTLSConfig_InvalidClientCA(t *testing.T) {
+	certFile, keyFile := writeTestTLSFiles(t)
+	cfg := &config.Settings{}
+	cfg.Server.TLS.CertFile = certFile
+	cfg.Server.TLS.KeyFile = keyFile
+	cfg.Server.TLS.ClientCAFile = "/does/not/exist/ca.crt"
+
+	if _, _, err := buildTLSConfig(cfg, slog.Default()); err == nil {
+		t.Error("expected error for invalid client CA path")
+	}
+}
+
+func TestBuildTLSConfig_MinVersionTLS13(t *testing.T) {
+	certFile, keyFile := writeTestTLSFiles(t)
+	cfg := &config.Settings{}
+	cfg.Server.TLS.CertFile = certFile
+	cfg.Server.TLS.KeyFile = keyFile
+	cfg.Server.TLS.MinVersion = "1.3"
+
+	tlsCfg, _, err := buildTLSConfig(cfg, slog.Default())
+	if err != nil {
+		t.Fatalf("buildTLSConfig() error: %v", err)
+	}
+	if tlsCfg.MinVersion != tls.VersionTLS13 {
+		t.Errorf("min version = %d, want %d", tlsCfg.MinVersion, tls.VersionTLS13)
+	}
+}
+
+func TestBuildTLSConfig_WithCipherSuites(t *testing.T) {
+	certFile, keyFile := writeTestTLSFiles(t)
+	cfg := &config.Settings{}
+	cfg.Server.TLS.CertFile = certFile
+	cfg.Server.TLS.KeyFile = keyFile
+	cfg.Server.TLS.CipherSuites = []string{
+		"TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+		"TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
+	}
+
+	tlsCfg, _, err := buildTLSConfig(cfg, slog.Default())
+	if err != nil {
+		t.Fatalf("buildTLSConfig() error: %v", err)
+	}
+	if len(tlsCfg.CipherSuites) != 2 {
+		t.Errorf("cipher suites = %d, want 2", len(tlsCfg.CipherSuites))
+	}
+}
+
+func TestCertReloader_GetCertificate(t *testing.T) {
+	certFile, keyFile := writeTestTLSFiles(t)
+	r, err := newCertReloader(certFile, keyFile, 0, slog.Default())
+	if err != nil {
+		t.Fatalf("newCertReloader() error: %v", err)
+	}
+	defer r.Stop()
+
+	cert, err := r.GetCertificate(nil)
+	if err != nil {
+		t.Fatalf("GetCertificate() error: %v", err)
+	}
+	if cert == nil {
+		t.Fatal("expected non-nil certificate")
+	}
+}
+
+func TestCertReloader_Load_UpdatesCert(t *testing.T) {
+	dir := t.TempDir()
+	certFile := filepath.Join(dir, "tls.crt")
+	keyFile := filepath.Join(dir, "tls.key")
+
+	writeTLSFilesToDir(t, dir, big.NewInt(1))
+	r, err := newCertReloader(certFile, keyFile, 0, slog.Default())
+	if err != nil {
+		t.Fatalf("newCertReloader() error: %v", err)
+	}
+	defer r.Stop()
+
+	firstCert, _ := r.GetCertificate(nil)
+	firstDER := firstCert.Certificate[0]
+
+	// Overwrite with a new cert (different serial).
+	writeTLSFilesToDir(t, dir, big.NewInt(2))
+	if err := r.load(); err != nil {
+		t.Fatalf("load() error: %v", err)
+	}
+
+	secondCert, _ := r.GetCertificate(nil)
+	secondDER := secondCert.Certificate[0]
+
+	if string(firstDER) == string(secondDER) {
+		t.Error("expected cert to differ after reload")
+	}
+}
+
+func TestCertReloader_StopWithoutGoroutine(t *testing.T) {
+	certFile, keyFile := writeTestTLSFiles(t)
+	r, err := newCertReloader(certFile, keyFile, 0, slog.Default())
+	if err != nil {
+		t.Fatalf("newCertReloader() error: %v", err)
+	}
+	// Stop with no goroutine must not panic.
+	r.Stop()
+}
+
+// writeTLSFilesToDir writes a self-signed cert+key with the given serial into dir.
+func writeTLSFilesToDir(t *testing.T, dir string, serial *big.Int) {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generating RSA key: %v", err)
+	}
+	tmpl := x509.Certificate{
+		SerialNumber: serial,
+		Subject:      pkix.Name{CommonName: "github-sts"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("creating certificate: %v", err)
+	}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	if err := os.WriteFile(filepath.Join(dir, "tls.crt"), certPEM, 0600); err != nil {
+		t.Fatalf("writing cert: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "tls.key"), keyPEM, 0600); err != nil {
+		t.Fatalf("writing key: %v", err)
 	}
 }

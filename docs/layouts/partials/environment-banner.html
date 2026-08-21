@@ -1,0 +1,12 @@
+{{- if eq .Params.environment "local" -}}
+<div class="env-banner" role="note">
+  <div class="env-banner__icon" aria-hidden="true">!</div>
+  <div>
+    <div class="env-banner__title">{{ i18n "envLocalTitle" }}</div>
+    <div class="env-banner__body">
+      {{ i18n "envLocalBody" }}
+      <a href="{{ relLangURL "integrations/deploy-with-helm/" }}">{{ i18n "envLocalLink" }}</a>
+    </div>
+  </div>
+</div>
+{{- end -}}

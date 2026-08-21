@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/depthmark/github-sts/internal/metrics"
 	"github.com/golang-jwt/jwt/v5"
+	"golang.org/x/sync/singleflight"
 )
 
 // installationCacheTTL controls how long resolved installation IDs are
@@ -25,9 +27,22 @@ import (
 // stale; this TTL ensures the service self-heals without a restart.
 const installationCacheTTL = 15 * time.Minute
 
+// appJWTCacheTTL controls how long the signed App JWT is reused. The JWT
+// itself is valid for 10 minutes; we cache for 9 minutes to leave a
+// 1-minute safety margin. This eliminates redundant RSA signings on the
+// hot path (~1-2ms each) without any security impact — the JWT is an
+// internal server credential that never leaves the service.
+const appJWTCacheTTL = 9 * time.Minute
+
 type cachedInstallation struct {
-	id        int64
-	fetchedAt time.Time
+	id          int64
+	permissions map[string]string // granted permissions on the installation
+	fetchedAt   time.Time
+}
+
+type cachedJWT struct {
+	token     string
+	expiresAt time.Time
 }
 
 // AppTokenProvider creates permission-scoped GitHub installation tokens
@@ -39,7 +54,12 @@ type AppTokenProvider struct {
 	apiURL            string
 	httpClient        *http.Client
 	installationCache map[string]*cachedInstallation // org → entry
+	targetCache       map[string]*cachedTarget       // canonical owner/repository → entry
 	mu                sync.RWMutex
+	jwtCache          cachedJWT
+	jwtMu             sync.Mutex
+	installSF         singleflight.Group
+	targetSF          singleflight.Group
 }
 
 // NewAppTokenProvider creates a server-side AppTokenProvider.
@@ -54,11 +74,21 @@ func NewAppTokenProvider(appName string, appID int64, privateKey *rsa.PrivateKey
 		apiURL:            apiURL,
 		httpClient:        httpClient,
 		installationCache: make(map[string]*cachedInstallation),
+		targetCache:       make(map[string]*cachedTarget),
 	}
 }
 
-// GenerateAppJWT creates a short-lived JWT for authenticating as the GitHub App.
+// GenerateAppJWT returns a short-lived JWT for authenticating as the GitHub
+// App. The signed token is cached for 9 minutes (valid for 10) to avoid
+// redundant RSA signing operations under load.
 func (p *AppTokenProvider) GenerateAppJWT() (string, error) {
+	p.jwtMu.Lock()
+	defer p.jwtMu.Unlock()
+
+	if p.jwtCache.token != "" && time.Now().Before(p.jwtCache.expiresAt) {
+		return p.jwtCache.token, nil
+	}
+
 	now := time.Now()
 	claims := jwt.MapClaims{
 		"iat": now.Add(-60 * time.Second).Unix(),
@@ -66,11 +96,21 @@ func (p *AppTokenProvider) GenerateAppJWT() (string, error) {
 		"iss": fmt.Sprintf("%d", p.appID),
 	}
 	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
-	return tok.SignedString(p.privateKey)
+	signed, err := tok.SignedString(p.privateKey)
+	if err != nil {
+		return "", err
+	}
+
+	p.jwtCache = cachedJWT{
+		token:     signed,
+		expiresAt: now.Add(appJWTCacheTTL),
+	}
+	return signed, nil
 }
 
 // GetInstallationID resolves the GitHub App installation ID for the given scope.
 // Only org-level resolution is supported (no repo-level fallback).
+// Concurrent requests for the same org are deduplicated via singleflight.
 func (p *AppTokenProvider) GetInstallationID(ctx context.Context, scope string) (int64, error) {
 	org := extractOrg(scope)
 
@@ -82,7 +122,27 @@ func (p *AppTokenProvider) GetInstallationID(ctx context.Context, scope string) 
 	}
 	p.mu.RUnlock()
 
-	// Resolve from GitHub.
+	// Singleflight: deduplicate concurrent fetches for the same org.
+	v, err, _ := p.installSF.Do(org, func() (any, error) {
+		// Double-check cache after winning the singleflight race.
+		p.mu.RLock()
+		if entry, ok := p.installationCache[org]; ok && time.Since(entry.fetchedAt) < installationCacheTTL {
+			p.mu.RUnlock()
+			return entry.id, nil
+		}
+		p.mu.RUnlock()
+
+		return p.fetchInstallationID(ctx, org)
+	})
+	if err != nil {
+		return 0, err
+	}
+	return v.(int64), nil
+}
+
+// fetchInstallationID performs the actual GitHub API call to resolve the
+// installation ID for the given org, and caches the result.
+func (p *AppTokenProvider) fetchInstallationID(ctx context.Context, org string) (int64, error) {
 	appJWT, err := p.GenerateAppJWT()
 	if err != nil {
 		return 0, fmt.Errorf("generating app JWT: %w", err)
@@ -126,7 +186,8 @@ func (p *AppTokenProvider) GetInstallationID(ctx context.Context, scope string) 
 	}
 
 	var install struct {
-		ID int64 `json:"id"`
+		ID          int64             `json:"id"`
+		Permissions map[string]string `json:"permissions"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&install); err != nil {
 		return 0, err
@@ -134,19 +195,60 @@ func (p *AppTokenProvider) GetInstallationID(ctx context.Context, scope string) 
 
 	metrics.GitHubAPICalls.WithLabelValues(p.appName, "get_installation", "ok").Inc()
 
-	// Cache the result with timestamp.
+	// Cache the result with timestamp. We capture the installation's granted
+	// permissions so we can diff them against requested permissions on a 422.
 	p.mu.Lock()
 	p.installationCache[org] = &cachedInstallation{
-		id:        install.ID,
-		fetchedAt: time.Now(),
+		id:          install.ID,
+		permissions: install.Permissions,
+		fetchedAt:   time.Now(),
 	}
 	p.mu.Unlock()
 
 	return install.ID, nil
 }
 
+// GetGrantedPermissions returns the cached set of permissions actually
+// granted to this app's installation on the given org, or nil if no
+// installation has been resolved yet (or the entry has expired). It does NOT
+// trigger a fetch — call GetInstallationID first if needed.
+func (p *AppTokenProvider) GetGrantedPermissions(scope string) map[string]string {
+	org := extractOrg(scope)
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	entry, ok := p.installationCache[org]
+	if !ok || time.Since(entry.fetchedAt) >= installationCacheTTL {
+		return nil
+	}
+	if entry.permissions == nil {
+		return nil
+	}
+	out := make(map[string]string, len(entry.permissions))
+	for k, v := range entry.permissions {
+		out[k] = v
+	}
+	return out
+}
+
 // GetInstallationToken creates a permission-scoped GitHub installation token.
 func (p *AppTokenProvider) GetInstallationToken(ctx context.Context, scope string, permissions map[string]string, repositories []string, caller string) (string, error) {
+	if repositories != nil && len(repositories) == 0 {
+		return "", fmt.Errorf("refusing to create an unrestricted installation token from an empty repository list")
+	}
+	if repositories == nil && strings.Contains(scope, "/") {
+		parts := strings.SplitN(scope, "/", 2)
+		repositories = []string{parts[1]}
+	}
+	return p.getInstallationToken(ctx, scope, permissions, repositories, nil, caller)
+}
+
+func (p *AppTokenProvider) getInstallationToken(ctx context.Context, scope string, permissions map[string]string, repositories []string, repositoryIDs []int64, caller string) (string, error) {
+	if repositories != nil && repositoryIDs != nil {
+		return "", fmt.Errorf("repository names and IDs are mutually exclusive")
+	}
+	if repositoryIDs != nil && len(repositoryIDs) == 0 {
+		return "", fmt.Errorf("refusing to create an unrestricted installation token from an empty repository ID list")
+	}
 	installationID, err := p.GetInstallationID(ctx, scope)
 	if err != nil {
 		return "", err
@@ -164,10 +266,9 @@ func (p *AppTokenProvider) GetInstallationToken(ctx context.Context, scope strin
 	}
 	if repositories != nil {
 		body["repositories"] = repositories
-	} else if strings.Contains(scope, "/") {
-		// Repo-level scope: restrict to the target repository.
-		parts := strings.SplitN(scope, "/", 2)
-		body["repositories"] = []string{parts[1]}
+	}
+	if repositoryIDs != nil {
+		body["repository_ids"] = repositoryIDs
 	}
 
 	var reqBody bytes.Buffer
@@ -196,6 +297,26 @@ func (p *AppTokenProvider) GetInstallationToken(ctx context.Context, scope strin
 	if resp.StatusCode == http.StatusUnprocessableEntity {
 		metrics.GitHubAPICalls.WithLabelValues(p.appName, "create_token", "error").Inc()
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+
+		// Diff the requested permissions against what the installation
+		// actually has, so the operator sees exactly which permission is
+		// missing or insufficient (GitHub's 422 body doesn't say).
+		granted := p.GetGrantedPermissions(scope)
+		diff := DiffPermissions(permissions, granted)
+		slog.Error("github token issuance refused (HTTP 422)",
+			"app", p.appName,
+			"app_id", p.appID,
+			"scope", scope,
+			"installation_id", installationID,
+			"requested_permissions", permissions,
+			"requested_repositories", repositories,
+			"requested_repository_ids", repositoryIDs,
+			"granted_permissions", granted,
+			"permissions_diff", diff,
+			"github_response", string(respBody),
+			"caller", caller,
+			"hint", permissionDiffHint(diff, granted),
+		)
 		return "", fmt.Errorf("github refused to create token for app %q scope %q — "+
 			"the requested permissions or repositories may exceed what the app is allowed (HTTP 422): %s",
 			p.appName, scope, string(respBody))
@@ -304,4 +425,95 @@ func formatPermissions(perms map[string]string) string {
 		parts = append(parts, k+":"+v)
 	}
 	return strings.Join(parts, ",")
+}
+
+// permissionLevels orders GitHub App permission levels from least to most
+// privileged. Used to detect "insufficient" grants (e.g. requested write,
+// granted read).
+var permissionLevels = map[string]int{
+	"none":  0,
+	"read":  1,
+	"write": 2,
+	"admin": 3,
+}
+
+// PermissionDiffEntry describes how a single requested permission compares to
+// what the installation actually has.
+type PermissionDiffEntry struct {
+	Permission string `json:"permission"`
+	Requested  string `json:"requested"`
+	Granted    string `json:"granted,omitempty"` // empty if not granted at all
+	Status     string `json:"status"`            // ok | insufficient | missing | unknown
+}
+
+// DiffPermissions compares requested permissions against what was granted on
+// the installation. It returns one entry per requested permission, ordered by
+// permission name. Status is:
+//   - "ok": granted level meets or exceeds requested
+//   - "insufficient": granted but at a lower level (e.g. read < write)
+//   - "missing": permission not granted at all on the installation
+//   - "unknown": granted permissions are not known (e.g. installation cache miss)
+//
+// If granted is nil (cache miss / never resolved), every entry is "unknown"
+// rather than "missing", so the operator isn't misled.
+func DiffPermissions(requested, granted map[string]string) []PermissionDiffEntry {
+	if len(requested) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(requested))
+	for k := range requested {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	out := make([]PermissionDiffEntry, 0, len(keys))
+	for _, k := range keys {
+		req := requested[k]
+		entry := PermissionDiffEntry{Permission: k, Requested: req}
+		if granted == nil {
+			entry.Status = "unknown"
+			out = append(out, entry)
+			continue
+		}
+		got, ok := granted[k]
+		entry.Granted = got
+		switch {
+		case !ok:
+			entry.Status = "missing"
+		case permissionLevels[got] >= permissionLevels[req]:
+			entry.Status = "ok"
+		default:
+			entry.Status = "insufficient"
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+// permissionDiffHint produces a one-line operator hint summarizing the diff.
+func permissionDiffHint(diff []PermissionDiffEntry, granted map[string]string) string {
+	if granted == nil {
+		return "installation permissions not yet cached — retry after the next /orgs/{org}/installation lookup, or check the GitHub App's installation page directly"
+	}
+	var missing, insufficient []string
+	for _, e := range diff {
+		switch e.Status {
+		case "missing":
+			missing = append(missing, e.Permission)
+		case "insufficient":
+			insufficient = append(insufficient, fmt.Sprintf("%s (have %s, need %s)", e.Permission, e.Granted, e.Requested))
+		}
+	}
+	if len(missing) == 0 && len(insufficient) == 0 {
+		return "no permission mismatch detected — the 422 may be due to repositories restriction or a recently-added permission the org admin has not yet accepted"
+	}
+	parts := make([]string, 0, 2)
+	if len(missing) > 0 {
+		parts = append(parts, "missing: "+strings.Join(missing, ","))
+	}
+	if len(insufficient) > 0 {
+		parts = append(parts, "insufficient: "+strings.Join(insufficient, "; "))
+	}
+	return "policy asks for permissions the installation lacks — " + strings.Join(parts, " | ") +
+		". Update the GitHub App permissions and have the org admin accept the new grants, or reduce what the policy requests"
 }

@@ -1,0 +1,19 @@
+# Synthetic target-owned policy used by schema and Rego conformance tests.
+# It allows two example sources to request repository ID 456791 with
+# app=default, identity=cross-repo-ci, scope=example-org/backend.
+issuer: https://token.actions.githubusercontent.com
+claim_pattern:
+  ref: 'refs/heads/.*'
+audience: https://sts.example.com
+github:
+  sources:
+    - owner_id: "123456"
+      repository_id: "456789"
+    - owner_id: "123456"
+      repository_id: "456790"
+  target:
+    owner_id: "123456"
+    repository_id: "456791"
+permissions:
+  contents: read
+  pull_requests: write

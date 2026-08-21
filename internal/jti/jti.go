@@ -44,41 +44,39 @@ func (e *CacheError) Unwrap() error {
 }
 
 // InMemoryCache stores JTIs in a map protected by sync.Mutex.
-// Suitable for single-instance deployments.
+// Suitable for single-instance deployments. Expired entries are evicted
+// by a background goroutine to keep Reserve() O(1).
 type InMemoryCache struct {
-	ttl     time.Duration
-	entries map[string]time.Time // jti → expiresAt
-	mu      sync.Mutex
+	ttl         time.Duration
+	entries     map[string]time.Time // jti → expiresAt
+	mu          sync.Mutex
+	stopCleanup chan struct{}
 }
 
 // NewInMemoryCache creates an in-memory JTI cache with the given default TTL.
+// Call Stop() to halt the background cleanup goroutine.
 func NewInMemoryCache(ttl time.Duration) *InMemoryCache {
-	return &InMemoryCache{
-		ttl:     ttl,
-		entries: make(map[string]time.Time),
+	c := &InMemoryCache{
+		ttl:         ttl,
+		entries:     make(map[string]time.Time),
+		stopCleanup: make(chan struct{}),
 	}
+	go c.cleanupLoop()
+	return c
 }
 
 // Reserve atomically checks whether the JTI has been seen and stores it
-// if new. Performs opportunistic cleanup of expired entries on each call.
+// if new. O(1) — expired entry eviction is handled by the background goroutine.
 func (c *InMemoryCache) Reserve(_ context.Context, jti string, expiresAt time.Time) (bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	now := time.Now()
-
-	// Opportunistic cleanup of expired entries.
-	for k, exp := range c.entries {
-		if exp.Before(now) {
-			delete(c.entries, k)
-		}
-	}
-
-	if _, exists := c.entries[jti]; exists {
+	if exp, exists := c.entries[jti]; exists && exp.After(time.Now()) {
 		return false, nil
 	}
 
 	// Store immediately to prevent concurrent duplicates.
+	now := time.Now()
 	deadline := now.Add(c.ttl)
 	tokenDeadline := expiresAt.Add(1 * time.Second)
 	if tokenDeadline.After(deadline) {
@@ -95,6 +93,38 @@ func (c *InMemoryCache) Release(_ context.Context, jti string) error {
 	defer c.mu.Unlock()
 	delete(c.entries, jti)
 	return nil
+}
+
+// Stop halts the background cleanup goroutine.
+func (c *InMemoryCache) Stop() {
+	close(c.stopCleanup)
+}
+
+// cleanupLoop evicts expired entries every 30 seconds.
+func (c *InMemoryCache) cleanupLoop() {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-c.stopCleanup:
+			return
+		case <-ticker.C:
+			c.evictExpired()
+		}
+	}
+}
+
+func (c *InMemoryCache) evictExpired() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	now := time.Now()
+	for k, exp := range c.entries {
+		if exp.Before(now) {
+			delete(c.entries, k)
+		}
+	}
 }
 
 // RedisCache stores JTIs in Redis using SET NX EX for atomic check-and-store.
