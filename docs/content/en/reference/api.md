@@ -168,7 +168,7 @@ When you use the `github-sts-action`, the token is revoked automatically at the 
 |---|---|---|---|
 | `/health` | `GET` | `200` with liveness, security posture, and configured bundle state | n/a |
 | `/ready` | `GET` | `200` `{"ready":true}` | `503` `{"ready":false}` |
-| `/metrics` | `GET` | Prometheus text format | n/a |
+| `/metrics` | `GET` | Prometheus text format | `401` when metrics authentication is configured and the Bearer token is missing or incorrect |
 
 `/health` is a liveness probe and returns `200` as long as the process is up.
 Its `security` object reports `require_immutable_subject_claims`,

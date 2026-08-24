@@ -3,6 +3,7 @@ package handler
 import (
 	"crypto/subtle"
 	"net/http"
+	"strings"
 	"sync/atomic"
 
 	"github.com/depthmark/github-sts/internal/bundle"
@@ -87,14 +88,15 @@ func MetricsHandler(authToken string) http.Handler {
 	if authToken == "" {
 		return inner
 	}
-	expected := []byte("Bearer " + authToken)
+	expected := []byte(authToken)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		got := []byte(r.Header.Get("Authorization"))
+		scheme, credential, ok := strings.Cut(r.Header.Get("Authorization"), " ")
 		// subtle.ConstantTimeCompare returns 0 when the lengths differ,
 		// without leaking which prefix bytes match. The expected length is
 		// not a secret (it is fixed per deployment), so the length-only
 		// fastpath is acceptable.
-		if subtle.ConstantTimeCompare(got, expected) != 1 {
+		if !ok || !strings.EqualFold(scheme, "Bearer") || subtle.ConstantTimeCompare([]byte(credential), expected) != 1 {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="metrics"`)
 			writeJSON(w, http.StatusUnauthorized, ErrorResponse{Error: "unauthorized"})
 			return
 		}
