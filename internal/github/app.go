@@ -386,14 +386,17 @@ func (p *AppTokenProvider) getInstallationToken(ctx context.Context, scope strin
 
 // isRetryableTokenMintStatus reports whether a non-201, non-422
 // GetInstallationToken response is worth retrying against a different pool
-// instance: primary rate limit (403 + remaining=0), secondary/abuse rate
-// limit (403 + Retry-After), or a 5xx. Everything else (other 4xx, or a bare
-// 403 with neither signal) fails closed — not retried.
+// instance: primary rate limit (403 or 429 + remaining=0), secondary/abuse
+// rate limit (403 or 429 + Retry-After), or a 5xx. GitHub documents both 403
+// and 429 for primary and secondary rate-limit responses — see
+// https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api#exceeding-the-rate-limit.
+// Everything else (other 4xx, or a bare 403/429 with neither signal) fails
+// closed — not retried.
 func isRetryableTokenMintStatus(resp *http.Response) bool {
 	if resp.StatusCode >= 500 {
 		return true
 	}
-	if resp.StatusCode == http.StatusForbidden {
+	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
 		if resp.Header.Get("Retry-After") != "" {
 			return true
 		}
@@ -406,8 +409,8 @@ func isRetryableTokenMintStatus(resp *http.Response) bool {
 
 // ExtractRateLimitHeaders reads GitHub rate limit headers from an HTTP
 // response and updates Prometheus gauges. Also detects rate limit exceeded
-// conditions on 403 responses. instance labels which pool member (or, for a
-// non-pooled app, which normalized single instance) made the call.
+// conditions on 403 or 429 responses. instance labels which pool member (or,
+// for a non-pooled app, which normalized single instance) made the call.
 func ExtractRateLimitHeaders(resp *http.Response, appName, instance, caller string) {
 	resource := resp.Header.Get("X-RateLimit-Resource")
 	if resource == "" {
@@ -451,19 +454,26 @@ func ExtractRateLimitHeaders(resp *http.Response, appName, instance, caller stri
 		metrics.GitHubRateLimitRemainingPercent.WithLabelValues(appName, instance, resource).Set(pct)
 	}
 
-	// Detect rate limit exceeded on 403.
-	if resp.StatusCode == http.StatusForbidden {
+	// Detect rate limit exceeded on 403 or 429 — GitHub documents both status
+	// codes for primary and secondary rate limits (see
+	// https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api#exceeding-the-rate-limit).
+	// Signal detection matches isRetryableTokenMintStatus exactly (an
+	// explicit Retry-After or X-RateLimit-Remaining: 0 header), so failover
+	// and observability share one contract: a header absent is not the same
+	// as a header present with value 0, and the parsed remaining float above
+	// (0 when the header is absent) is deliberately not reused here.
+	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
 		if retryAfter := resp.Header.Get("Retry-After"); retryAfter != "" {
 			// Secondary/abuse rate limit.
 			metrics.GitHubSecondaryRateLimitTotal.WithLabelValues(appName, instance, caller).Inc()
 			if n, err := strconv.ParseFloat(retryAfter, 64); err == nil {
 				metrics.GitHubSecondaryRateLimitRetryAfter.WithLabelValues(appName, instance).Set(n)
 			}
-			slog.Warn("secondary rate limit hit", "app", appName, "instance", instance, "retry_after", retryAfter, "caller", caller)
-		} else if remaining == 0 {
+			slog.Warn("secondary rate limit hit", "app", appName, "instance", instance, "status", resp.StatusCode, "retry_after", retryAfter, "caller", caller)
+		} else if resp.Header.Get("X-RateLimit-Remaining") == "0" {
 			// Primary rate limit exceeded.
 			metrics.GitHubRateLimitExceededTotal.WithLabelValues(appName, instance, resource, caller).Inc()
-			slog.Warn("primary rate limit exceeded", "app", appName, "instance", instance, "resource", resource, "caller", caller)
+			slog.Warn("primary rate limit exceeded", "app", appName, "instance", instance, "status", resp.StatusCode, "resource", resource, "caller", caller)
 		}
 	}
 }

@@ -1373,6 +1373,34 @@ func TestValidate_Instances_DuplicateAppIDWithinPool(t *testing.T) {
 	}
 }
 
+func TestValidate_Instances_DuplicateName(t *testing.T) {
+	cfg := validDefaults()
+	cfg.Apps["test"] = AppConfig{Instances: []AppInstanceConfig{
+		{Name: "primary", AppID: 1, PrivateKey: testPEM},
+		{Name: "primary", AppID: 2, PrivateKey: testPEM},
+	}}
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), `instance name "primary"`) {
+		t.Errorf("expected duplicate instance name error, got: %v", err)
+	}
+}
+
+func TestValidate_Instances_ExplicitNameCollidesWithDefault(t *testing.T) {
+	// Instance 0 explicitly names itself after instance 1's app_id, which
+	// instance 1 will later default its own name to (normalizeInstances
+	// fills in the app_id-as-string default after Validate runs) — Validate
+	// must anticipate that default rather than only comparing raw names.
+	cfg := validDefaults()
+	cfg.Apps["test"] = AppConfig{Instances: []AppInstanceConfig{
+		{Name: "222", AppID: 111, PrivateKey: testPEM},
+		{AppID: 222, PrivateKey: testPEM},
+	}}
+	err := cfg.Validate()
+	if err == nil || !contains(err.Error(), `instance name "222"`) {
+		t.Errorf("expected duplicate instance name error, got: %v", err)
+	}
+}
+
 func TestValidate_DuplicateAppIDAcrossPools_NotAnError(t *testing.T) {
 	// The same app_id reused across two different logical apps must NOT
 	// fail Validate() — only a within-pool duplicate is a hard error. This
@@ -1539,6 +1567,47 @@ oidc:
 	}
 	if app.Rotation.MinRemainingPct != 5 {
 		t.Errorf("Rotation.MinRemainingPct = %v, want 5", app.Rotation.MinRemainingPct)
+	}
+}
+
+func TestLoad_EnvOverrides_RotationMaxAttempts_InvalidValue(t *testing.T) {
+	keyPath := writeTestKey(t)
+	yaml := `
+bundle_enforcement: optional
+apps:
+  checkout:
+    app_id: 111111
+    private_key_path: "` + keyPath + `"
+oidc:
+  allowed_issuers:
+    - "https://test.example.com"
+`
+	path := writeTestConfig(t, yaml)
+	t.Setenv("GITHUBSTS_APP_CHECKOUT_ROTATION_MAX_ATTEMPTS", "3.5")
+
+	_, err := Load(path)
+	if err == nil || !contains(err.Error(), "ROTATION_MAX_ATTEMPTS") {
+		t.Fatalf("expected ROTATION_MAX_ATTEMPTS parse error, got: %v", err)
+	}
+}
+
+func TestLoad_EnvOverrides_IndexedInstanceAppID_InvalidValue(t *testing.T) {
+	keyPath := writeTestKey(t)
+	yaml := `
+bundle_enforcement: optional
+apps:
+  checkout: {}
+oidc:
+  allowed_issuers:
+    - "https://test.example.com"
+`
+	path := writeTestConfig(t, yaml)
+	t.Setenv("GITHUBSTS_APP_CHECKOUT_INSTANCE_1_APP_ID", "not-a-number")
+	t.Setenv("GITHUBSTS_APP_CHECKOUT_INSTANCE_1_PRIVATE_KEY_PATH", keyPath)
+
+	_, err := Load(path)
+	if err == nil || !contains(err.Error(), "INSTANCE_1_APP_ID") {
+		t.Fatalf("expected INSTANCE_1_APP_ID parse error, got: %v", err)
 	}
 }
 

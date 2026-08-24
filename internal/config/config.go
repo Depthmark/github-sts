@@ -544,6 +544,7 @@ func (s *Settings) Validate() error {
 // checked here — see (*Settings).DuplicateAppIDWarnings.
 func validateInstances(appName string, instances []AppInstanceConfig) error {
 	seen := make(map[int64]string, len(instances))
+	nameSeen := make(map[string]string, len(instances))
 	for i, inst := range instances {
 		label := inst.Name
 		if label == "" {
@@ -573,6 +574,19 @@ func validateInstances(appName string, instances []AppInstanceConfig) error {
 			return fmt.Errorf("app %q: duplicate app_id %d within pool (instances %s and %s)", appName, inst.AppID, prev, label)
 		}
 		seen[inst.AppID] = label
+
+		// Compare the *effective* name — inst.Name, or the app_id-as-string
+		// default normalizeInstances will later fill in when it's empty —
+		// so an explicit name colliding with another instance's future
+		// default is caught here too, not just two explicit names matching.
+		effectiveName := inst.Name
+		if effectiveName == "" {
+			effectiveName = strconv.FormatInt(inst.AppID, 10)
+		}
+		if prev, dup := nameSeen[effectiveName]; dup {
+			return fmt.Errorf("app %q: instance name %q used by both instances %s and %s", appName, effectiveName, prev, label)
+		}
+		nameSeen[effectiveName] = label
 	}
 	return nil
 }
@@ -1109,15 +1123,11 @@ func applyEnvOverrides(cfg *Settings) error {
 		if v := os.Getenv("GITHUBSTS_APP_" + upper + "_ROTATION_STRATEGY"); v != "" {
 			app.Rotation.Strategy = v
 		}
-		if v := os.Getenv("GITHUBSTS_APP_" + upper + "_ROTATION_MIN_REMAINING_PCT"); v != "" {
-			if n, err := strconv.ParseFloat(v, 64); err == nil {
-				app.Rotation.MinRemainingPct = n
-			}
+		if err := envFloat64("GITHUBSTS_APP_"+upper+"_ROTATION_MIN_REMAINING_PCT", &app.Rotation.MinRemainingPct); err != nil {
+			return err
 		}
-		if v := os.Getenv("GITHUBSTS_APP_" + upper + "_ROTATION_MAX_ATTEMPTS"); v != "" {
-			if n, err := strconv.Atoi(v); err == nil {
-				app.Rotation.MaxAttempts = n
-			}
+		if err := envInt("GITHUBSTS_APP_"+upper+"_ROTATION_MAX_ATTEMPTS", &app.Rotation.MaxAttempts); err != nil {
+			return err
 		}
 
 		// Indexed instance overrides: GITHUBSTS_APP_{NAME}_INSTANCE_{N}_*,
@@ -1137,9 +1147,11 @@ func applyEnvOverrides(cfg *Settings) error {
 			}
 			inst := &app.Instances[i-1]
 			if appIDStr != "" {
-				if n, err := strconv.ParseInt(appIDStr, 10, 64); err == nil {
-					inst.AppID = n
+				n, err := strconv.ParseInt(appIDStr, 10, 64)
+				if err != nil {
+					return fmt.Errorf("%sAPP_ID must be an integer: %w", prefix, err)
 				}
+				inst.AppID = n
 			}
 			if privKey != "" {
 				inst.PrivateKey = privKey

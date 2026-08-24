@@ -99,6 +99,58 @@ For a repository still using GitHub's legacy subject format, coordinate these st
 
 The checked-in `Depthmark/github-sts` release policy expects owner ID `268749784` and repository ID `1198676434`. Opt that repository in before merging the policy migration. The legacy server opt-out (`GITHUBSTS_OIDC_REQUIRE_IMMUTABLE_SUBJECT_CLAIMS=false`) does not make an exact immutable trust policy match a legacy token.
 
+## Migration: pool metrics `instance` label
+
+Upgrading to a version with [app pools]({{< relref "/reference/configuration#app-pools-multi-instance-rate-limit-rotation" >}}) adds an `instance` label to every GitHub App, rate-limit, and reachability metric that already existed. This applies to every deployment, not only ones that configure `instances:` — a single-instance app is normalized into a pool of one internally, so it still carries the label (see [Metrics]({{< relref "/reference/metrics" >}})):
+
+```text
+githubsts_token_exchanges_total
+githubsts_token_exchange_duration_seconds
+githubsts_github_api_calls_total
+githubsts_github_tokens_issued_total
+githubsts_github_rate_limit_limit
+githubsts_github_rate_limit_remaining
+githubsts_github_rate_limit_used
+githubsts_github_rate_limit_reset_timestamp
+githubsts_github_rate_limit_remaining_percent
+githubsts_github_rate_limit_exceeded_total
+githubsts_github_secondary_rate_limit_total
+githubsts_github_secondary_rate_limit_retry_after_seconds
+githubsts_github_reachable
+githubsts_github_reachability_check_duration_seconds
+githubsts_github_reachability_failures_total
+```
+
+**If every app stays single-instance,** series counts are unchanged: each of the metrics above still has exactly one series per app (per resource, per endpoint, etc.), just with one more label attached. A query that doesn't assert an exact label set continues to return the same result. Most dashboards and alerts need no change.
+
+**If an app adopts a pool of N instances,** that app's series count for each metric above multiplies by N — one series per instance, not one aggregate. A panel or alert written when the label didn't exist will now show, or alert on, N separate series instead of one.
+
+**Before** (single instance, or before upgrading):
+
+```promql
+githubsts_github_rate_limit_remaining_percent{app="checkout"} < 10
+```
+
+**After** (aggregate across however many instances the app has, so the query keeps its old meaning regardless of pool size):
+
+```promql
+min(githubsts_github_rate_limit_remaining_percent{app="checkout"}) by (app) < 10
+```
+
+Or, to alert on a specific credential instead of the whole logical app (new capability, not required):
+
+```promql
+githubsts_github_rate_limit_remaining_percent{app="checkout", instance="checkout-2"} < 10
+```
+
+**Step-by-step migration:**
+
+1. Before upgrading, list dashboard panels and alert rules that reference any metric in the list above.
+2. For each one, decide whether it should keep reporting one value per app (wrap it in `sum`/`min`/`max` `by (...)` with `instance` excluded from the grouping) or start reporting per-instance detail (add `instance` to the `by (...)` clause instead).
+3. Update those queries before or immediately after the upgrade; the label change takes effect the moment the new version starts serving traffic.
+4. Deploy.
+5. Confirm panels render the expected series count and alerts still fire on the expected condition.
+
 ## Pre-upgrade checklist
 
 1. Read the release notes for breaking changes.

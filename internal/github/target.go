@@ -136,7 +136,7 @@ func (p *AppTokenProvider) fetchTarget(ctx context.Context, scope RepositoryScop
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
 		metrics.GitHubAPICalls.WithLabelValues(p.appName, p.instance, "resolve_target", "error").Inc()
-		return TargetIdentity{}, fmt.Errorf("resolving target %q: %w", scope.String(), err)
+		return TargetIdentity{}, &TokenMintError{Retryable: true, Err: fmt.Errorf("resolving target %q: %w", scope.String(), err)}
 	}
 	defer func() { _ = resp.Body.Close() }()
 	ExtractRateLimitHeaders(resp, p.appName, p.instance, "target_resolver")
@@ -144,7 +144,12 @@ func (p *AppTokenProvider) fetchTarget(ctx context.Context, scope RepositoryScop
 	if resp.StatusCode != http.StatusOK {
 		metrics.GitHubAPICalls.WithLabelValues(p.appName, p.instance, "resolve_target", "error").Inc()
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return TargetIdentity{}, fmt.Errorf("resolving target %q: GitHub API returned HTTP %d: %s", scope.String(), resp.StatusCode, string(body))
+		return TargetIdentity{}, &TokenMintError{
+			StatusCode: resp.StatusCode,
+			Retryable:  isRetryableTokenMintStatus(resp),
+			Err: fmt.Errorf("resolving target %q: GitHub API returned HTTP %d: %s",
+				scope.String(), resp.StatusCode, string(body)),
+		}
 	}
 
 	var repository struct {

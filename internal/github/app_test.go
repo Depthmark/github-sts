@@ -10,6 +10,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/depthmark/github-sts/internal/metrics"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 func generateTestKey(t *testing.T) *rsa.PrivateKey {
@@ -186,30 +189,79 @@ func TestExtractRateLimitHeaders(t *testing.T) {
 	ExtractRateLimitHeaders(resp, "test-app", "test-instance", "test")
 }
 
-func TestExtractRateLimitHeaders_403_PrimaryExceeded(t *testing.T) {
-	resp := &http.Response{
-		StatusCode: http.StatusForbidden,
-		Header: http.Header{
-			"X-Ratelimit-Remaining": {"0"},
-			"X-Ratelimit-Limit":     {"5000"},
-			"X-Ratelimit-Resource":  {"core"},
-		},
-	}
+func TestExtractRateLimitHeaders_PrimaryExceeded(t *testing.T) {
+	for _, status := range []int{http.StatusForbidden, http.StatusTooManyRequests} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			app := "rl-primary-" + http.StatusText(status)
+			resp := &http.Response{
+				StatusCode: status,
+				Header: http.Header{
+					"X-Ratelimit-Remaining": {"0"},
+					"X-Ratelimit-Limit":     {"5000"},
+					"X-Ratelimit-Resource":  {"core"},
+				},
+			}
 
-	// Should not panic — logs a warning.
-	ExtractRateLimitHeaders(resp, "test-app", "test-instance", "test")
+			ExtractRateLimitHeaders(resp, app, "test-instance", "test")
+
+			if got := testutil.ToFloat64(metrics.GitHubRateLimitExceededTotal.WithLabelValues(app, "test-instance", "core", "test")); got != 1 {
+				t.Errorf("GitHubRateLimitExceededTotal = %v, want 1", got)
+			}
+			if got := testutil.ToFloat64(metrics.GitHubSecondaryRateLimitTotal.WithLabelValues(app, "test-instance", "test")); got != 0 {
+				t.Errorf("GitHubSecondaryRateLimitTotal = %v, want 0 (this is a primary limit, not secondary)", got)
+			}
+		})
+	}
 }
 
-func TestExtractRateLimitHeaders_403_SecondaryLimit(t *testing.T) {
-	resp := &http.Response{
-		StatusCode: http.StatusForbidden,
-		Header: http.Header{
-			"Retry-After": {"60"},
-		},
-	}
+func TestExtractRateLimitHeaders_SecondaryLimit(t *testing.T) {
+	for _, status := range []int{http.StatusForbidden, http.StatusTooManyRequests} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			app := "rl-secondary-" + http.StatusText(status)
+			resp := &http.Response{
+				StatusCode: status,
+				Header: http.Header{
+					"Retry-After": {"60"},
+				},
+			}
 
-	// Should not panic — logs a warning.
-	ExtractRateLimitHeaders(resp, "test-app", "test-instance", "test")
+			ExtractRateLimitHeaders(resp, app, "test-instance", "test")
+
+			if got := testutil.ToFloat64(metrics.GitHubSecondaryRateLimitTotal.WithLabelValues(app, "test-instance", "test")); got != 1 {
+				t.Errorf("GitHubSecondaryRateLimitTotal = %v, want 1", got)
+			}
+			if got := testutil.ToFloat64(metrics.GitHubSecondaryRateLimitRetryAfter.WithLabelValues(app, "test-instance")); got != 60 {
+				t.Errorf("GitHubSecondaryRateLimitRetryAfter = %v, want 60", got)
+			}
+			if got := testutil.ToFloat64(metrics.GitHubRateLimitExceededTotal.WithLabelValues(app, "test-instance", "core", "test")); got != 0 {
+				t.Errorf("GitHubRateLimitExceededTotal = %v, want 0 (this is a secondary limit, not primary)", got)
+			}
+		})
+	}
+}
+
+// TestExtractRateLimitHeaders_NoSignal_DoesNotCountAsExceeded guards a
+// regression where the primary-limit check compared a parsed float that
+// defaults to 0 when X-RateLimit-Remaining is absent — indistinguishable
+// from the header actually being "0" — so any bare 403/429 (a permissions
+// error, a WAF block, anything with no rate-limit headers at all) was
+// misclassified and counted as a rate limit event.
+func TestExtractRateLimitHeaders_NoSignal_DoesNotCountAsExceeded(t *testing.T) {
+	for _, status := range []int{http.StatusForbidden, http.StatusTooManyRequests} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			app := "rl-nosignal-" + http.StatusText(status)
+			resp := &http.Response{StatusCode: status, Header: http.Header{}}
+
+			ExtractRateLimitHeaders(resp, app, "test-instance", "test")
+
+			if got := testutil.ToFloat64(metrics.GitHubRateLimitExceededTotal.WithLabelValues(app, "test-instance", "core", "test")); got != 0 {
+				t.Errorf("GitHubRateLimitExceededTotal = %v, want 0 (no signal present, must not be counted as a rate limit event)", got)
+			}
+			if got := testutil.ToFloat64(metrics.GitHubSecondaryRateLimitTotal.WithLabelValues(app, "test-instance", "test")); got != 0 {
+				t.Errorf("GitHubSecondaryRateLimitTotal = %v, want 0", got)
+			}
+		})
+	}
 }
 
 func TestDiffPermissions(t *testing.T) {

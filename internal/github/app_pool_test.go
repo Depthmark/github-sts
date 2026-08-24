@@ -9,6 +9,9 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/depthmark/github-sts/internal/metrics"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 // newMockGitHubServer returns an httptest server that resolves any
@@ -165,6 +168,37 @@ func TestAppPool_EmptyCandidateSet_FallsBackToLiveAttempt(t *testing.T) {
 	}
 }
 
+// TestAppPool_ReachabilityFallback_DoesNotDoubleCountSkipped guards against
+// a regression where candidateRing emitted skipped_unreachable for every
+// member during the filter pass, then — when every member looked
+// unreachable and it fell back to the unfiltered ring — the caller went on
+// to try (and count as selected/failover) those same members, double-
+// counting one instance under two outcomes for a single call.
+func TestAppPool_ReachabilityFallback_DoesNotDoubleCountSkipped(t *testing.T) {
+	srvA := newMockGitHubServer(1, succeedHandler("tok-a"))
+	defer srvA.Close()
+	srvB := newMockGitHubServer(1, succeedHandler("tok-b"))
+	defer srvB.Close()
+
+	const logicalName = "checkout-skip-metric-regression"
+	members := []PoolMember{
+		newMockMember(t, "skip-a", srvA.URL),
+		newMockMember(t, "skip-b", srvB.URL),
+	}
+	reach := &fakeReachability{down: map[string]bool{"skip-a": true, "skip-b": true}}
+	pool := NewAppPool(logicalName, members, "round_robin", 0, 2, reach)
+
+	_, instance, err := pool.GetInstallationToken(context.Background(), "myorg", nil, nil, "test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	skipped := testutil.ToFloat64(metrics.AppPoolSelectionTotal.WithLabelValues(logicalName, instance, "skipped_unreachable"))
+	if skipped != 0 {
+		t.Errorf("instance %q counted as both skipped_unreachable and selected/failover for one call: skipped_unreachable = %v, want 0", instance, skipped)
+	}
+}
+
 func TestAppPool_Failover_OnRetryableStatus(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -172,6 +206,8 @@ func TestAppPool_Failover_OnRetryableStatus(t *testing.T) {
 	}{
 		{"403 primary rate limit", statusHandler(http.StatusForbidden, map[string]string{"X-RateLimit-Remaining": "0"})},
 		{"403 secondary rate limit", statusHandler(http.StatusForbidden, map[string]string{"Retry-After": "30"})},
+		{"429 primary rate limit", statusHandler(http.StatusTooManyRequests, map[string]string{"X-RateLimit-Remaining": "0"})},
+		{"429 secondary rate limit", statusHandler(http.StatusTooManyRequests, map[string]string{"Retry-After": "30"})},
 		{"5xx", statusHandler(http.StatusServiceUnavailable, nil)},
 	}
 
@@ -232,6 +268,84 @@ func TestAppPool_Failover_OnTransportError(t *testing.T) {
 	}
 }
 
+// newMockTargetServer extends newMockGitHubServer with a /repos/{owner}/{repo}
+// handler, since ResolveTarget's fetchTarget does a metadata:read mint
+// (/access_tokens, handled by repoHandler-independent tokenHandler) followed
+// by a GET against /repos/ (handled by repoHandler) to canonicalize the
+// target identity.
+func newMockTargetServer(installationID int64, tokenHandler, repoHandler http.HandlerFunc) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/installation"):
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]int64{"id": installationID})
+		case strings.Contains(r.URL.Path, "/access_tokens"):
+			tokenHandler(w, r)
+		case strings.HasPrefix(r.URL.Path, "/repos/"):
+			repoHandler(w, r)
+		}
+	}))
+}
+
+func succeedRepoHandler(owner, repo string, repositoryID int64) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":        repositoryID,
+			"name":      repo,
+			"full_name": owner + "/" + repo,
+			"owner":     map[string]any{"login": owner, "id": 2002},
+		})
+	}
+}
+
+// TestAppPool_ResolveTarget_FailsOverOnRepoLookupFailure guards against a
+// regression where a transient failure on the /repos/ GET inside
+// fetchTarget (as opposed to the /access_tokens mint before it) wasn't
+// classified as a *TokenMintError, so AppPool.ResolveTarget's retryability
+// check silently treated it as non-retryable and skipped failover entirely.
+func TestAppPool_ResolveTarget_FailsOverOnRepoLookupFailure(t *testing.T) {
+	tests := []struct {
+		name        string
+		repoHandler http.HandlerFunc
+	}{
+		{"503 on repo lookup", statusHandler(http.StatusServiceUnavailable, nil)},
+		{"403 primary rate limit on repo lookup", statusHandler(http.StatusForbidden, map[string]string{"X-RateLimit-Remaining": "0"})},
+		{"429 primary rate limit on repo lookup", statusHandler(http.StatusTooManyRequests, map[string]string{"X-RateLimit-Remaining": "0"})},
+		{"429 secondary rate limit on repo lookup", statusHandler(http.StatusTooManyRequests, map[string]string{"Retry-After": "30"})},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var failCalls int32
+			failSrv := newMockTargetServer(1, succeedHandler("meta-tok"), countingHandler(&failCalls, tt.repoHandler))
+			defer failSrv.Close()
+			okSrv := newMockTargetServer(1, succeedHandler("meta-tok"), succeedRepoHandler("myorg", "myrepo", 9001))
+			defer okSrv.Close()
+
+			members := []PoolMember{
+				newMockMember(t, "fail-me", failSrv.URL),
+				newMockMember(t, "succeed-me", okSrv.URL),
+			}
+			pool := NewAppPool("checkout", members, "round_robin", 0, 2, nil)
+
+			scope := RepositoryScope{Owner: "myorg", Repository: "myrepo"}
+			for i := 0; i < 4; i++ {
+				identity, err := pool.ResolveTarget(context.Background(), scope)
+				if err != nil {
+					t.Fatalf("call %d: unexpected error: %v", i, err)
+				}
+				if identity.RepositoryID != "9001" {
+					t.Errorf("call %d: repository id = %q, want 9001 (must resolve via succeed-me)", i, identity.RepositoryID)
+				}
+			}
+			if atomic.LoadInt32(&failCalls) == 0 {
+				t.Error("fail-me's repo lookup was never invoked — this test never actually exercised failover")
+			}
+		})
+	}
+}
+
 func TestAppPool_NoFailover_On422(t *testing.T) {
 	var okCalls int32
 	failSrv := newMockGitHubServer(1, statusHandler(http.StatusUnprocessableEntity, nil))
@@ -273,6 +387,50 @@ func TestAppPool_NoFailover_On422(t *testing.T) {
 	}
 	if okCalls == 0 {
 		t.Error("succeed-me was never reached — the ring never started on the other member either")
+	}
+}
+
+// TestAppPool_NoFailover_OnUnsignaledStatus guards the fail-closed half of
+// RB-03F: a 403 or 429 with neither a Retry-After nor an X-RateLimit-Remaining:
+// 0 signal is an unrecognized failure mode, not a confirmed rate limit, so it
+// must not trigger failover — matching isRetryableTokenMintStatus's documented
+// "fails closed" behavior for both status codes.
+func TestAppPool_NoFailover_OnUnsignaledStatus(t *testing.T) {
+	for _, status := range []int{http.StatusForbidden, http.StatusTooManyRequests} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			var okCalls int32
+			failSrv := newMockGitHubServer(1, statusHandler(status, nil))
+			defer failSrv.Close()
+			okSrv := newMockGitHubServer(1, countingHandler(&okCalls, succeedHandler("tok-ok")))
+			defer okSrv.Close()
+
+			members := []PoolMember{
+				newMockMember(t, "always-unsignaled", failSrv.URL),
+				newMockMember(t, "succeed-me", okSrv.URL),
+			}
+			pool := NewAppPool("checkout", members, "round_robin", 0, 2, nil)
+
+			sawFailure := false
+			for i := 0; i < 4; i++ {
+				_, instance, err := pool.GetInstallationToken(context.Background(), "myorg", nil, nil, "test")
+				if err != nil {
+					sawFailure = true
+					if instance != "" {
+						t.Errorf("call %d: instance = %q on failure, want empty", i, instance)
+					}
+					continue
+				}
+				if instance != "succeed-me" {
+					t.Errorf("call %d: instance = %q, want succeed-me (an unsignaled %d must never be failed over *into*, only *out of*)", i, instance, status)
+				}
+			}
+			if !sawFailure {
+				t.Fatalf("always-unsignaled was never selected first across 4 calls — this test never exercised the no-failover path for a bare %d", status)
+			}
+			if okCalls == 0 {
+				t.Error("succeed-me was never reached — the ring never started on the other member either")
+			}
+		})
 	}
 }
 
