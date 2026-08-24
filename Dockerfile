@@ -37,14 +37,14 @@ RUN --mount=type=cache,target=/cache/mod,sharing=locked \
 # nonroot uid 65532 by default. Pinned by multi-arch index digest.
 # Refresh with: docker buildx imagetools inspect cgr.dev/chainguard/static:latest
 # ─────────────────────────────────────────────────────────────────────────────
-FROM cgr.dev/chainguard/static:latest@sha256:24dd7ff8788fdfadda39eeeaefefb6d1cec6002a545935a5f7e017484053734f
+FROM cgr.dev/chainguard/static:latest@sha256:f68e3a8244c7d0f4cd56635aaff8e6a533cf6cc3850d8fb339567a5782d6a0b0
 
 LABEL org.opencontainers.image.source="https://github.com/Depthmark/github-sts"
 LABEL org.opencontainers.image.description="GitHub Security Token Service (STS) - OIDC to GitHub token exchange"
 LABEL org.opencontainers.image.licenses="MIT"
 LABEL org.opencontainers.image.authors="Alexandre Delisle <oss@adelisle.com>"
 # x-release-please-start-version
-LABEL org.opencontainers.image.version="0.0.3"
+LABEL org.opencontainers.image.version="0.0.4"
 # x-release-please-end
 
 COPY --from=builder /github-sts /github-sts
