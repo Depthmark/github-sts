@@ -226,6 +226,72 @@ func TestRoutePattern(t *testing.T) {
 	}
 }
 
+func TestNew_WiresMetricsAuthentication(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate RSA key: %v", err)
+	}
+	cfg := &config.Settings{
+		Server: config.ServerConfig{
+			Host:            "127.0.0.1",
+			Port:            8080,
+			ShutdownTimeout: time.Second,
+		},
+		Apps: map[string]config.AppConfig{
+			"test": {AppID: 1, ParsedKey: key},
+		},
+		OIDC: config.OIDCConfig{
+			AllowedIssuers: []string{"https://issuer.example.com"},
+		},
+		JTI: config.JTIConfig{
+			Backend: "memory",
+			TTL:     time.Minute,
+		},
+		Policy: config.PolicyConfig{
+			BasePath: ".github/sts",
+			CacheTTL: time.Minute,
+		},
+		BundleEnforcement: config.BundleEnforcementOptional,
+		Audit:             config.AuditConfig{BufferSize: 1},
+		Metrics: config.MetricsConfig{
+			Enabled:   true,
+			AuthToken: "metrics-secret",
+		},
+	}
+
+	srv, err := New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := srv.Shutdown(); err != nil {
+			t.Errorf("Shutdown() error: %v", err)
+		}
+	})
+
+	for _, tt := range []struct {
+		name          string
+		authorization string
+		wantStatus    int
+	}{
+		{name: "missing token", wantStatus: http.StatusUnauthorized},
+		{name: "valid token", authorization: "Bearer metrics-secret", wantStatus: http.StatusOK},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+			if tt.authorization != "" {
+				req.Header.Set("Authorization", tt.authorization)
+			}
+			w := httptest.NewRecorder()
+			srv.httpServer.Handler.ServeHTTP(w, req)
+
+			if w.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d", w.Code, tt.wantStatus)
+			}
+		})
+	}
+}
+
 func TestYAMLOnlyAuthorizationPossible(t *testing.T) {
 	tests := []struct {
 		name string

@@ -8,6 +8,46 @@ translationStatus: pending-review
 
 Toutes les métriques sont exposées à `GET /metrics` au format texte Prometheus avec le préfixe `githubsts_`.
 
+## Authentifier les collectes
+
+L'authentification par secret partagé Bearer est la seule méthode propre à `GET /metrics`. Définissez `GITHUBSTS_METRICS_AUTH_TOKEN` pour l'activer :
+
+```bash
+export GITHUBSTS_METRICS_AUTH_TOKEN="remplacer-par-un-secret-aléatoire"
+```
+
+Cet exemple suppose que github-sts sert HTTPS sur le port 8443 avec un certificat approuvé par l'hôte Prometheus. Consultez [TLS natif et mTLS]({{< relref "/reference/configuration" >}}) pour configurer le serveur.
+
+Configurez la tâche de collecte Prometheus avec le même jeton. Préférez un fichier monté depuis votre gestionnaire de secrets plutôt que de stocker le jeton directement dans `prometheus.yml` :
+
+```yaml
+scrape_configs:
+  - job_name: github-sts
+    scheme: https
+    static_configs:
+      - targets: ["github-sts:8443"]
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/secrets/github-sts-metrics-token
+    tls_config:
+      ca_file: /etc/prometheus/certs/github-sts-ca.crt
+```
+
+Le fichier d'identifiants doit contenir uniquement la valeur du jeton. Lorsque le paramètre n'est pas vide, vérifiez qu'une requête sans jeton renvoie `401` et qu'une requête avec le jeton renvoie `200` :
+
+```bash
+curl --cacert /chemin/vers/github-sts-ca.crt -o /dev/null -s -w '%{http_code}\n' \
+  https://github-sts:8443/metrics
+# 401
+
+curl --cacert /chemin/vers/github-sts-ca.crt -o /dev/null -s -w '%{http_code}\n' \
+  -H "Authorization: Bearer $GITHUBSTS_METRICS_AUTH_TOKEN" \
+  https://github-sts:8443/metrics
+# 200
+```
+
+Lorsque le paramètre est vide, le point de terminaison reste sans authentification. HTTPS protège le jeton Bearer en transit, mais n'authentifie pas le collecteur. Le mTLS natif peut authentifier les clients pour l'ensemble du serveur, y compris `/health` et `/ready`. Un proxy inverse ou un maillage de services peut fournir d'autres méthodes d'authentification en dehors de github-sts.
+
 ## Métriques HTTP
 
 | Métrique | Type | Description |

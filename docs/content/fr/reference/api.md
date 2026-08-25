@@ -101,7 +101,7 @@ Lorsque vous utilisez la `github-sts-action`, le jeton est révoqué automatique
 |---|---|---|---|
 | `/health` | `GET` | `200` `{"status":"ok"}` | — |
 | `/ready` | `GET` | `200` `{"ready":true}` | `503` `{"ready":false}` |
-| `/metrics` | `GET` | Format texte Prometheus | — |
+| `/metrics` | `GET` | Format texte Prometheus | `401` lorsque l'authentification des métriques est configurée et que le jeton Bearer est absent ou incorrect |
 
 `/health` est une sonde de vivacité ; il renvoie `200` tant que le processus est en marche. `/ready` renvoie `200` avec `{"ready":true}` une fois que le serveur est en service et `503` avec `{"ready":false}` tant qu'il ne l'est pas. La préparation n'est pas conditionnée par l'accessibilité de l'API GitHub ; la sonde d'accessibilité ne fait que mettre à jour la métrique `githubsts_github_reachable`.
 
