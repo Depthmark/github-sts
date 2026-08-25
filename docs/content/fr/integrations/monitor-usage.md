@@ -48,5 +48,5 @@ Vous avez couvert l'ensemble du démarrage rapide. À partir d'ici :
 
 - [Émetteurs OIDC](../../oidc-issuers/) : configurer des fournisseurs d'identité supplémentaires
 - [Recettes de politiques](../../concepts/policy-recipes/) : modèles de politiques de confiance à copier-coller
-- [Déployer avec Helm](../deploy-with-helm/) : exécuter github-sts sur Kubernetes pour des charges de travail réelles
+- [Chart Helm]({{< relref "/integrations/helm-chart" >}}) : exécuter github-sts sur Kubernetes pour des charges de travail réelles
 - [Kubernetes](../../operations/kubernetes/) : sondes, montage de secrets, TLS et comportement multi-réplicas

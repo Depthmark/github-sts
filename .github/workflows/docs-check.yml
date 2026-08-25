@@ -1,0 +1,75 @@
+name: Documentation checks
+
+# Validate documentation on the pull request, not after merge. The deploy
+# workflow builds on push to main, which is too late to catch drift, and a Hugo
+# build alone does not check anchors, translation parity, or writing style.
+
+on:
+  pull_request:
+    paths:
+      - docs/**
+      - .github/workflows/docs-check.yml
+  workflow_dispatch:
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  check:
+    runs-on: ubuntu-slim
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Read pinned Hugo version
+        id: hugo
+        run: |
+          version="$(tr -d '[:space:]' < docs/.hugo-version)"
+          test -n "$version" || { echo "docs/.hugo-version is empty"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install Hugo CLI
+        env:
+          HUGO_VERSION: ${{ steps.hugo.outputs.version }}
+        run: |
+          wget -O "${{ runner.temp }}/hugo.deb" \
+            "https://github.com/gohugoio/hugo/releases/download/v${HUGO_VERSION}/hugo_extended_${HUGO_VERSION}_linux-amd64.deb"
+          sudo dpkg -i "${{ runner.temp }}/hugo.deb"
+
+      - name: Setup Go
+        uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+        with:
+          go-version-file: docs/go.mod
+          cache-dependency-path: docs/go.sum
+
+      # Gate 1. The build must be warning-free, with the same flags and baseURL
+      # the deploy uses, so this cannot pass while the deploy would fail.
+      - name: Build
+        env:
+          HUGO_ENVIRONMENT: production
+          HUGO_ENV: production
+        run: |
+          hugo --source docs --gc --minify --panicOnWarning \
+            --baseURL https://depthmark.github.io/github-sts/
+
+      # Gate 2. English is the source language and French is required. Known
+      # drift is recorded in docs/scripts/translation-baseline.json and reported
+      # without failing; anything new fails.
+      - name: Translation parity
+        run: python3 docs/scripts/check-translations.py
+
+      # Gate 3. Hugo's relref validates the target page but not the fragment, so
+      # a translated page can point at an English heading slug and still build.
+      - name: Links and anchors
+        run: python3 docs/scripts/check-links.py --base docs/public --base-path /github-sts
+
+      # Gate 4. The mechanical rules in .agents/standards/WRITING_STANDARD.md.
+      - name: Writing standard
+        run: python3 docs/scripts/check-style.py

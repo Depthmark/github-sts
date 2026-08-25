@@ -6,7 +6,7 @@ translationKey: integrations
 ---
 
 {{< cards >}}
-{{< card link="deploy-with-helm" title="Deploy with Helm" icon="cube" subtitle="Install github-sts with the official Helm chart" >}}
+{{< card link="helm-chart" title="Helm Chart" icon="cube" subtitle="Install github-sts with the official Helm chart" >}}
 {{< card link="github-action" title="GitHub Action" icon="play" subtitle="Integrate the github-sts-action in your workflows" >}}
 {{< card link="end-to-end-github-actions-on-kubernetes" title="End-to-End on Kubernetes" icon="check-circle" subtitle="Complete walkthrough: Helm + STS + Action + verification" >}}
 {{< card link="compatibility" title="Compatibility" icon="clipboard-list" subtitle="Supported release combinations and known incompatibilities" >}}

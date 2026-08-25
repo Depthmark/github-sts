@@ -170,4 +170,4 @@ Consultez [Dépannage]({{< relref "/operations/troubleshooting" >}}) pour le gui
 
 - [Compatibilité]({{< relref "/integrations/compatibility" >}}): combinaisons de composants vérifiées
 - [Entrées et sorties de l'action]({{< relref "/integrations/github-action/reference" >}}) : chaque entrée et sortie, avec valeurs par défaut et règles de validation
-- [Déployer avec Helm]({{< relref "/integrations/deploy-with-helm" >}}): référence complète des valeurs Helm
+- [Référence des valeurs]({{< relref "/integrations/helm-chart/values" >}}) : chaque valeur du chart, avec ses valeurs par défaut

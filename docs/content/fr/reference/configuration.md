@@ -40,7 +40,7 @@ apps:
 
 Les niveaux de journal valides sont en minuscules : `debug | info | warn | error`. `oidc.allowed_issuers` doit contenir au moins un émetteur ; une liste vide est une erreur de validation.
 
-En production, déployez github-sts avec le chart Helm plutôt que de gérer ce fichier à la main. Consultez [Déployer avec Helm]({{< relref "/integrations/deploy-with-helm" >}}).
+En production, déployez github-sts avec le chart Helm plutôt que de gérer ce fichier à la main. Consultez [Installation du chart Helm]({{< relref "/integrations/helm-chart/installation" >}}).
 
 ## TLS natif et mTLS
 

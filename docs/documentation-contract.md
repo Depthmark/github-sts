@@ -1,7 +1,7 @@
 # Documentation Contract
 
-Version: 2.0.0
-Last updated: 2026-08-19
+Version: 2.1.0
+Last updated: 2026-08-20
 
 This contract defines the shared documentation standards for the github-sts ecosystem:
 **github-sts**, **github-sts-helm**, and **github-sts-action**.
@@ -41,44 +41,59 @@ mounting its per-language content into a subsection of `content/integrations/`:
 module:
   imports:
     - path: github.com/imfing/hextra
-    - path: github.com/Depthmark/github-sts-action/docs
+    - path: github.com/Depthmark/github-sts-action
       mounts:
-        - source: content/en
+        - source: docs/content/en
           target: content/integrations/github-action
-          lang: en
-        - source: content/fr
+          sites:
+            matrix:
+              languages: [en]
+        - source: docs/content/fr
           target: content/integrations/github-action
-          lang: fr
+          sites:
+            matrix:
+              languages: [fr]
 ```
 
-Two details are easy to get wrong:
+The module is the satellite **repository**, declared by a `go.mod` at its root,
+not a module inside `docs/`. The mount reaches into `docs/content` from there.
+That choice matters:
 
-- **`lang:` is required.** This site sets a per-language `contentDir`, so a
-  `content/en/...` mount target silently produces nothing. `module.mounts.lang`
-  is correct for Hugo 0.146.x and deprecated from 0.153 in favour of
-  `sites.matrix`; migrate these blocks in the same change that raises
-  `docs/.hugo-version` past 0.152.
-- **The tag carries the `docs/` prefix.** A satellite's module lives in a
-  subdirectory, so Go resolves it through a subdirectory-prefixed tag. `@v0.3.0`
-  does not resolve; `@docs/v0.3.0` does.
+- The pin is the ordinary release tag, `@vX.Y.Z`, which release-please already
+  creates. A module in a `docs/` subdirectory would need a `docs/vX.Y.Z` tag.
+  release-please cannot produce one: with a single root package it emits
+  `vX.Y.Z`, and its component form is `component-vX.Y.Z` with a hyphen, while Go
+  requires a slash. The tag would have to be pushed by hand on every release.
+- When that tag is missing, `hugo mod get …/docs@docs/vX.Y.Z` does not fail. Go
+  falls back to a pseudo-version pinned to the commit, which builds correctly and
+  records nothing about which release it came from. A failure mode that looks
+  like success is worse than one that stops the build.
+- It costs nothing. Go downloads the parent repository regardless, to determine
+  whether a submodule exists there.
+
+Satellite documentation ships with the component it documents: release v0.3.1 of
+the action publishes v0.3.1 of the action's documentation. A documentation-only
+fix therefore produces a component release. That is the intended trade: the
+alternative buys independent versioning at the cost of hand-maintained tags.
 
 ```bash
-cd docs && hugo mod get github.com/Depthmark/github-sts-action/docs@docs/v0.3.0
+cd docs && hugo mod get github.com/Depthmark/github-sts-action@v0.3.1
 ```
 
-  A satellite must publish that prefixed tag itself. release-please does not
-  create it from a single root package: `include-component-in-tag: false` on
-  `"."` produces `vX.Y.Z` and nothing else. Either add a second package for
-  `docs/` to the satellite's `release-please-config.json`, or push the tag from
-  the release workflow:
+Two more details are easy to get wrong:
 
-```bash
-git tag "docs/${VERSION}" "v${VERSION}" && git push origin "docs/${VERSION}"
-```
+- **A per-language mount selector is required.** This site sets a per-language
+  `contentDir`, so a `content/en/...` mount target silently produces nothing.
+  The selector is `sites.matrix.languages`, which needs Hugo 0.153 or newer and
+  replaced the `module.mounts.lang` key deprecated in that release.
 
-  Without it, `hugo mod get ...@docs/vX.Y.Z` still succeeds, but Go falls back to
-  a pseudo-version pinned to the commit. That is reproducible and permitted, and
-  it is also unreadable: nothing in `go.mod` says which release it came from.
+  The two forms are mutually exclusive and both fail quietly on the wrong Hugo.
+  On 0.146 a `sites.matrix` mount is ignored: the English tree still lands
+  through the default language and every French mount silently produces nothing.
+  Changing the syntax and raising `docs/.hugo-version` must therefore happen in
+  one commit, never separately.
+- **A satellite has exactly one `go.mod`, at its root.** Leaving one in `docs/`
+  as well shadows the root module and reintroduces the subdirectory problem.
 
 ### Import rules
 
@@ -124,10 +139,34 @@ outside the shortcode, where Hugo never validates it. Prefer
 `{{< relref "/reference/api#error-responses" >}}`, which fails the build when
 the page is missing, and leave anchor verification to `check-links.py`.
 
+### Satellites link to each other through this site
+
+A satellite may link into any page of this site, including a section owned by
+another satellite. Those links are ordinary `relref` calls resolved against the
+assembled site, so a satellite depends on the URLs of sections it does not own.
+
+That makes renaming a mounted section a coordinated change, not a local one.
+Moving `use-github-action` to `github-action` and `deploy-with-helm` to
+`helm-chart` broke a link in the other satellite in each direction, and Hugo
+reported it as `REF_NOT_FOUND` rather than silently: `relref` fails the build
+when the target page is missing, and it does not follow aliases. The alias
+preserves the URL for a reader typing it; it does not satisfy a `relref`.
+
+When a mounted section is renamed:
+
+1. Fix the references in every satellite that links to it.
+2. Release each of those satellites.
+3. Move all the pins here in the same change that performs the rename.
+
+A satellite already pinned at a release that references the old path keeps
+failing until it is re-released, so a rename costs one release per affected
+satellite. Prefer getting mount targets right the first time. When a rename is
+unavoidable, grep every satellite for the old path before starting.
+
 ### Publishing a satellite documentation change takes two merges
 
 1. Merge the change in the satellite repository and release it, which pushes a
-   `docs/vX.Y.Z` tag.
+   release tag.
 2. Merge a change here that moves the pin with `hugo mod get`, committing
    `docs/go.mod` and `docs/go.sum`.
 
@@ -138,7 +177,7 @@ To build against a satellite change before its tag exists, replace the module
 with a local checkout rather than importing a branch:
 
 ```bash
-make docs-check ACTION_DOCS=../github-sts-action/docs
+make docs-check ACTION_DOCS=../github-sts-action    # the repo root, not docs/
 ```
 
 ## Common Structure
@@ -164,10 +203,10 @@ docs/
 A satellite:
 
 ```
+go.mod                        module path is the repository, no dependencies
 docs/
   content/en/, content/fr/
   documentation-contract.md   synchronized copy, see Synchronization
-  go.mod                      module path ends in /docs
 ```
 
 A satellite has no `hugo.yaml`, no `layouts/`, and no deploy workflow. If one
@@ -285,11 +324,27 @@ Synchronized on: {date}
 
 ## Changelog
 
+### 2.1.0 (2026-08-20)
+
+- Satellite modules are declared at the repository root rather than in `docs/`,
+  so the pin is the release tag release-please already creates. This removes the
+  hand-maintained `docs/vX.Y.Z` tag and the pseudo-version fallback that
+  silently replaced it when it was missing.
+- Documented that satellites link to each other's mounted sections, which makes
+  renaming a mount target a coordinated release.
+- Documented the cross-language anchor rule.
+- Mounts use `sites.matrix.languages` instead of the deprecated
+  `module.mounts.lang`, and `docs/.hugo-version` moves to 0.164.0 in the same
+  commit. The two are a single atomic change: the old key warns on new Hugo and
+  the new key silently drops the French mounts on old Hugo.
+
 ### 2.0.0 (2026-08-19)
 
 - One site, one repository. `github-sts` is the site repository; `github-sts-helm`
   and `github-sts-action` are content-only satellites with no `hugo.yaml`, no
   theme, and no deploy workflow of their own.
+- Satellites may link to each other's mounted sections, which makes renaming a
+  mount target a coordinated release across every satellite that references it.
 - Satellite content is imported as a pinned Hugo module and mounted under
   Integrations. Copying, branch imports, `@latest`, build-time remote fetching,
   iframes, and scraping are all prohibited.

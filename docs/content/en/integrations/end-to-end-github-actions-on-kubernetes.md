@@ -169,4 +169,4 @@ See [Troubleshooting]({{< relref "/operations/troubleshooting" >}}) for the comp
 
 - [Compatibility]({{< relref "/integrations/compatibility" >}}): verified component combinations
 - [Action inputs and outputs]({{< relref "/integrations/github-action/reference" >}}): every input and output, with defaults and validation rules
-- [Deploy with Helm]({{< relref "/integrations/deploy-with-helm" >}}): complete Helm values reference
+- [Values Reference]({{< relref "/integrations/helm-chart/values" >}}): every chart value, with defaults

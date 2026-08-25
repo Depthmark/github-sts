@@ -7,7 +7,7 @@ translationStatus: pending-review
 ---
 
 {{< cards >}}
-{{< card link="deploy-with-helm" title="Déployer avec Helm" icon="cube" subtitle="Installez github-sts avec le chart Helm officiel" >}}
+{{< card link="helm-chart" title="Chart Helm" icon="cube" subtitle="Installez github-sts avec le chart Helm officiel" >}}
 {{< card link="github-action" title="GitHub Action" icon="play" subtitle="Intégrez github-sts-action dans vos workflows" >}}
 {{< card link="end-to-end-github-actions-on-kubernetes" title="De bout en bout sur Kubernetes" icon="check-circle" subtitle="Procédure complète : Helm + STS + Action + vérification" >}}
 {{< card link="compatibility" title="Compatibilité" icon="clipboard-list" subtitle="Combinaisons de versions prises en charge et incompatibilités connues" >}}
