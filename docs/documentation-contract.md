@@ -1,7 +1,7 @@
 # Documentation Contract
 
-Version: 2.1.0
-Last updated: 2026-08-20
+Version: 2.2.0
+Last updated: 2026-08-25
 
 This contract defines the shared documentation standards for the github-sts ecosystem:
 **github-sts**, **github-sts-helm**, and **github-sts-action**.
@@ -97,10 +97,42 @@ Two more details are easy to get wrong:
 
 ### Import rules
 
-1. **Pin to a tag or a commit SHA.** Never import a branch, and never import
-   `@latest`. The published site must be reproducible from `docs/go.mod` and
-   `docs/go.sum` alone, and a satellite must never be able to change the
-   published site by pushing to a branch.
+1. **Pin to a tag, or to a commit for an interim pin.** Never import a branch,
+   and never import `@latest`. The published site must be reproducible from
+   `docs/go.mod` and `docs/go.sum` alone, and a satellite must never be able to
+   change the published site by pushing to a branch.
+
+   A release tag is the normal pin. It records which release the site is
+   serving, and it is the only form that survives review at a glance.
+
+   **Interim commit pin.** When a satellite has merged a documentation change
+   but has not released it, the site may pin the commit instead:
+
+   ```bash
+   cd docs && hugo mod get github.com/Depthmark/github-sts-action@main
+   ```
+
+   Go does not store the branch. It resolves the reference once and writes a
+   pseudo-version naming the commit, for example
+   `v0.3.1-0.20260825121720-bc7d26d4b92f`. The result is still a pin: later
+   pushes to that branch do not reach the site until someone re-runs the
+   command. This is what makes the interim form acceptable where a branch import
+   would not be.
+
+   It exists so that documentation can ship without forcing a release of the
+   component it documents. Under a repository-root module the docs and the
+   component share a version, so a documentation-only fix would otherwise
+   require a release containing no change to the software. Pinning the commit
+   avoids that release while keeping the build reproducible.
+
+   Two conditions apply:
+
+   - **A pseudo-version is a debt, not a destination.** It records a commit and
+     nothing about which release the reader is seeing. Replace it with the tag
+     at the satellite's next release.
+   - **Never pin a commit that is not on the satellite's default branch.**
+     Pinning a feature branch publishes work that was never merged, and the
+     commit can disappear when the branch is deleted.
 2. **Import, do not copy.** Satellite content is never duplicated into the site
    repository. A copy is drift waiting to happen.
 3. **No build-time remote fetching.** Pulling Markdown over HTTP at build time,
@@ -323,6 +355,15 @@ Synchronized on: {date}
 > must no longer have. Re-sync both before the next satellite release.
 
 ## Changelog
+
+### 2.2.0 (2026-08-25)
+
+- Import rules describe the interim commit pin: a satellite whose documentation
+  has merged but not released may be pinned by commit, so a documentation change
+  does not force a release of the component. The pin is still reproducible
+  because Go resolves the reference once and records the commit rather than the
+  branch. It must be replaced by a tag at the satellite's next release, and the
+  commit must be on the default branch.
 
 ### 2.1.0 (2026-08-20)
 
