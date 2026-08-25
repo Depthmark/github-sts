@@ -12,7 +12,7 @@ Cette page documente les combinaisons vérifiées des versions de github-sts, gi
 
 | github-sts | github-sts-helm | github-sts-action | Test de bout en bout | Statut |
 |---|---|---|---|---|
-| `v0.0.3` | `v0.1.0` | `v0.1.0` | En attente | **Pris en charge** |
+| `v0.0.3` | `v0.1.0` | `v0.2.0` | En attente | **Pris en charge** |
 
 Les lignes marquées **Pris en charge** ont passé le test d'intégration de bout en bout : installation Helm, évaluation de politique de confiance, échange de jeton et vérification de fin de job.
 
@@ -59,6 +59,6 @@ Les résultats sont publiés dans les dépôts [github-sts-helm](https://github.
 
 ## Liens de l'écosystème
 
-- **Chart Helm github-sts :** <https://depthmark.github.io/github-sts-helm/>
-- **Documentation de l'Action github-sts :** <https://depthmark.github.io/github-sts-action/>
+- **Chart Helm github-sts :** <https://github.com/Depthmark/github-sts-helm>
+- **Documentation de l'Action github-sts :** [GitHub Action]({{< relref "/integrations/github-action" >}}) (publiée dans ce site depuis le dépôt de l'action)
 - **Marketplace de l'Action github-sts :** <https://github.com/marketplace/actions/github-sts>

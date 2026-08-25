@@ -5,11 +5,11 @@ weight: 2
 translationKey: tls-local-testing
 ---
 
-This guide walks through creating a local certificate authority, signing a server certificate, starting github-sts over HTTPS, and then layering in mutual TLS (mTLS) — all using `openssl` and `curl`. No real GitHub App credentials are needed to verify the TLS layer; the `/health` endpoint responds without authentication.
+This guide walks through creating a local certificate authority, signing a server certificate, starting github-sts over HTTPS, and then layering in mutual TLS (mTLS), all using `openssl` and `curl`. No real GitHub App credentials are needed to verify the TLS layer; the `/health` endpoint responds without authentication.
 
 ## Prerequisites
 
-- `openssl` (any modern version — 1.1.1 or 3.x)
+- `openssl` 1.1.1 or 3.x
 - `curl` 7.77+ (for SNI and `--cert`/`--key` support)
 - Go toolchain (to run `go run ./cmd/github-sts`) **or** Docker
 
@@ -140,7 +140,7 @@ curl --cacert certs/ca.crt https://localhost:8443/health
 # curl: (35) error:... alert handshake failure
 ```
 
-The connection is terminated during the TLS handshake — before any HTTP is exchanged.
+The connection is terminated during the TLS handshake, before any HTTP is exchanged.
 
 ## 5. Test hot-reload (optional)
 

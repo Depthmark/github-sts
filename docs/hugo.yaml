@@ -13,6 +13,45 @@ disablePathToLower: true
 module:
   imports:
     - path: github.com/imfing/hextra
+    # Satellite documentation, imported rather than copied. Each satellite
+    # repository declares a Hugo module at its root and this site mounts the
+    # docs/content trees out of it; see documentation-contract.md.
+    #
+    # The module is the repository, not its docs/ subdirectory, so the pin is
+    # the ordinary release tag (@vX.Y.Z) that release-please already creates.
+    # A subdirectory module would require a docs/vX.Y.Z tag, which
+    # release-please cannot produce and which degrades silently to a
+    # pseudo-version when it is missing. Pin to a tag, never a branch.
+    #
+    # A per-language mount is required because this site sets a per-language
+    # `contentDir`: a `content/en/...` mount target silently produces nothing.
+    # `sites.matrix.languages` is that selector. It replaced `module.mounts.lang`,
+    # which Hugo deprecated in 0.153, and it needs Hugo 0.153 or newer, so it is
+    # tied to the floor in docs/.hugo-version.
+    - path: github.com/Depthmark/github-sts-helm
+      mounts:
+        - source: docs/content/en
+          target: content/integrations/helm-chart
+          sites:
+            matrix:
+              languages: [en]
+        - source: docs/content/fr
+          target: content/integrations/helm-chart
+          sites:
+            matrix:
+              languages: [fr]
+    - path: github.com/Depthmark/github-sts-action
+      mounts:
+        - source: docs/content/en
+          target: content/integrations/github-action
+          sites:
+            matrix:
+              languages: [en]
+        - source: docs/content/fr
+          target: content/integrations/github-action
+          sites:
+            matrix:
+              languages: [fr]
 
 menu:
   main:
@@ -44,6 +83,23 @@ menu:
       name: Resources
       pageRef: /resources
       weight: 7
+    # Hextra renders the navbar search box only for a menu entry of type "search".
+    # Without this entry the flexsearch index is built but never reachable above
+    # the md breakpoint, because the only other search box lives in the
+    # mobile-only sidebar drawer.
+    - identifier: search
+      name: Search
+      weight: 8
+      params:
+        type: search
+    - identifier: theme-toggle
+      weight: 9
+      params:
+        type: theme-toggle
+    - identifier: language-switch
+      weight: 10
+      params:
+        type: language-switch
 
 languages:
   en:
@@ -71,17 +127,12 @@ markup:
     noClasses: false
 
 params:
+  # Hextra reads only `default` and `displayToggle` under params.theme.
+  # Logo, footer, pagination, code copy, and search are configured in their
+  # own blocks below.
   theme:
-    displayLogo: true
-    displayFooter: true
-    displayToc: true
-    displayBackToTop: true
-    displayBreadcrumb: true
-    displayPagination: true
-    displaySearch: true
-    displayDarkMode: true
-    displayCodeCopy: true
-    displayDate: false
+    default: system
+    displayToggle: true
 
   editURL:
     enable: true
@@ -118,7 +169,3 @@ params:
   highlight:
     copy:
       enable: true
-
-  sideBar:
-    enable: true
-    auto: true

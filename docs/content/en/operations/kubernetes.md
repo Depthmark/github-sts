@@ -5,7 +5,7 @@ weight: 2
 translationKey: kubernetes
 ---
 
-A Helm chart is maintained in the [github-sts-helm](https://github.com/Depthmark/github-sts-helm) repository. For installing the chart, see [Deploy with Helm]({{< relref "/integrations/deploy-with-helm" >}}). This page covers how github-sts behaves once it is running in a cluster: probes, secret mounting, TLS termination, and multi-replica caching.
+A Helm chart is maintained in the [github-sts-helm](https://github.com/Depthmark/github-sts-helm) repository. For installing the chart, see [Helm chart installation]({{< relref "/integrations/helm-chart/installation" >}}). This page covers how github-sts behaves once it is running in a cluster: probes, secret mounting, TLS termination, and multi-replica caching.
 
 ## Probes
 
@@ -54,7 +54,7 @@ extraVolumeMounts:
 
 ## TLS termination
 
-The recommended model is to terminate TLS at the ingress/Gateway and keep the pod on plain HTTP; see the `ingress` block in [Deploy with Helm]({{< relref "/integrations/deploy-with-helm" >}}) for a working example.
+The recommended model is to terminate TLS at the ingress/Gateway and keep the pod on plain HTTP; see the `ingress` block in [Networking]({{< relref "/integrations/helm-chart/networking" >}}) for a working example.
 
 For deployments that require end-to-end TLS, github-sts can also serve HTTPS directly. This is useful for hardened clusters that re-encrypt Gateway to backend traffic (Gateway API `BackendTLSPolicy` with `ServerOnly` or `ClientAndServer`), or for standalone/VM deployments without an ingress. Enable it via the server configuration:
 
@@ -86,7 +86,7 @@ extraVolumeMounts:
 
 Running more than one replica changes how two things behave:
 
-- **JTI cache.** With the `memory` backend, each replica has its own replay set, so an attacker who reaches a different replica can replay an OIDC token. Use `jti.backend: redis` (see [Deploy with Helm]({{< relref "/integrations/deploy-with-helm" >}}) for the values) so every instance shares the same replay set.
+- **JTI cache.** With the `memory` backend, each replica has its own replay set, so an attacker who reaches a different replica can replay an OIDC token. Use `jti.backend: redis` (see the [Values Reference]({{< relref "/integrations/helm-chart/values" >}})) so every instance shares the same replay set.
 - **Trust policy cache.** Per-instance, TTL `60s`. Instances may briefly serve different policies after a `.sts.yaml` change.
 - **Probes.** Each replica serves its own `/ready` endpoint.
 

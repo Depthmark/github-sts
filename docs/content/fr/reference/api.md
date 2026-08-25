@@ -53,7 +53,7 @@ curl -X POST -H "Authorization: Bearer $OIDC_TOKEN" \
 
 Le jeton `ghs_…` renvoyé est un jeton d'installation GitHub App standard. Il expire selon la durée de vie des jetons d'installation de GitHub (actuellement une heure).
 
-### Réponses d'erreur
+### Réponses d'erreur {#error-responses}
 
 Les réponses d'erreur partagent cette forme :
 
@@ -93,7 +93,7 @@ Ou via le client Go :
 err := client.RevokeToken(ctx, token, "https://api.github.com")
 ```
 
-Lorsque vous utilisez la `github-sts-action`, le jeton est révoqué automatiquement à la fin du job. Consultez [Utiliser la GitHub Action]({{< relref "/integrations/use-github-action" >}}) pour plus de détails.
+Lorsque vous utilisez la `github-sts-action`, le jeton est révoqué automatiquement à la fin du job. Consultez [Cycle de vie du job]({{< relref "/integrations/github-action/job-lifecycle" >}}) pour plus de détails.
 
 ## Santé et préparation
 
