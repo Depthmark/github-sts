@@ -1,2 +1,8 @@
+github.com/Depthmark/github-sts-action v0.3.0 h1:qITZot+j3gPQELBCxw/A0hRSrZfp1ja9mXFsWEJ4V7k=
+github.com/Depthmark/github-sts-action v0.3.0/go.mod h1:tZd2LMbanFq2nGOe4SX2mxOGVkcSis7IWUz9hWVmQfs=
+github.com/Depthmark/github-sts-action v0.3.1-0.20260825121720-bc7d26d4b92f h1:xbG8PUy4HMEG44ukQbkwfsp0NxNIpwnTGlSBB46X2ok=
+github.com/Depthmark/github-sts-action v0.3.1-0.20260825121720-bc7d26d4b92f/go.mod h1:vCNEyWfM+jRSeDxQP65q3KSmKNCWSxcJMMBJKW0LGHw=
+github.com/Depthmark/github-sts-helm v0.0.0-20260821212926-ba5fe2373e99 h1:AUyun91iAg22m1ebFMB7gbBs/Zp546NsNnfqcyHA5lw=
+github.com/Depthmark/github-sts-helm v0.0.0-20260821212926-ba5fe2373e99/go.mod h1:V+y/vC6UdZcRQ+m5Pmmlqx7b7Adbiro25k+8j3Y2ytM=
 github.com/imfing/hextra v0.12.3 h1:DZHY2rUWYteyzjlHi9r4n7Bb5e2Q+6LXe4C1Dqn0ZjM=
 github.com/imfing/hextra v0.12.3/go.mod h1:vi+yhpq8YPp/aghvJlNKVnJKcPJ/VyAEcfC1BSV9ARo=

@@ -82,7 +82,7 @@ curl -H "Authorization: Bearer $OIDC_TOKEN" \
 
 Le jeton `ghs_…` est un jeton d'installation GitHub App standard, limité exactement aux dépôts et
 permissions déclarés par la politique. Pour un wrapper prêt à l'emploi autour de cet échange dans
-Actions, voir [Utiliser la GitHub Action](../../integrations/use-github-action/). Le `curl` manuel
+Actions, voir [le démarrage rapide de la GitHub Action]({{< relref "/integrations/github-action/quickstart" >}}). Le `curl` manuel
 ci-dessus fonctionne depuis n'importe quel système CI capable de produire un jeton OIDC.
 
 ## Liste de vérification sécurité

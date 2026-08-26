@@ -43,7 +43,7 @@ apps:
 
 Valid log levels are lowercase `debug | info | warn | error`. `oidc.allowed_issuers` must contain at least one issuer; an empty list is a validation error. Top-level `bundle_enforcement` is also mandatory. See [Enterprise Rego bundles](#enterprise-rego-bundles) below. The explicit optional/no-bundle posture above emits a startup warning and observable health, metric, and audit signals; production deployments should use required mode.
 
-For production, deploy github-sts with the Helm chart rather than hand-managing this file. See [Deploy with Helm]({{< relref "/integrations/deploy-with-helm" >}}).
+For production, deploy github-sts with the Helm chart rather than hand-managing this file. See [Helm chart installation]({{< relref "/integrations/helm-chart/installation" >}}).
 
 ## App pools (multi-instance rate-limit rotation)
 

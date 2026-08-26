@@ -9,6 +9,46 @@ All metrics are exposed at `GET /metrics` in Prometheus text format with the `gi
 
 **Upgrading from a version without app pools?** Every GitHub App, rate-limit, and reachability metric below now carries an additional `instance` label — see [Migration: pool metrics `instance` label]({{< relref "/operations/upgrades#migration-pool-metrics-instance-label" >}}) for the affected metric list, before/after PromQL, and a step-by-step checklist.
 
+## Authenticate scrapes
+
+Bearer shared-secret authentication is the only authentication method specific to `GET /metrics`. Set `GITHUBSTS_METRICS_AUTH_TOKEN` to enable it:
+
+```bash
+export GITHUBSTS_METRICS_AUTH_TOKEN="replace-with-a-random-secret"
+```
+
+This example assumes github-sts serves HTTPS on port 8443 with a certificate trusted by the Prometheus host. See [Native TLS and mTLS]({{< relref "/reference/configuration" >}}) for server setup.
+
+Configure the Prometheus scrape job with the same token. Prefer a file mounted from your secret manager instead of storing the token directly in `prometheus.yml`:
+
+```yaml
+scrape_configs:
+  - job_name: github-sts
+    scheme: https
+    static_configs:
+      - targets: ["github-sts:8443"]
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/secrets/github-sts-metrics-token
+    tls_config:
+      ca_file: /etc/prometheus/certs/github-sts-ca.crt
+```
+
+The credentials file must contain only the token value. When the setting is non-empty, verify that a request without the token returns `401` and a request with the token returns `200`:
+
+```bash
+curl --cacert /path/to/github-sts-ca.crt -o /dev/null -s -w '%{http_code}\n' \
+  https://github-sts:8443/metrics
+# 401
+
+curl --cacert /path/to/github-sts-ca.crt -o /dev/null -s -w '%{http_code}\n' \
+  -H "Authorization: Bearer $GITHUBSTS_METRICS_AUTH_TOKEN" \
+  https://github-sts:8443/metrics
+# 200
+```
+
+When the setting is empty, the endpoint remains unauthenticated. HTTPS protects the Bearer token in transit but does not authenticate the scraper. Native mTLS can authenticate clients for the entire server, including `/health` and `/ready`. A reverse proxy or service mesh can provide other authentication methods outside github-sts.
+
 ## HTTP metrics
 
 | Metric | Type | Description |

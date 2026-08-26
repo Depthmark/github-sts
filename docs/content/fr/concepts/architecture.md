@@ -103,7 +103,7 @@ Cinq crédentiels distincts existent au cours d'un échange, chacun avec un dét
 
 github-sts signe le JWT d'App à l'aide de la clé privée, l'utilise pour s'authentifier auprès de GitHub, puis émet des jetons d'installation. La charge de travail ne reçoit jamais le JWT d'App, la clé privée, ni le jeton de lecture de politique.
 
-## Pipeline d'autorisation
+## Pipeline d'autorisation {#authorization-pipeline}
 
 Chaque requête passe par ces vérifications, dans l'ordre. Un échec à n'importe quelle étape arrête le pipeline et renvoie un `403` avec un `code` d'erreur spécifique.
 

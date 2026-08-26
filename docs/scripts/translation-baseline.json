@@ -1,0 +1,27 @@
+{
+  "_comment": [
+    "Known English-to-French drift, recorded so check-translations.py can be",
+    "enforced on new work while this debt is paid down. Every entry here is a",
+    "page where French is missing content that exists in English.",
+    "",
+    "Issue kinds: 'headings' (heading counts differ) and 'ratio' (French word",
+    "count is below MIN_RATIO of English).",
+    "",
+    "Do not add entries to make a build pass. Remove entries as pages are",
+    "translated; the check reports a stale baseline when a listed page is",
+    "repaired, so this file cannot silently rot. The goal is an empty",
+    "known_drift object."
+  ],
+  "_recorded": "2026-08-18",
+  "_tracked_by": "docs correction plan, phase 3",
+  "known_drift": {
+    "concepts/architecture.md": ["headings"],
+    "concepts/trust-policies.md": ["headings", "ratio"],
+    "oidc-issuers/github-actions.md": ["headings", "ratio"],
+    "operations/troubleshooting.md": ["headings", "ratio"],
+    "operations/upgrades.md": ["headings"],
+    "reference/api.md": ["headings", "ratio"],
+    "reference/configuration.md": ["headings", "ratio"],
+    "reference/metrics.md": ["headings", "ratio"]
+  }
+}

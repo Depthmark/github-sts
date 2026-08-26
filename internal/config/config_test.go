@@ -90,6 +90,7 @@ audit:
   buffer_size: 512
 metrics:
   enabled: true
+  auth_token: "yaml-metrics-secret"
   rate_limit_poll_enabled: false
   rate_limit_poll_interval: 30s
   reachability_probe_enabled: false
@@ -141,6 +142,9 @@ metrics:
 
 	if cfg.Metrics.RateLimitPollEnabled {
 		t.Error("rate_limit_poll_enabled should be false from YAML")
+	}
+	if cfg.Metrics.AuthToken != "yaml-metrics-secret" {
+		t.Errorf("metrics.auth_token = %q, want YAML value", cfg.Metrics.AuthToken)
 	}
 	if cfg.Metrics.RateLimitPollInterval != 30*time.Second {
 		t.Errorf("rate_limit_poll_interval = %v, want 30s", cfg.Metrics.RateLimitPollInterval)
@@ -205,6 +209,7 @@ oidc:
 	t.Setenv("GITHUBSTS_OIDC_REQUIRE_IMMUTABLE_SUBJECT_CLAIMS", "false")
 	t.Setenv("GITHUBSTS_JTI_TTL", "2h")
 	t.Setenv("GITHUBSTS_AUDIT_FILE_ENABLED", "false")
+	t.Setenv("GITHUBSTS_METRICS_AUTH_TOKEN", "metrics-secret")
 
 	cfg, err := Load(path)
 	if err != nil {
@@ -231,6 +236,9 @@ oidc:
 	}
 	if cfg.Audit.FileEnabled {
 		t.Error("audit.file_enabled should be false from env override")
+	}
+	if cfg.Metrics.AuthToken != "metrics-secret" {
+		t.Errorf("metrics.auth_token = %q, want environment override", cfg.Metrics.AuthToken)
 	}
 }
 

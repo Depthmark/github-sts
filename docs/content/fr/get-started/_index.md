@@ -12,4 +12,4 @@ Quatre étapes pour passer de rien à un premier échange de jeton fonctionnel, 
 3. [Générer un jeton](generate-a-token/) : écrivez une politique de confiance et appelez `/sts/exchange`.
 4. [Surveiller l'utilisation](../integrations/monitor-usage/) : consultez les métriques et le journal d'audit pour confirmer ce qui a été émis.
 
-Le [démarrage rapide (local)](quickstart-local/) exécute github-sts sur votre propre machine avec des réglages choisis pour la rapidité de mise en place. Pour un déploiement réel, voir [Déployer avec Helm](../integrations/deploy-with-helm/) et [Kubernetes](../operations/kubernetes/).
+Le [démarrage rapide (local)](quickstart-local/) exécute github-sts sur votre propre machine avec des réglages choisis pour la rapidité de mise en place. Pour un déploiement réel, voir [le démarrage rapide du chart Helm]({{< relref "/integrations/helm-chart/quickstart" >}}) et [Kubernetes](../operations/kubernetes/).

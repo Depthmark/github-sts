@@ -46,5 +46,5 @@ You've covered the full kickstart. From here:
 
 - [OIDC Issuers](../../oidc-issuers/): configure additional identity providers
 - [Policy Recipes](../../concepts/policy-recipes/): copy-and-paste trust policy patterns
-- [Deploy with Helm](../deploy-with-helm/): run github-sts in Kubernetes for real workloads
+- [Helm Chart]({{< relref "/integrations/helm-chart" >}}): run github-sts in Kubernetes for real workloads
 - [Kubernetes](../../operations/kubernetes/): probes, secret mounting, TLS, and multi-replica behavior

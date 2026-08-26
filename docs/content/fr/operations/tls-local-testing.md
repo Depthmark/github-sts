@@ -6,11 +6,11 @@ translationKey: tls-local-testing
 translationStatus: pending-review
 ---
 
-Ce guide explique comment créer une autorité de certification locale, signer un certificat serveur, démarrer github-sts en HTTPS, puis ajouter le TLS mutuel (mTLS) — le tout avec `openssl` et `curl`. Aucune vraie credentials GitHub App n'est nécessaire pour vérifier la couche TLS ; l'endpoint `/health` répond sans authentification.
+Ce guide explique comment créer une autorité de certification locale, signer un certificat serveur, démarrer github-sts en HTTPS, puis ajouter le TLS mutuel (mTLS), le tout avec `openssl` et `curl`. Aucun identifiant GitHub App réel n'est nécessaire pour vérifier la couche TLS ; l'endpoint `/health` répond sans authentification.
 
 ## Prérequis
 
-- `openssl` (toute version moderne — 1.1.1 ou 3.x)
+- `openssl` 1.1.1 ou 3.x
 - `curl` 7.77+ (pour le support SNI et `--cert`/`--key`)
 - Toolchain Go (`go run ./cmd/github-sts`) **ou** Docker
 
@@ -141,7 +141,7 @@ curl --cacert certs/ca.crt https://localhost:8443/health
 # curl: (35) error:... alert handshake failure
 ```
 
-La connexion est terminée pendant la poignée de main TLS — avant qu'aucun HTTP ne soit échangé.
+La connexion est terminée pendant la poignée de main TLS, avant qu'aucun HTTP ne soit échangé.
 
 ## 5. Tester le rechargement à chaud (optionnel)
 

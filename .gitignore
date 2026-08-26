@@ -35,8 +35,10 @@ go.work.sum
 bin/
 validation_local/
 
-# Local development files
-scripts/
+# Local development files. Anchored to the repository root: a bare
+# "scripts/" also matches docs/scripts/, which holds the documentation
+# validation tooling that documentation-contract.md requires.
+/scripts/
 
 # Hugo generated output
 docs/public/
