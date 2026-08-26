@@ -246,13 +246,14 @@ func New(cfg *config.Settings, slogger *slog.Logger) (*Server, error) {
 	if liveBundleMgr != nil {
 		bundleReporter = liveBundleMgr
 	}
-	mux.HandleFunc("GET /health", handler.HealthHandler(bundleReporter, handler.SecurityPosture{
+	healthHandler := handler.HealthHandler(bundleReporter, handler.SecurityPosture{
 		RequireImmutableSubjectClaims: cfg.RequireImmutableSubjectClaims(),
 		LegacySubjectOptOut:           !cfg.RequireImmutableSubjectClaims(),
 		BundleEnforcement:             cfg.BundleEnforcement,
 		EnterprisePolicyRequired:      cfg.BundleEnforcement == config.BundleEnforcementRequired,
 		YAMLOnlyAuthorization:         yamlOnlyAuthorization,
-	}))
+	})
+	mux.Handle("GET /health", handler.OptionalBearerAuth(cfg.Health.AuthToken, "health", healthHandler))
 	mux.HandleFunc("GET /ready", handler.ReadinessHandler(&s.ready))
 	if cfg.Metrics.Enabled {
 		mux.Handle("GET /metrics", handler.MetricsHandler(cfg.Metrics.AuthToken))
@@ -649,6 +650,9 @@ func accessLogMiddleware(next http.Handler, slogger *slog.Logger, suppressHealth
 		level := slog.LevelInfo
 		if suppressHealth && isHealthPath(r.URL.Path) {
 			level = slog.LevelDebug
+			if r.URL.Path == "/health" && sw.status == http.StatusUnauthorized {
+				level = slog.LevelWarn
+			}
 		} else if sw.status >= 500 {
 			level = slog.LevelError
 		} else if sw.status >= 400 {

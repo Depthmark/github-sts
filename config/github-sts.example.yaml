@@ -96,6 +96,10 @@ audit:
   file_path: "/var/log/github-sts/audit.json"
   buffer_size: 1024                 # Channel buffer size for async writes
 
+# Health endpoint
+health:
+  auth_token: ""                    # Bearer token for /health endpoint (empty = unauthenticated)
+
 # Prometheus metrics
 metrics:
   enabled: true

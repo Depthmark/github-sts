@@ -166,11 +166,36 @@ When you use the `github-sts-action`, the token is revoked automatically at the 
 
 | Endpoint | Method | Success | Failure |
 |---|---|---|---|
-| `/health` | `GET` | `200` with liveness, security posture, and configured bundle state | n/a |
+| `/health` | `GET` | `200` with liveness, security posture, and configured bundle state | `401` when health authentication is configured and the Bearer token is missing or incorrect |
 | `/ready` | `GET` | `200` `{"ready":true}` | `503` `{"ready":false}` |
 | `/metrics` | `GET` | Prometheus text format | n/a |
 
-`/health` is a liveness probe and returns `200` as long as the process is up.
+`/health` is a liveness probe. When authentication is disabled or satisfied,
+it returns `200` as long as the process is up.
+Set `health.auth_token` or `GITHUBSTS_HEALTH_AUTH_TOKEN` to require an
+`Authorization: Bearer <token>` header. A missing or incorrect token returns
+`401` with `{"error":"unauthorized"}` and
+`WWW-Authenticate: Bearer realm="health"`. When neither setting supplies a
+token, `/health` remains unauthenticated. `/ready` stays unauthenticated.
+
+After starting github-sts with `GITHUBSTS_HEALTH_AUTH_TOKEN` set, verify the
+behavior from the same host:
+
+```bash
+export GITHUBSTS_HEALTH_AUTH_TOKEN="replace-with-the-configured-secret"
+
+curl -o /dev/null -s -w '%{http_code}\n' http://127.0.0.1:8080/health
+# 401
+
+curl -o /dev/null -s -w '%{http_code}\n' \
+  -H "Authorization: Bearer $GITHUBSTS_HEALTH_AUTH_TOKEN" \
+  http://127.0.0.1:8080/health
+# 200
+```
+
+Use HTTPS whenever the Bearer token crosses a network. The loopback example
+uses HTTP only for local verification.
+
 Its `security` object reports `require_immutable_subject_claims`,
 `legacy_subject_opt_out`, `bundle_enforcement`,
 `enterprise_policy_required`, and `yaml_only_authorization`. Explicit optional

@@ -88,6 +88,8 @@ audit:
   file_enabled: true
   file_path: "/tmp/audit.json"
   buffer_size: 512
+health:
+  auth_token: "yaml-health-secret"
 metrics:
   enabled: true
   rate_limit_poll_enabled: false
@@ -142,6 +144,9 @@ metrics:
 	if cfg.Metrics.RateLimitPollEnabled {
 		t.Error("rate_limit_poll_enabled should be false from YAML")
 	}
+	if cfg.Health.AuthToken != "yaml-health-secret" {
+		t.Errorf("health.auth_token = %q, want YAML value", cfg.Health.AuthToken)
+	}
 	if cfg.Metrics.RateLimitPollInterval != 30*time.Second {
 		t.Errorf("rate_limit_poll_interval = %v, want 30s", cfg.Metrics.RateLimitPollInterval)
 	}
@@ -180,6 +185,9 @@ oidc:
 	if cfg.Audit.BufferSize != 1024 {
 		t.Errorf("default buffer_size = %d, want 1024", cfg.Audit.BufferSize)
 	}
+	if cfg.Health.AuthToken != "" {
+		t.Errorf("default health.auth_token = %q, want empty", cfg.Health.AuthToken)
+	}
 	if !cfg.OIDC.RequireImmutableSubjectClaims {
 		t.Error("require_immutable_subject_claims default = false, want true")
 	}
@@ -205,6 +213,7 @@ oidc:
 	t.Setenv("GITHUBSTS_OIDC_REQUIRE_IMMUTABLE_SUBJECT_CLAIMS", "false")
 	t.Setenv("GITHUBSTS_JTI_TTL", "2h")
 	t.Setenv("GITHUBSTS_AUDIT_FILE_ENABLED", "false")
+	t.Setenv("GITHUBSTS_HEALTH_AUTH_TOKEN", "health-secret")
 
 	cfg, err := Load(path)
 	if err != nil {
@@ -231,6 +240,9 @@ oidc:
 	}
 	if cfg.Audit.FileEnabled {
 		t.Error("audit.file_enabled should be false from env override")
+	}
+	if cfg.Health.AuthToken != "health-secret" {
+		t.Errorf("health.auth_token = %q, want environment override", cfg.Health.AuthToken)
 	}
 }
 

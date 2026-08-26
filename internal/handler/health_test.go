@@ -212,6 +212,47 @@ func TestReadinessHandler_NotReady(t *testing.T) {
 	}
 }
 
+func TestOptionalBearerAuth_HealthEndpoint(t *testing.T) {
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
+	h := OptionalBearerAuth("health-secret", "health", inner)
+
+	tests := []struct {
+		name          string
+		authorization string
+		wantStatus    int
+	}{
+		{name: "missing token", wantStatus: http.StatusUnauthorized},
+		{name: "invalid token", authorization: "Bearer wrong-secret", wantStatus: http.StatusUnauthorized},
+		{name: "case-insensitive scheme", authorization: "bearer health-secret", wantStatus: http.StatusOK},
+		{name: "valid token", authorization: "Bearer health-secret", wantStatus: http.StatusOK},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/health", nil)
+			if tt.authorization != "" {
+				req.Header.Set("Authorization", tt.authorization)
+			}
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, req)
+
+			if w.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d", w.Code, tt.wantStatus)
+			}
+			if tt.wantStatus == http.StatusUnauthorized {
+				if got := w.Header().Get("WWW-Authenticate"); got != `Bearer realm="health"` {
+					t.Errorf("WWW-Authenticate = %q, want health Bearer challenge", got)
+				}
+				if got := w.Header().Get("Content-Type"); got != "application/json" {
+					t.Errorf("Content-Type = %q, want application/json", got)
+				}
+			}
+		})
+	}
+}
+
 func TestMetricsHandler_NoAuthToken(t *testing.T) {
 	h := MetricsHandler("")
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)

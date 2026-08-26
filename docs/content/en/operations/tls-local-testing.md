@@ -5,7 +5,7 @@ weight: 2
 translationKey: tls-local-testing
 ---
 
-This guide walks through creating a local certificate authority, signing a server certificate, starting github-sts over HTTPS, and then layering in mutual TLS (mTLS) — all using `openssl` and `curl`. No real GitHub App credentials are needed to verify the TLS layer; the `/health` endpoint responds without authentication.
+This guide walks through creating a local certificate authority, signing a server certificate, starting github-sts over HTTPS, and then layering in mutual TLS (mTLS). The steps use `openssl` and `curl`. No real GitHub App credentials are needed to verify the TLS layer. The example leaves health authentication disabled, so `/health` responds without authentication.
 
 ## Prerequisites
 

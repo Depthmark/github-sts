@@ -80,6 +80,18 @@ serviceMonitor:
   interval: 30s
 ```
 
+## Compatibilité de l'authentification de santé
+
+> Le chart `github-sts-helm` actuel ne prend pas encore en charge
+> l'authentification de `/health`. Sa sonde HTTP de vivacité et son hook de test
+> appellent `/health` sans jeton Bearer. Activer l'authentification de santé
+> provoque donc des réponses `401`, des échecs de la sonde de vivacité et un
+> échec du hook de test. Les utilisateurs du chart actuel ne doivent pas activer
+> `GITHUBSTS_HEALTH_AUTH_TOKEN` avant qu'un chart compatible ne l'injecte depuis
+> un Secret Kubernetes, n'utilise une sonde de vivacité TCP et ne mette à jour le
+> hook de test, sauf s'ils fournissent un câblage de déploiement personnalisé
+> équivalent.
+
 ## Vérification
 
 Après l'installation, vérifiez le déploiement :

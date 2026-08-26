@@ -79,6 +79,16 @@ serviceMonitor:
   interval: 30s
 ```
 
+## Health authentication compatibility
+
+> The current `github-sts-helm` chart does not yet support authenticated
+> `/health`. Its HTTP liveness probe and chart test hook call `/health` without
+> a Bearer token, so enabling health authentication causes `401` responses,
+> liveness failures, and a failed test hook. Current chart users must not enable
+> `GITHUBSTS_HEALTH_AUTH_TOKEN` until a compatible chart injects it from a
+> Kubernetes Secret, uses a TCP liveness probe, and updates the test hook, unless
+> they provide equivalent custom deployment wiring.
+
 ## Verification
 
 After installation, verify the deployment:

@@ -144,6 +144,47 @@ func TestAccessLogMiddleware_SuppressHealthAtInfo(t *testing.T) {
 	}
 }
 
+func TestAccessLogMiddleware_LogsSuppressedHealthFailureAtWarn(t *testing.T) {
+	var buf bytes.Buffer
+	slogger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	h := accessLogMiddleware(inner, slogger, true)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/health", nil))
+
+	if !bytes.Contains(buf.Bytes(), []byte(`"level":"WARN"`)) {
+		t.Errorf("expected WARN level for suppressed health 401, got: %s", buf.String())
+	}
+}
+
+func TestAccessLogMiddleware_SuppressesReadyAndMetricsFailures(t *testing.T) {
+	for _, tt := range []struct {
+		path   string
+		status int
+	}{
+		{path: "/ready", status: http.StatusServiceUnavailable},
+		{path: "/metrics", status: http.StatusUnauthorized},
+	} {
+		t.Run(tt.path, func(t *testing.T) {
+			var buf bytes.Buffer
+			slogger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+			inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tt.status)
+			})
+			h := accessLogMiddleware(inner, slogger, true)
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, tt.path, nil))
+
+			if buf.Len() != 0 {
+				t.Errorf("expected suppressed log for %s status %d, got: %s", tt.path, tt.status, buf.String())
+			}
+		})
+	}
+}
+
 func TestStatusWriter_CapturesCode(t *testing.T) {
 	w := httptest.NewRecorder()
 	sw := &statusWriter{ResponseWriter: w, status: 200}
@@ -223,6 +264,84 @@ func TestRoutePattern(t *testing.T) {
 		if got := routePattern(req); got != tt.want {
 			t.Errorf("routePattern(%q) = %q, want %q", tt.path, got, tt.want)
 		}
+	}
+}
+
+func TestNew_WiresHealthAuthentication(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate RSA key: %v", err)
+	}
+	cfg := &config.Settings{
+		Server: config.ServerConfig{
+			Host:            "127.0.0.1",
+			Port:            8080,
+			ShutdownTimeout: time.Second,
+		},
+		Apps: map[string]config.AppConfig{
+			"test": {AppID: 1, ParsedKey: key},
+		},
+		OIDC: config.OIDCConfig{
+			AllowedIssuers: []string{"https://issuer.example.com"},
+		},
+		JTI: config.JTIConfig{
+			Backend: "memory",
+			TTL:     time.Minute,
+		},
+		Policy: config.PolicyConfig{
+			BasePath: ".github/sts",
+			CacheTTL: time.Minute,
+		},
+		BundleEnforcement: config.BundleEnforcementOptional,
+		Audit:             config.AuditConfig{BufferSize: 1},
+		Health:            config.HealthConfig{AuthToken: "health-secret"},
+	}
+
+	srv, err := New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := srv.Shutdown(); err != nil {
+			t.Errorf("Shutdown() error: %v", err)
+		}
+	})
+
+	for _, tt := range []struct {
+		name          string
+		path          string
+		authorization string
+		wantStatus    int
+	}{
+		{name: "health missing token", path: "/health", wantStatus: http.StatusUnauthorized},
+		{name: "health valid token", path: "/health", authorization: "Bearer health-secret", wantStatus: http.StatusOK},
+		{name: "ready remains unauthenticated", path: "/ready", wantStatus: http.StatusServiceUnavailable},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			if tt.authorization != "" {
+				req.Header.Set("Authorization", tt.authorization)
+			}
+			w := httptest.NewRecorder()
+			srv.httpServer.Handler.ServeHTTP(w, req)
+
+			if w.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d", w.Code, tt.wantStatus)
+			}
+		})
+	}
+
+	defaultHealth := config.HealthConfig{}
+	defaultMux := http.NewServeMux()
+	defaultMux.Handle("GET /health", handler.OptionalBearerAuth(
+		defaultHealth.AuthToken,
+		"health",
+		handler.HealthHandler(nil),
+	))
+	w := httptest.NewRecorder()
+	defaultMux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/health", nil))
+	if w.Code != http.StatusOK {
+		t.Errorf("default health status = %d, want %d", w.Code, http.StatusOK)
 	}
 }
 
