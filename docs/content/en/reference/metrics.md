@@ -7,7 +7,7 @@ translationKey: metrics
 
 All metrics are exposed at `GET /metrics` in Prometheus text format with the `githubsts_` prefix.
 
-**Upgrading from a version without app pools?** Every GitHub App, rate-limit, and reachability metric below now carries an additional `instance` label — see [Migration: pool metrics `instance` label]({{< relref "/operations/upgrades#migration-pool-metrics-instance-label" >}}) for the affected metric list, before/after PromQL, and a step-by-step checklist.
+**Upgrading from a version without app pools?** Every GitHub App, rate-limit, and reachability metric below now carries an additional `instance` label; see [Migration: pool metrics `instance` label]({{< relref "/operations/upgrades#migration-pool-metrics-instance-label" >}}) for the affected metric list, before/after PromQL, and a step-by-step checklist.
 
 ## Authenticate scrapes
 

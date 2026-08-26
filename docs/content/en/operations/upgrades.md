@@ -101,7 +101,7 @@ The checked-in `Depthmark/github-sts` release policy expects owner ID `268749784
 
 ## Migration: pool metrics `instance` label
 
-Upgrading to a version with [app pools]({{< relref "/reference/configuration#app-pools-multi-instance-rate-limit-rotation" >}}) adds an `instance` label to every GitHub App, rate-limit, and reachability metric that already existed. This applies to every deployment, not only ones that configure `instances:` — a single-instance app is normalized into a pool of one internally, so it still carries the label (see [Metrics]({{< relref "/reference/metrics" >}})):
+Upgrading to a version with [app pools]({{< relref "/reference/configuration#app-pools-multi-instance-rate-limit-rotation" >}}) adds an `instance` label to every GitHub App, rate-limit, and reachability metric that already existed. This applies to every deployment, not only ones that configure `instances:`: a single-instance app is normalized into a pool of one internally, so it still carries the label (see [Metrics]({{< relref "/reference/metrics" >}})):
 
 ```text
 githubsts_token_exchanges_total
@@ -123,7 +123,7 @@ githubsts_github_reachability_failures_total
 
 **If every app stays single-instance,** series counts are unchanged: each of the metrics above still has exactly one series per app (per resource, per endpoint, etc.), just with one more label attached. A query that doesn't assert an exact label set continues to return the same result. Most dashboards and alerts need no change.
 
-**If an app adopts a pool of N instances,** that app's series count for each metric above multiplies by N — one series per instance, not one aggregate. A panel or alert written when the label didn't exist will now show, or alert on, N separate series instead of one.
+**If an app adopts a pool of N instances,** that app's series count for each metric above multiplies by N: one series per instance, not one aggregate. A panel or alert written when the label didn't exist will now show, or alert on, N separate series instead of one.
 
 **Before** (single instance, or before upgrading):
 

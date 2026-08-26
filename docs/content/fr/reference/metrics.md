@@ -8,7 +8,7 @@ translationStatus: pending-review
 
 Toutes les métriques sont exposées à `GET /metrics` au format texte Prometheus avec le préfixe `githubsts_`.
 
-**Mise à niveau depuis une version sans pools d'Apps ?** Chaque métrique de GitHub App, de limite de débit et d'accessibilité ci-dessous porte désormais une étiquette `instance` supplémentaire — voir [Migration : étiquette instance des métriques de pool]({{< relref "/operations/upgrades#migration--étiquette-instance-des-métriques-de-pool" >}}) pour la liste des métriques concernées, les requêtes PromQL avant/après et une liste de contrôle étape par étape.
+**Mise à niveau depuis une version sans pools d'Apps ?** Chaque métrique de GitHub App, de limite de débit et d'accessibilité ci-dessous porte désormais une étiquette `instance` supplémentaire ; voir [Migration : étiquette instance des métriques de pool]({{< relref "/operations/upgrades#migration--étiquette-instance-des-métriques-de-pool" >}}) pour la liste des métriques concernées, les requêtes PromQL avant/après et une liste de contrôle étape par étape.
 
 ## Authentifier les collectes
 
