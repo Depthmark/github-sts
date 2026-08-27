@@ -1,0 +1,9 @@
+{{- /* Google Search Console site verification.
+
+  Overrides Hextra's empty `custom/head-end.html`, which the theme renders as the
+  last child of <head> on every page. Google only reads the tag on the property
+  root, but emitting it site-wide keeps verification valid if the property is ever
+  re-registered against a different path or language prefix.
+
+  Removing this tag un-verifies the property in Search Console. */ -}}
+<meta name="google-site-verification" content="qlBHk80vQIUmiuJdW3Z55h4LbttxSmaFiIQFomnaMg0" />
