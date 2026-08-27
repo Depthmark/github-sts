@@ -99,11 +99,43 @@ Lorsque vous utilisez la `github-sts-action`, le jeton est révoqué automatique
 
 | Point de terminaison | Méthode | Succès | Échec |
 |---|---|---|---|
-| `/health` | `GET` | `200` `{"status":"ok"}` | — |
+| `/health` | `GET` | `200` avec l'état de vivacité, la posture de sécurité et l'état des bundles configurés | `401` lorsque l'authentification de santé est configurée et que le jeton Bearer est absent ou incorrect |
 | `/ready` | `GET` | `200` `{"ready":true}` | `503` `{"ready":false}` |
 | `/metrics` | `GET` | Format texte Prometheus | `401` lorsque l'authentification des métriques est configurée et que le jeton Bearer est absent ou incorrect |
 
-`/health` est une sonde de vivacité ; il renvoie `200` tant que le processus est en marche. `/ready` renvoie `200` avec `{"ready":true}` une fois que le serveur est en service et `503` avec `{"ready":false}` tant qu'il ne l'est pas. La préparation n'est pas conditionnée par l'accessibilité de l'API GitHub ; la sonde d'accessibilité ne fait que mettre à jour la métrique `githubsts_github_reachable`.
+`/health` est une sonde de vivacité. Lorsque l'authentification est désactivée
+ou satisfaite, il renvoie `200` tant que le processus est en marche. Définissez
+`health.auth_token` ou
+`GITHUBSTS_HEALTH_AUTH_TOKEN` pour exiger un en-tête
+`Authorization: Bearer <token>`. Un jeton absent ou incorrect renvoie `401`
+avec `{"error":"unauthorized"}` et
+`WWW-Authenticate: Bearer realm="health"`. Lorsque aucun de ces paramètres ne
+fournit de jeton, `/health` reste sans authentification. `/ready` reste sans
+authentification.
+
+Après avoir démarré github-sts avec `GITHUBSTS_HEALTH_AUTH_TOKEN`, vérifiez le
+comportement depuis le même hôte :
+
+```bash
+export GITHUBSTS_HEALTH_AUTH_TOKEN="remplacer-par-le-secret-configuré"
+
+curl -o /dev/null -s -w '%{http_code}\n' http://127.0.0.1:8080/health
+# 401
+
+curl -o /dev/null -s -w '%{http_code}\n' \
+  -H "Authorization: Bearer $GITHUBSTS_HEALTH_AUTH_TOKEN" \
+  http://127.0.0.1:8080/health
+# 200
+```
+
+Utilisez HTTPS chaque fois que le jeton Bearer transite sur un réseau.
+L'exemple en boucle locale utilise HTTP uniquement pour la vérification locale.
+
+`/ready` renvoie `200` avec `{"ready":true}` une fois que le serveur est en
+service et `503` avec `{"ready":false}` tant qu'il ne l'est pas. La préparation
+n'est pas conditionnée par l'accessibilité de l'API GitHub ; la sonde
+d'accessibilité ne fait que mettre à jour la métrique
+`githubsts_github_reachable`.
 
 ## Bibliothèque cliente Go
 

@@ -40,6 +40,7 @@ type Settings struct {
 	BundleEnforcement string               `yaml:"bundle_enforcement"`
 	Bundles           []BundleConfig       `yaml:"bundles"`
 	Audit             AuditConfig          `yaml:"audit"`
+	Health            HealthConfig         `yaml:"health"`
 	Metrics           MetricsConfig        `yaml:"metrics"`
 	RateLimit         RateLimitConfig      `yaml:"rate_limit"`
 }
@@ -215,6 +216,11 @@ type AuditConfig struct {
 	FileEnabled bool   `yaml:"file_enabled"`
 	FilePath    string `yaml:"file_path"`
 	BufferSize  int    `yaml:"buffer_size"`
+}
+
+// HealthConfig holds health endpoint settings.
+type HealthConfig struct {
+	AuthToken string `yaml:"auth_token"`
 }
 
 // MetricsConfig holds Prometheus metrics settings.
@@ -1065,6 +1071,11 @@ func applyEnvOverrides(cfg *Settings) error {
 	}
 	if err := envInt("GITHUBSTS_AUDIT_BUFFER_SIZE", &cfg.Audit.BufferSize); err != nil {
 		return err
+	}
+
+	// Health
+	if v := os.Getenv("GITHUBSTS_HEALTH_AUTH_TOKEN"); v != "" {
+		cfg.Health.AuthToken = v
 	}
 
 	// Metrics

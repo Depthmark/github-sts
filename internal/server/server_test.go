@@ -144,6 +144,47 @@ func TestAccessLogMiddleware_SuppressHealthAtInfo(t *testing.T) {
 	}
 }
 
+func TestAccessLogMiddleware_LogsSuppressedHealthFailureAtWarn(t *testing.T) {
+	var buf bytes.Buffer
+	slogger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	h := accessLogMiddleware(inner, slogger, true)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/health", nil))
+
+	if !bytes.Contains(buf.Bytes(), []byte(`"level":"WARN"`)) {
+		t.Errorf("expected WARN level for suppressed health 401, got: %s", buf.String())
+	}
+}
+
+func TestAccessLogMiddleware_SuppressesReadyAndMetricsFailures(t *testing.T) {
+	for _, tt := range []struct {
+		path   string
+		status int
+	}{
+		{path: "/ready", status: http.StatusServiceUnavailable},
+		{path: "/metrics", status: http.StatusUnauthorized},
+	} {
+		t.Run(tt.path, func(t *testing.T) {
+			var buf bytes.Buffer
+			slogger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+			inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tt.status)
+			})
+			h := accessLogMiddleware(inner, slogger, true)
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, tt.path, nil))
+
+			if buf.Len() != 0 {
+				t.Errorf("expected suppressed log for %s status %d, got: %s", tt.path, tt.status, buf.String())
+			}
+		})
+	}
+}
+
 func TestStatusWriter_CapturesCode(t *testing.T) {
 	w := httptest.NewRecorder()
 	sw := &statusWriter{ResponseWriter: w, status: 200}
@@ -226,7 +267,7 @@ func TestRoutePattern(t *testing.T) {
 	}
 }
 
-func TestNew_WiresMetricsAuthentication(t *testing.T) {
+func TestNew_WiresEndpointAuthentication(t *testing.T) {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("generate RSA key: %v", err)
@@ -253,6 +294,7 @@ func TestNew_WiresMetricsAuthentication(t *testing.T) {
 		},
 		BundleEnforcement: config.BundleEnforcementOptional,
 		Audit:             config.AuditConfig{BufferSize: 1},
+		Health:            config.HealthConfig{AuthToken: "health-secret"},
 		Metrics: config.MetricsConfig{
 			Enabled:   true,
 			AuthToken: "metrics-secret",
@@ -271,14 +313,18 @@ func TestNew_WiresMetricsAuthentication(t *testing.T) {
 
 	for _, tt := range []struct {
 		name          string
+		path          string
 		authorization string
 		wantStatus    int
 	}{
-		{name: "missing token", wantStatus: http.StatusUnauthorized},
-		{name: "valid token", authorization: "Bearer metrics-secret", wantStatus: http.StatusOK},
+		{name: "health missing token", path: "/health", wantStatus: http.StatusUnauthorized},
+		{name: "health valid token", path: "/health", authorization: "Bearer health-secret", wantStatus: http.StatusOK},
+		{name: "ready remains unauthenticated", path: "/ready", wantStatus: http.StatusServiceUnavailable},
+		{name: "metrics missing token", path: "/metrics", wantStatus: http.StatusUnauthorized},
+		{name: "metrics valid token", path: "/metrics", authorization: "Bearer metrics-secret", wantStatus: http.StatusOK},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
 			if tt.authorization != "" {
 				req.Header.Set("Authorization", tt.authorization)
 			}
@@ -289,6 +335,19 @@ func TestNew_WiresMetricsAuthentication(t *testing.T) {
 				t.Errorf("status = %d, want %d", w.Code, tt.wantStatus)
 			}
 		})
+	}
+
+	defaultHealth := config.HealthConfig{}
+	defaultMux := http.NewServeMux()
+	defaultMux.Handle("GET /health", handler.OptionalBearerAuth(
+		defaultHealth.AuthToken,
+		"health",
+		handler.HealthHandler(nil),
+	))
+	w := httptest.NewRecorder()
+	defaultMux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/health", nil))
+	if w.Code != http.StatusOK {
+		t.Errorf("default health status = %d, want %d", w.Code, http.StatusOK)
 	}
 }
 

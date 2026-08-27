@@ -35,6 +35,19 @@ The Action uses the stable `/sts/exchange` API. Minor version bumps may add opti
 | `immutable_subject` not supported | The field is not in the schema and is ignored if present; use `subject` or `subject_pattern` |
 | `repositories` not applied | The field is present but not applied in the exchange flow; use `subject` to scope to a repository |
 | Centralized policies are single-repo | A centralized org policy scopes the token to the single repository derived from the OIDC subject |
+| Health authentication breaks chart probes | The chart calls `/health` without a Bearer token; leave `health.auth_token` unset on chart-managed deployments |
+
+### Health authentication and the Helm chart
+
+The current `github-sts-helm` chart does not yet support an authenticated
+`/health`. Its HTTP liveness probe and its chart test hook call `/health`
+without a Bearer token, so enabling health authentication returns `401`,
+fails the liveness probe, and fails the test hook. Do not set
+`health.auth_token` or `GITHUBSTS_HEALTH_AUTH_TOKEN` on a chart-managed
+deployment until a compatible chart release injects the token from a
+Kubernetes Secret, switches the liveness probe to TCP, and updates the test
+hook. Deployments that provide equivalent custom wiring can enable health
+authentication today.
 
 ## Deprecation policy
 

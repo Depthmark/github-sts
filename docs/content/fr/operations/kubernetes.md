@@ -12,10 +12,18 @@ Un chart Helm est maintenu dans le dépôt [github-sts-helm](https://github.com/
 
 | Sonde | Point de terminaison | Succès | Échec |
 |---|---|---|---|
-| Vivacité | `/health` | `200` `{"status":"ok"}` | — |
+| Vivacité | `/health` | `200` avec l'état de vivacité et de diagnostic | `401` lorsque l'authentification de santé est configurée et que le jeton Bearer est absent ou incorrect |
 | Préparation | `/ready` | `200` `{"ready":true}` | `503` `{"ready":false}` |
 
 `/ready` renvoie `200` avec `{"ready":true}` une fois que le serveur est en service et `503` avec `{"ready":false}` tant qu'il ne l'est pas. Utilisez-le pour les sondes de préparation Kubernetes et les vérifications de santé des équilibreurs de charge.
+
+Le chart `github-sts-helm` actuel utilise une sonde HTTP de vivacité
+`/health` sans authentification. N'activez pas l'authentification de santé avec
+cette sonde. Un déploiement compatible doit injecter
+`GITHUBSTS_HEALTH_AUTH_TOKEN` depuis un Secret Kubernetes et utiliser une sonde
+de vivacité TCP, ou fournir un câblage personnalisé équivalent. Consultez
+[Compatibilité]({{< relref "/integrations/compatibility" >}}) pour la
+limitation du hook de test du chart.
 
 ## Montage de secrets
 

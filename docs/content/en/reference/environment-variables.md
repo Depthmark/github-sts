@@ -69,6 +69,12 @@ Individual pool instances (`apps.<name>.instances[N]` in YAML) can also be set o
 | `GITHUBSTS_AUDIT_FILE_PATH` | `/var/log/github-sts/audit.json` | Audit log file path |
 | `GITHUBSTS_AUDIT_BUFFER_SIZE` | `1024` | Audit channel buffer size |
 
+## Health settings
+
+| Variable | Default | Description |
+|---|---|---|
+| `GITHUBSTS_HEALTH_AUTH_TOKEN` | n/a | Bearer token for the `/health` endpoint. The endpoint is unauthenticated only when neither this variable nor `health.auth_token` supplies a token. An empty environment value does not clear a YAML token. Use HTTPS whenever the token crosses a network. |
+
 ## Metrics settings
 
 | Variable | Default | Description |

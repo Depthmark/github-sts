@@ -11,10 +11,17 @@ A Helm chart is maintained in the [github-sts-helm](https://github.com/Depthmark
 
 | Probe | Endpoint | Success | Failure |
 |---|---|---|---|
-| Liveness | `/health` | `200` `{"status":"ok"}` | — |
+| Liveness | `/health` | `200` with liveness and diagnostic state | `401` when health authentication is configured and the Bearer token is missing or incorrect |
 | Readiness | `/ready` | `200` `{"ready":true}` | `503` `{"ready":false}` |
 
 `/ready` returns `200` with `{"ready":true}` once the server is serving and `503` with `{"ready":false}` while it is not. Use it for Kubernetes readiness probes and load balancer health checks.
+
+The current `github-sts-helm` chart uses an unauthenticated HTTP `/health`
+liveness probe. Do not enable health authentication with that probe. A
+compatible deployment must inject `GITHUBSTS_HEALTH_AUTH_TOKEN` from a
+Kubernetes Secret and use a TCP liveness probe, or provide equivalent custom
+wiring. See [Compatibility]({{< relref "/integrations/compatibility" >}}) for
+the chart test-hook limitation.
 
 ## Secret mounting
 

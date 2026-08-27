@@ -68,6 +68,12 @@ Chaque instance d'un pool (`apps.<name>.instances[N]` en YAML) peut aussi être 
 | `GITHUBSTS_AUDIT_FILE_PATH` | `/var/log/github-sts/audit.json` | Chemin du fichier de journal d'audit |
 | `GITHUBSTS_AUDIT_BUFFER_SIZE` | `1024` | Taille du tampon du canal d'audit |
 
+## Paramètres de santé
+
+| Variable | Par défaut | Description |
+|---|---|---|
+| `GITHUBSTS_HEALTH_AUTH_TOKEN` | — | Jeton Bearer pour le point de terminaison `/health`. Le point de terminaison reste sans authentification uniquement si ni cette variable ni `health.auth_token` ne fournissent de jeton. Une variable d'environnement vide n'efface pas un jeton YAML. Utilisez HTTPS chaque fois que le jeton transite sur un réseau. |
+
 ## Paramètres des métriques
 
 | Variable | Par défaut | Description |

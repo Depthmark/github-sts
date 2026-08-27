@@ -36,6 +36,20 @@ L'Action utilise l'API stable `/sts/exchange`. Les montées de version mineure p
 | `immutable_subject` non pris en charge | Le champ ne fait pas partie du schéma et est ignoré s'il est présent ; utilisez `subject` ou `subject_pattern` |
 | `repositories` non appliqué | Le champ est présent mais non appliqué dans le flux d'échange ; utilisez `subject` pour restreindre à un dépôt |
 | Les politiques centralisées sont mono-dépôt | Une politique d'organisation centralisée limite le jeton au seul dépôt dérivé du sujet OIDC |
+| L'authentification de santé casse les sondes du chart | Le chart appelle `/health` sans jeton Bearer ; laissez `health.auth_token` vide sur les déploiements gérés par le chart |
+
+### Authentification de santé et chart Helm
+
+Le chart `github-sts-helm` actuel ne prend pas encore en charge
+l'authentification de `/health`. Sa sonde HTTP de vivacité et son hook de test
+appellent `/health` sans jeton Bearer. Activer l'authentification de santé
+provoque donc des réponses `401`, un échec de la sonde de vivacité et un échec
+du hook de test. Ne définissez pas `health.auth_token` ni
+`GITHUBSTS_HEALTH_AUTH_TOKEN` sur un déploiement géré par le chart tant qu'une
+version compatible du chart n'injecte pas le jeton depuis un Secret Kubernetes,
+ne bascule pas la sonde de vivacité en TCP et ne met pas à jour le hook de test.
+Les déploiements dotés d'un câblage personnalisé équivalent peuvent activer
+l'authentification de santé dès maintenant.
 
 ## Politique d'obsolescence
 
