@@ -20,7 +20,7 @@ jobs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
-      - uses: Depthmark/github-sts-action@11e9b4095d2f3033d0ee7e82bb9ac6a7bcbc9b48 # v0.2.0
+      - uses: Depthmark/github-sts-action@9014c80f47cad81e0a1295b112714d5c1b219d54 # v0.3.0
         id: sts
         with:
           sts-url: https://github-sts.adelisle.com
