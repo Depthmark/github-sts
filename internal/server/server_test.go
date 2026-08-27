@@ -238,7 +238,7 @@ func TestNew_WiresMetricsAuthentication(t *testing.T) {
 			ShutdownTimeout: time.Second,
 		},
 		Apps: map[string]config.AppConfig{
-			"test": {AppID: 1, ParsedKey: key},
+			"test": {Instances: []config.AppInstanceConfig{{AppID: 1, ParsedKey: key}}},
 		},
 		OIDC: config.OIDCConfig{
 			AllowedIssuers: []string{"https://issuer.example.com"},

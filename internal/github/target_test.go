@@ -79,7 +79,7 @@ func TestAppTokenProvider_ResolveTarget(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewAppTokenProvider("test-app", 12345, key, srv.URL, nil)
+	p := NewAppTokenProvider("test-app", "test-app", 12345, key, srv.URL, nil)
 	scope := RepositoryScope{Owner: "Depthmark", Repository: "github-sts"}
 	for range 2 {
 		identity, err := p.ResolveTarget(context.Background(), scope)
@@ -98,7 +98,7 @@ func TestAppTokenProvider_ResolveTarget(t *testing.T) {
 func TestAppTokenProvider_ResolveTarget_RejectsNonCanonicalScope(t *testing.T) {
 	srv := targetTestServer(t, "Depthmark", "github-sts", 268749784, 1198676434, nil)
 	defer srv.Close()
-	p := NewAppTokenProvider("test-app", 12345, generateTestKey(t), srv.URL, nil)
+	p := NewAppTokenProvider("test-app", "test-app", 12345, generateTestKey(t), srv.URL, nil)
 
 	_, err := p.ResolveTarget(context.Background(), RepositoryScope{Owner: "depthmark", Repository: "github-sts"})
 	if err == nil || !strings.Contains(err.Error(), "not canonical") {
@@ -109,7 +109,7 @@ func TestAppTokenProvider_ResolveTarget_RejectsNonCanonicalScope(t *testing.T) {
 func TestAppTokenProvider_ResolveTarget_RejectsInvalidIdentity(t *testing.T) {
 	srv := targetTestServer(t, "Depthmark", "github-sts", 0, 1198676434, nil)
 	defer srv.Close()
-	p := NewAppTokenProvider("test-app", 12345, generateTestKey(t), srv.URL, nil)
+	p := NewAppTokenProvider("test-app", "test-app", 12345, generateTestKey(t), srv.URL, nil)
 
 	_, err := p.ResolveTarget(context.Background(), RepositoryScope{Owner: "Depthmark", Repository: "github-sts"})
 	if err == nil || !strings.Contains(err.Error(), "invalid immutable identity") {
@@ -126,9 +126,9 @@ func TestAppTokenProvider_GetInstallationTokenForTarget_UsesRepositoryID(t *test
 		}
 	})
 	defer srv.Close()
-	p := NewAppTokenProvider("test-app", 12345, generateTestKey(t), srv.URL, nil)
+	p := NewAppTokenProvider("test-app", "test-app", 12345, generateTestKey(t), srv.URL, nil)
 
-	token, err := p.GetInstallationTokenForTarget(context.Background(), TargetIdentity{
+	token, _, err := p.GetInstallationTokenForTarget(context.Background(), TargetIdentity{
 		Scope: "Depthmark/github-sts", RepositoryID: "1198676434",
 	}, map[string]string{"contents": "read"}, "test")
 	if err != nil {

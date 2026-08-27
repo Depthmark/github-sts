@@ -3,19 +3,27 @@ package handler
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/depthmark/github-sts/internal/audit"
 	"github.com/depthmark/github-sts/internal/bundle"
-	gh "github.com/depthmark/github-sts/internal/github"
+	"github.com/depthmark/github-sts/internal/github"
 	"github.com/depthmark/github-sts/internal/oidc"
 	"github.com/depthmark/github-sts/internal/policy"
+	"github.com/golang-jwt/jwt/v5"
 )
 
 // mockJTICache implements jti.Cache for testing.
@@ -50,25 +58,26 @@ func (m *mockPolicyLoader) Load(_ context.Context, request policy.LoadRequest) (
 }
 
 type mockExchangeApp struct {
-	target       gh.TargetIdentity
+	target       github.TargetIdentity
 	resolveErr   error
 	token        string
+	instance     string
 	mintErr      error
 	resolveCalls int
 	mintCalls    int
-	lastScope    gh.RepositoryScope
-	lastTarget   gh.TargetIdentity
+	lastScope    github.RepositoryScope
+	lastTarget   github.TargetIdentity
 	lastPerms    map[string]string
 }
 
-func (m *mockExchangeApp) ResolveTarget(_ context.Context, scope gh.RepositoryScope) (gh.TargetIdentity, error) {
+func (m *mockExchangeApp) ResolveTarget(_ context.Context, scope github.RepositoryScope) (github.TargetIdentity, error) {
 	m.resolveCalls++
 	m.lastScope = scope
 	if m.resolveErr != nil {
-		return gh.TargetIdentity{}, m.resolveErr
+		return github.TargetIdentity{}, m.resolveErr
 	}
 	if m.target.Scope == "" {
-		return gh.TargetIdentity{
+		return github.TargetIdentity{
 			Scope: scope.String(), Owner: scope.Owner, OwnerID: "1001",
 			Repository: scope.Repository, RepositoryID: "2002",
 		}, nil
@@ -76,17 +85,17 @@ func (m *mockExchangeApp) ResolveTarget(_ context.Context, scope gh.RepositorySc
 	return m.target, nil
 }
 
-func (m *mockExchangeApp) GetInstallationTokenForTarget(_ context.Context, target gh.TargetIdentity, permissions map[string]string, _ string) (string, error) {
+func (m *mockExchangeApp) GetInstallationTokenForTarget(_ context.Context, target github.TargetIdentity, permissions map[string]string, _ string) (string, string, error) {
 	m.mintCalls++
 	m.lastTarget = target
 	m.lastPerms = permissions
 	if m.mintErr != nil {
-		return "", m.mintErr
+		return "", "", m.mintErr
 	}
 	if m.token == "" {
-		return "ghs_test", nil
+		return "ghs_test", m.instance, nil
 	}
-	return m.token, nil
+	return m.token, m.instance, nil
 }
 
 // recordingAuditLogger captures audit events for assertion.
@@ -117,7 +126,7 @@ func newTestHandler(jtiNew bool, jtiErr error, pol *policy.TrustPolicy, polErr e
 	h := &ExchangeHandler{
 		jtiCache:                      &mockJTICache{isNew: jtiNew, reserveErr: jtiErr},
 		policyLoader:                  &mockPolicyLoader{pol: pol, err: polErr},
-		appProviders:                  map[string]gh.ExchangeApp{},
+		appProviders:                  map[string]github.ExchangeApp{},
 		allowedIssuers:                []string{},
 		requireImmutableSubjectClaims: true,
 		auditLogger:                   al,
@@ -184,7 +193,7 @@ func TestExchange_GitHubIdentityInvalidBeforeStateOrPolicy(t *testing.T) {
 	h := &ExchangeHandler{
 		jtiCache:                      jtiCache,
 		policyLoader:                  loader,
-		appProviders:                  map[string]gh.ExchangeApp{},
+		appProviders:                  map[string]github.ExchangeApp{},
 		allowedIssuers:                []string{oidc.GitHubActionsIssuer},
 		requireImmutableSubjectClaims: true,
 		auditLogger:                   al,
@@ -234,7 +243,7 @@ func TestExchange_LegacySubjectOptOutStillRequiresIDs(t *testing.T) {
 	h := &ExchangeHandler{
 		jtiCache:                      jtiCache,
 		policyLoader:                  loader,
-		appProviders:                  map[string]gh.ExchangeApp{},
+		appProviders:                  map[string]github.ExchangeApp{},
 		allowedIssuers:                []string{oidc.GitHubActionsIssuer},
 		requireImmutableSubjectClaims: false,
 		auditLogger:                   al,
@@ -275,7 +284,7 @@ func TestExchange_LegacySubjectOptOutWithIDsPassesIdentityValidation(t *testing.
 	h := &ExchangeHandler{
 		jtiCache:                      jtiCache,
 		policyLoader:                  &mockPolicyLoader{},
-		appProviders:                  map[string]gh.ExchangeApp{},
+		appProviders:                  map[string]github.ExchangeApp{},
 		allowedIssuers:                []string{oidc.GitHubActionsIssuer},
 		requireImmutableSubjectClaims: false,
 		auditLogger:                   al,
@@ -313,7 +322,7 @@ func TestExchange_LegacySubjectOptOutWithIDsPassesIdentityValidation(t *testing.
 }
 
 func TestExchange_ExactSourceToTargetRelationship(t *testing.T) {
-	app := &mockExchangeApp{target: gh.TargetIdentity{
+	app := &mockExchangeApp{target: github.TargetIdentity{
 		Scope: "org/target", Owner: "org", OwnerID: "1001", Repository: "target", RepositoryID: "3001",
 	}}
 	loader := &mockPolicyLoader{pol: validExchangePolicy("2001", "3001")}
@@ -342,7 +351,7 @@ func TestExchange_ExactSourceToTargetRelationship(t *testing.T) {
 }
 
 func TestExchange_SourceRelationshipMismatchDeniesBeforeMint(t *testing.T) {
-	app := &mockExchangeApp{target: gh.TargetIdentity{
+	app := &mockExchangeApp{target: github.TargetIdentity{
 		Scope: "org/target", Owner: "org", OwnerID: "1001", Repository: "target", RepositoryID: "3001",
 	}}
 	loader := &mockPolicyLoader{pol: validExchangePolicy("9999", "3001")}
@@ -358,7 +367,7 @@ func TestExchange_SourceRelationshipMismatchDeniesBeforeMint(t *testing.T) {
 }
 
 func TestExchange_TargetRelationshipMismatchDeniesBeforeMint(t *testing.T) {
-	app := &mockExchangeApp{target: gh.TargetIdentity{
+	app := &mockExchangeApp{target: github.TargetIdentity{
 		Scope: "org/target", Owner: "org", OwnerID: "1001", Repository: "target", RepositoryID: "3001",
 	}}
 	loader := &mockPolicyLoader{pol: validExchangePolicy("2001", "9999")}
@@ -374,7 +383,7 @@ func TestExchange_TargetRelationshipMismatchDeniesBeforeMint(t *testing.T) {
 }
 
 func TestExchange_SourceRenamePreservingIDsAllows(t *testing.T) {
-	app := &mockExchangeApp{target: gh.TargetIdentity{
+	app := &mockExchangeApp{target: github.TargetIdentity{
 		Scope: "org/target", Owner: "org", OwnerID: "1001", Repository: "target", RepositoryID: "3001",
 	}}
 	h := authorizedExchangeHandler(app, &mockPolicyLoader{pol: validExchangePolicy("2001", "3001")}, &recordingAuditLogger{})
@@ -400,7 +409,7 @@ func TestExchange_SourceRenamePreservingIDsAllows(t *testing.T) {
 }
 
 func TestExchange_InvalidTrustPolicyHasDistinctCode(t *testing.T) {
-	app := &mockExchangeApp{target: gh.TargetIdentity{
+	app := &mockExchangeApp{target: github.TargetIdentity{
 		Scope: "org/target", Owner: "org", OwnerID: "1001", Repository: "target", RepositoryID: "3001",
 	}}
 	loader := &mockPolicyLoader{pol: &policy.TrustPolicy{
@@ -424,11 +433,11 @@ func TestExchange_InvalidTrustPolicyHasDistinctCode(t *testing.T) {
 
 const authorizedSubject = "repo:org@1001/source@2001:ref:refs/heads/main"
 
-func authorizedExchangeHandler(app gh.ExchangeApp, loader *mockPolicyLoader, al *recordingAuditLogger) *ExchangeHandler {
+func authorizedExchangeHandler(app github.ExchangeApp, loader *mockPolicyLoader, al *recordingAuditLogger) *ExchangeHandler {
 	return &ExchangeHandler{
 		jtiCache:                      &mockJTICache{isNew: true},
 		policyLoader:                  loader,
-		appProviders:                  map[string]gh.ExchangeApp{"test-app": app},
+		appProviders:                  map[string]github.ExchangeApp{"test-app": app},
 		allowedIssuers:                []string{oidc.GitHubActionsIssuer},
 		requireImmutableSubjectClaims: true,
 		auditLogger:                   al,
@@ -522,7 +531,7 @@ func TestExchange_MultiAppWithoutParam(t *testing.T) {
 	h := &ExchangeHandler{
 		jtiCache:     &mockJTICache{isNew: true},
 		policyLoader: &mockPolicyLoader{},
-		appProviders: map[string]gh.ExchangeApp{
+		appProviders: map[string]github.ExchangeApp{
 			"app1": nil,
 			"app2": nil,
 		},
@@ -538,7 +547,7 @@ func TestExchange_MultiAppWithoutParam(t *testing.T) {
 
 func TestResolveApp_SingleApp(t *testing.T) {
 	h := &ExchangeHandler{
-		appProviders: map[string]gh.ExchangeApp{
+		appProviders: map[string]github.ExchangeApp{
 			"default": nil,
 		},
 	}
@@ -553,7 +562,7 @@ func TestResolveApp_SingleApp(t *testing.T) {
 
 func TestResolveApp_UnknownApp(t *testing.T) {
 	h := &ExchangeHandler{
-		appProviders: map[string]gh.ExchangeApp{
+		appProviders: map[string]github.ExchangeApp{
 			"default": nil,
 		},
 	}
@@ -807,6 +816,202 @@ func TestExchange_ValidScopeChars(t *testing.T) {
 
 	if w.Code != http.StatusForbidden {
 		t.Errorf("status = %d, want %d (should fail at auth, not validation)", w.Code, http.StatusForbidden)
+	}
+}
+
+// --- End-to-end exchange flow over a 2-instance AppPool ---
+//
+// Everything else in this file mocks the app provider (resolveApp is
+// exercised in isolation). This exercises the real *github.AppPool wired in
+// the way server.go wires it, with a real OIDC-validated token, to prove
+// the exchange still succeeds when the first instance a request lands on
+// always 403s, and that the response/audit event correctly attribute the
+// success to whichever instance actually served it (design doc §5.4.1).
+
+// oidcTestProvider stands up a mock OIDC discovery+JWKS endpoint and can
+// sign tokens against it.
+type oidcTestProvider struct {
+	key *rsa.PrivateKey
+	srv *httptest.Server
+}
+
+func newOIDCTestProvider(t *testing.T) *oidcTestProvider {
+	t.Helper()
+	oidc.ResetCacheForTesting()
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generating RSA key: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"jwks_uri": fmt.Sprintf("http://%s/jwks", r.Host),
+		})
+	})
+	mux.HandleFunc("/jwks", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"keys": []map[string]string{{
+				"kty": "RSA",
+				"kid": "test-kid-1",
+				"n":   base64.RawURLEncoding.EncodeToString(key.N.Bytes()),
+				"e":   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(key.E)).Bytes()),
+			}},
+		})
+	})
+
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return &oidcTestProvider{key: key, srv: srv}
+}
+
+func (p *oidcTestProvider) sign(t *testing.T, claims jwt.MapClaims) string {
+	t.Helper()
+	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	tok.Header["kid"] = "test-kid-1"
+	signed, err := tok.SignedString(p.key)
+	if err != nil {
+		t.Fatalf("signing token: %v", err)
+	}
+	return signed
+}
+
+// newGitHubInstanceServer returns a mock GitHub API server that resolves
+// any installation lookup to installationID and delegates token-minting
+// requests to tokenHandler.
+func newGitHubInstanceServer(installationID int64, tokenHandler http.HandlerFunc) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/installation"):
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]int64{"id": installationID})
+		case strings.Contains(r.URL.Path, "/access_tokens"):
+			tokenHandler(w, r)
+		case strings.HasPrefix(r.URL.Path, "/repos/"):
+			// Target resolution (ResolveTarget) always uses a metadata:read
+			// token minted against this same server, then GETs the repo here
+			// to canonicalize owner/repo into immutable IDs.
+			parts := strings.SplitN(strings.TrimPrefix(r.URL.Path, "/repos/"), "/", 2)
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":        1001,
+				"name":      parts[1],
+				"full_name": parts[0] + "/" + parts[1],
+				"owner":     map[string]any{"login": parts[0], "id": 2002},
+			})
+		}
+	}))
+}
+
+func TestExchange_TwoInstancePool_FailsOverAndAttributesInstance(t *testing.T) {
+	oidcProvider := newOIDCTestProvider(t)
+
+	var failCalls int32
+	failSrv := newGitHubInstanceServer(1, func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&failCalls, 1)
+		w.Header().Set("X-RateLimit-Remaining", "0")
+		w.WriteHeader(http.StatusForbidden)
+	})
+	defer failSrv.Close()
+	okSrv := newGitHubInstanceServer(1, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]string{"token": "ghs_from_checkout_2"})
+	})
+	defer okSrv.Close()
+
+	newMember := func(instance, apiURL string) github.PoolMember {
+		key, err := rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			t.Fatalf("generating RSA key: %v", err)
+		}
+		return github.PoolMember{
+			Instance: instance,
+			Provider: github.NewAppTokenProvider("checkout", instance, 1, key, apiURL, nil),
+		}
+	}
+	// Ring index 1 (the first candidate a fresh pool's cursor lands on) is
+	// checkout-1, so this exercises a real failover to checkout-2 whenever
+	// the ring starts there.
+	pool := github.NewAppPool("checkout",
+		[]github.PoolMember{
+			newMember("checkout-2", okSrv.URL),
+			newMember("checkout-1", failSrv.URL),
+		},
+		"round_robin", 0, 2, nil,
+	)
+
+	pol := &policy.TrustPolicy{
+		Issuer:      oidcProvider.srv.URL,
+		Audience:    "test-audience",
+		Subject:     "repo:myorg/myrepo:ref:refs/heads/main",
+		Permissions: map[string]string{"contents": "read"},
+	}
+
+	al := &recordingAuditLogger{}
+	h := NewExchangeHandler(
+		&mockJTICache{isNew: true},
+		&mockPolicyLoader{pol: pol},
+		map[string]github.ExchangeApp{"checkout": pool},
+		[]string{oidcProvider.srv.URL},
+		"",
+		false,
+		al,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		false,
+		nil,
+	)
+
+	sawFailover := false
+	for i := 0; i < 2; i++ {
+		now := time.Now()
+		token := oidcProvider.sign(t, jwt.MapClaims{
+			"iss": oidcProvider.srv.URL,
+			"sub": "repo:myorg/myrepo:ref:refs/heads/main",
+			"aud": "test-audience",
+			"exp": now.Add(10 * time.Minute).Unix(),
+			"iat": now.Unix(),
+			"jti": fmt.Sprintf("test-jti-%d", i),
+		})
+
+		req := httptest.NewRequest(http.MethodGet, "/sts/exchange?scope=myorg/myrepo&identity=ci&app=checkout", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("call %d: status = %d, body = %s", i, w.Code, w.Body.String())
+		}
+
+		var resp ExchangeResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("call %d: decoding response: %v", i, err)
+		}
+		if resp.Token != "ghs_from_checkout_2" {
+			t.Errorf("call %d: token = %q, want ghs_from_checkout_2 (must always resolve to the succeeding instance)", i, resp.Token)
+		}
+		if resp.App != "checkout" {
+			t.Errorf("call %d: app = %q, want checkout (the logical name, never an instance)", i, resp.App)
+		}
+
+		event := al.lastEvent()
+		if event.Result != audit.ResultSuccess {
+			t.Errorf("call %d: audit result = %q, want success", i, event.Result)
+		}
+		if event.Instance != "checkout-2" {
+			t.Errorf("call %d: audit instance = %q, want checkout-2", i, event.Instance)
+		}
+		if event.AppName != "checkout" {
+			t.Errorf("call %d: audit app = %q, want checkout", i, event.AppName)
+		}
+
+		if atomic.LoadInt32(&failCalls) > 0 {
+			sawFailover = true
+		}
+	}
+
+	if !sawFailover {
+		t.Fatal("checkout-1 was never tried across 2 calls — this test never actually exercised failover")
 	}
 }
 

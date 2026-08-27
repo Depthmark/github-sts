@@ -7,6 +7,8 @@ translationKey: metrics
 
 All metrics are exposed at `GET /metrics` in Prometheus text format with the `githubsts_` prefix.
 
+**Upgrading from a version without app pools?** Every GitHub App, rate-limit, and reachability metric below now carries an additional `instance` label; see [Migration: pool metrics `instance` label]({{< relref "/operations/upgrades#migration-pool-metrics-instance-label" >}}) for the affected metric list, before/after PromQL, and a step-by-step checklist.
+
 ## Authenticate scrapes
 
 Bearer shared-secret authentication is the only authentication method specific to `GET /metrics`. Set `GITHUBSTS_METRICS_AUTH_TOKEN` to enable it:
@@ -60,8 +62,8 @@ When the setting is empty, the endpoint remains unauthenticated. HTTPS protects 
 
 | Metric | Type | Description |
 |---|---|---|
-| `githubsts_token_exchanges_total` | Counter | Exchange attempts by app, scope, identity, issuer, result |
-| `githubsts_token_exchange_duration_seconds` | Histogram | Exchange latency by app, scope, identity, issuer |
+| `githubsts_token_exchanges_total` | Counter | Exchange attempts by app, instance, scope, identity, issuer, result |
+| `githubsts_token_exchange_duration_seconds` | Histogram | Exchange latency by app, instance, scope, identity, issuer |
 | `githubsts_oidc_validation_errors_total` | Counter | OIDC failures by issuer, reason |
 
 ## JTI replay prevention
@@ -83,24 +85,40 @@ When the setting is empty, the endpoint remains unauthenticated. HTTPS protects 
 
 | Metric | Type | Description |
 |---|---|---|
-| `githubsts_github_api_calls_total` | Counter | GitHub API calls by app, endpoint, result |
-| `githubsts_github_tokens_issued_total` | Counter | Tokens issued by app, scope, permissions |
-| `githubsts_github_rate_limit_remaining` | Gauge | Remaining rate limit by app, resource |
-| `githubsts_github_rate_limit_limit` | Gauge | Maximum requests allowed in current window |
-| `githubsts_github_rate_limit_used` | Gauge | Requests used in current window |
-| `githubsts_github_rate_limit_reset_timestamp` | Gauge | Unix epoch timestamp when window resets |
-| `githubsts_github_rate_limit_remaining_percent` | Gauge | Percentage of rate limit remaining |
-| `githubsts_github_rate_limit_exceeded_total` | Counter | Primary rate limit exceeded events |
-| `githubsts_github_secondary_rate_limit_total` | Counter | Secondary (abuse) rate limit events |
-| `githubsts_github_secondary_rate_limit_retry_after_seconds` | Gauge | Current retry-after in seconds |
+| `githubsts_github_api_calls_total` | Counter | GitHub API calls by app, instance, endpoint, result |
+| `githubsts_github_tokens_issued_total` | Counter | Tokens issued by app, instance, scope, permissions |
+| `githubsts_github_rate_limit_remaining` | Gauge | Remaining rate limit by app, instance, resource |
+| `githubsts_github_rate_limit_limit` | Gauge | Maximum requests allowed in current window, by app, instance, resource |
+| `githubsts_github_rate_limit_used` | Gauge | Requests used in current window, by app, instance, resource |
+| `githubsts_github_rate_limit_reset_timestamp` | Gauge | Unix epoch timestamp when window resets, by app, instance, resource |
+| `githubsts_github_rate_limit_remaining_percent` | Gauge | Percentage of rate limit remaining, by app, instance, resource |
+| `githubsts_github_rate_limit_exceeded_total` | Counter | Primary rate limit exceeded events, by app, instance, resource, caller |
+| `githubsts_github_secondary_rate_limit_total` | Counter | Secondary (abuse) rate limit events, by app, instance, caller |
+| `githubsts_github_secondary_rate_limit_retry_after_seconds` | Gauge | Current retry-after in seconds, by app, instance |
+
+Every pool member (`instance` label) has its own rate limit series: an app with 3 instances reports 3 independent `githubsts_github_rate_limit_remaining` series, not one aggregate. A single-instance (non-pooled) app still carries the label, with `instance` equal to that app's one normalized instance.
 
 ## GitHub reachability
 
 | Metric | Type | Description |
 |---|---|---|
-| `githubsts_github_reachable` | Gauge | GitHub API reachability (1/0) by app |
-| `githubsts_github_reachability_check_duration_seconds` | Histogram | Latency of reachability probes |
-| `githubsts_github_reachability_failures_total` | Counter | Reachability probe failures |
+| `githubsts_github_reachable` | Gauge | GitHub API reachability (1/0) by app, instance |
+| `githubsts_github_reachability_check_duration_seconds` | Histogram | Latency of reachability probes, by app, instance |
+| `githubsts_github_reachability_failures_total` | Counter | Reachability probe failures, by app, instance, reason |
+
+## App pool metrics
+
+Visibility into instance selection for a pooled app (`apps.<name>.instances`; see [Configuration]({{< relref "/reference/configuration#app-pools-multi-instance-rate-limit-rotation" >}})). A non-pooled app is a pool of one and still emits these, with `instances=1` and every selection outcome `selected`. The `instance` label throughout this page identifies one physical GitHub App within a pool, not a github-sts server replica.
+
+| Metric | Type | Description |
+|---|---|---|
+| `githubsts_app_pool_instances` | Gauge | Configured pool size, by app |
+| `githubsts_app_pool_selection_total` | Counter | Selection outcomes, by app, instance, outcome |
+| `githubsts_app_pool_exhausted_total` | Counter | Requests where every pool instance failed, by app |
+
+`githubsts_app_pool_selection_total`'s `outcome` label is one of `selected`, `skipped_unreachable`, or `failover` today. (`skipped_rate_limited` is reserved for the planned `rate_limit_aware` strategy, which is not yet implemented; see [Configuration]({{< relref "/reference/configuration#app-pools-multi-instance-rate-limit-rotation" >}}).)
+
+`githubsts_app_pool_exhausted_total` is the signal worth alerting on: it means every instance in that app's pool failed for one request. A single instance's rate-limit gauge dropping doesn't by itself mean requests are failing: the pool has already failed over around it.
 
 ## Enterprise Rego bundle metrics
 
@@ -174,6 +192,9 @@ githubsts_github_rate_limit_remaining_percent < 10
 
 # Secondary rate limit active
 githubsts_github_secondary_rate_limit_total > 0
+
+# App pool exhausted: every instance failed a request
+rate(githubsts_app_pool_exhausted_total[5m]) > 0
 
 # Deployment is running in explicitly optional enterprise-policy posture
 githubsts_bundle_enforcement_required == 0

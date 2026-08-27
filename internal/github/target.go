@@ -49,9 +49,15 @@ type TargetIdentity struct {
 
 // ExchangeApp is the subset of a GitHub App provider used by token exchange.
 // The policy loader uses its separate TokenProvider interface.
+//
+// GetInstallationTokenForTarget returns which physical pool instance minted
+// the token (for audit/metrics attribution — see design doc §5.4.1), the
+// same way TokenProvider.GetInstallationToken does. *AppTokenProvider (a
+// pool of one) returns its own fixed instance; *AppPool applies the same
+// round-robin/failover selection used for GetInstallationToken.
 type ExchangeApp interface {
 	ResolveTarget(context.Context, RepositoryScope) (TargetIdentity, error)
-	GetInstallationTokenForTarget(context.Context, TargetIdentity, map[string]string, string) (string, error)
+	GetInstallationTokenForTarget(ctx context.Context, target TargetIdentity, permissions map[string]string, caller string) (token, instance string, err error)
 }
 
 type cachedTarget struct {
@@ -129,16 +135,21 @@ func (p *AppTokenProvider) fetchTarget(ctx context.Context, scope RepositoryScop
 
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
-		metrics.GitHubAPICalls.WithLabelValues(p.appName, "resolve_target", "error").Inc()
-		return TargetIdentity{}, fmt.Errorf("resolving target %q: %w", scope.String(), err)
+		metrics.GitHubAPICalls.WithLabelValues(p.appName, p.instance, "resolve_target", "error").Inc()
+		return TargetIdentity{}, &TokenMintError{Retryable: true, Err: fmt.Errorf("resolving target %q: %w", scope.String(), err)}
 	}
 	defer func() { _ = resp.Body.Close() }()
-	ExtractRateLimitHeaders(resp, p.appName, "target_resolver")
+	ExtractRateLimitHeaders(resp, p.appName, p.instance, "target_resolver")
 
 	if resp.StatusCode != http.StatusOK {
-		metrics.GitHubAPICalls.WithLabelValues(p.appName, "resolve_target", "error").Inc()
+		metrics.GitHubAPICalls.WithLabelValues(p.appName, p.instance, "resolve_target", "error").Inc()
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return TargetIdentity{}, fmt.Errorf("resolving target %q: GitHub API returned HTTP %d: %s", scope.String(), resp.StatusCode, string(body))
+		return TargetIdentity{}, &TokenMintError{
+			StatusCode: resp.StatusCode,
+			Retryable:  isRetryableTokenMintStatus(resp),
+			Err: fmt.Errorf("resolving target %q: GitHub API returned HTTP %d: %s",
+				scope.String(), resp.StatusCode, string(body)),
+		}
 	}
 
 	var repository struct {
@@ -171,7 +182,7 @@ func (p *AppTokenProvider) fetchTarget(ctx context.Context, scope RepositoryScop
 		return TargetIdentity{}, fmt.Errorf("%w: %q", ErrTargetScopeNotCanonical, scope.String())
 	}
 
-	metrics.GitHubAPICalls.WithLabelValues(p.appName, "resolve_target", "ok").Inc()
+	metrics.GitHubAPICalls.WithLabelValues(p.appName, p.instance, "resolve_target", "ok").Inc()
 	p.mu.Lock()
 	p.targetCache[strings.ToLower(identity.Scope)] = &cachedTarget{identity: identity, fetchedAt: time.Now()}
 	p.mu.Unlock()
@@ -180,10 +191,16 @@ func (p *AppTokenProvider) fetchTarget(ctx context.Context, scope RepositoryScop
 
 // GetInstallationTokenForTarget mints a token restricted to the immutable
 // repository ID that was authorized by both the trust policy and Rego.
-func (p *AppTokenProvider) GetInstallationTokenForTarget(ctx context.Context, target TargetIdentity, permissions map[string]string, caller string) (string, error) {
+// Returns this credential's own instance label (see ExchangeApp) — a pool
+// of one, same as GetInstallationToken.
+func (p *AppTokenProvider) GetInstallationTokenForTarget(ctx context.Context, target TargetIdentity, permissions map[string]string, caller string) (string, string, error) {
 	repositoryID, err := strconv.ParseInt(target.RepositoryID, 10, 64)
 	if err != nil || repositoryID <= 0 || target.Scope == "" {
-		return "", fmt.Errorf("invalid target repository identity")
+		return "", "", fmt.Errorf("invalid target repository identity")
 	}
-	return p.getInstallationToken(ctx, target.Scope, permissions, nil, []int64{repositoryID}, caller)
+	token, err := p.getInstallationToken(ctx, target.Scope, permissions, nil, []int64{repositoryID}, caller)
+	if err != nil {
+		return "", "", err
+	}
+	return token, p.instance, nil
 }

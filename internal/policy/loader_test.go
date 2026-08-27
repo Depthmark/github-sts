@@ -25,9 +25,9 @@ func loadRequest(scope, appName, identity string) LoadRequest {
 	return request
 }
 
-func (m *mockTokenProvider) GetInstallationToken(_ context.Context, scope string, _ map[string]string, _ []string, _ string) (string, error) {
+func (m *mockTokenProvider) GetInstallationToken(_ context.Context, scope string, _ map[string]string, _ []string, _ string) (string, string, error) {
 	m.scopes = append(m.scopes, scope)
-	return m.token, m.err
+	return m.token, "", m.err
 }
 
 // testLoader creates a loader with a single app "default" for convenience.
