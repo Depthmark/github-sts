@@ -1,0 +1,83 @@
+name: Documentation checks
+
+# Validate documentation on the pull request, not after merge. The deploy
+# workflow builds on push to main, which is too late to catch drift, and a Hugo
+# build alone does not check anchors, translation parity, or writing style.
+#
+# The gates live in the Makefile's docs-check target; this workflow installs the
+# toolchain and calls it. `make docs-check` locally and this job are therefore
+# the same gate rather than two definitions that drift, and the satellite pin
+# guard that docs-build depends on applies to both. Reimplementing the steps
+# here is what let an unpinned satellite import reach Hugo as a wall of
+# REF_NOT_FOUND errors instead of one sentence from the guard.
+
+on:
+  pull_request:
+    paths:
+      - docs/**
+      - Makefile
+      - .github/workflows/docs-check.yml
+  workflow_dispatch:
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  check:
+    runs-on: ubuntu-slim
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Read pinned Hugo version
+        id: hugo
+        run: |
+          version="$(tr -d '[:space:]' < docs/.hugo-version)"
+          test -n "$version" || { echo "docs/.hugo-version is empty"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install Hugo CLI
+        env:
+          HUGO_VERSION: ${{ steps.hugo.outputs.version }}
+        run: |
+          wget -O "${{ runner.temp }}/hugo.deb" \
+            "https://github.com/gohugoio/hugo/releases/download/v${HUGO_VERSION}/hugo_extended_${HUGO_VERSION}_linux-amd64.deb"
+          sudo dpkg -i "${{ runner.temp }}/hugo.deb"
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: docs/go.mod
+          cache-dependency-path: docs/go.sum
+
+      # ubuntu-slim carries a minimal toolset and does not ship build-essential,
+      # so make is not guaranteed to be present.
+      - name: Ensure make
+        run: |
+          if ! command -v make >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends make
+          fi
+
+      # Every gate, in the order the Makefile defines them: the satellite pin
+      # guard, the Hugo build with --panicOnWarning and the production baseURL,
+      # translation parity, links and anchors, and the writing standard. Each
+      # exits non-zero on failure, so the target is the contract, not a report.
+      #
+      # GOFLAGS=-mod=readonly stops Go inventing a require entry for an import
+      # docs/go.mod does not pin. The guard catches that case first and says
+      # more about it; this covers imports its Depthmark-only pattern does not
+      # match, and turns a silently wrong resolution into a failure.
+      - name: Documentation gates
+        env:
+          HUGO_ENVIRONMENT: production
+          HUGO_ENV: production
+          GOFLAGS: -mod=readonly
+        run: make docs-check

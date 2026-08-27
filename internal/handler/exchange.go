@@ -124,7 +124,7 @@ type ExchangeHandler struct {
 func NewExchangeHandler(
 	jtiCache jti.Cache,
 	policyLoader policy.Loader,
-	appProviders map[string]*github.AppTokenProvider,
+	appProviders map[string]github.ExchangeApp,
 	allowedIssuers []string,
 	requiredAudience string,
 	requireImmutableSubjectClaims bool,
@@ -136,14 +136,10 @@ func NewExchangeHandler(
 	if bundleManager == nil {
 		bundleManager = bundle.Disabled{}
 	}
-	exchangeProviders := make(map[string]github.ExchangeApp, len(appProviders))
-	for name, provider := range appProviders {
-		exchangeProviders[name] = provider
-	}
 	return &ExchangeHandler{
 		jtiCache:                      jtiCache,
 		policyLoader:                  policyLoader,
-		appProviders:                  exchangeProviders,
+		appProviders:                  appProviders,
 		allowedIssuers:                allowedIssuers,
 		requiredAudience:              requiredAudience,
 		requireImmutableSubjectClaims: requireImmutableSubjectClaims,
@@ -679,7 +675,7 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	token, err := provider.GetInstallationTokenForTarget(r.Context(), targetIdentity, pol.Permissions, traceID)
+	token, instance, err := provider.GetInstallationTokenForTarget(r.Context(), targetIdentity, pol.Permissions, traceID)
 	if err != nil {
 		event.Result = audit.ResultGitHubError
 		event.ErrorReason = fmt.Sprintf("github token issuance failed: %v", err)
@@ -701,6 +697,7 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	jtiReserved = false
 
 	// Success.
+	event.Instance = instance
 	event.Result = audit.ResultSuccess
 	event.DurationMS = msSince(start)
 	h.emitResult(event, req, start)
@@ -742,12 +739,12 @@ func (h *ExchangeHandler) emitResult(event audit.Event, req ExchangeRequest, sta
 
 	result := string(event.Result)
 	metrics.TokenExchangesTotal.WithLabelValues(
-		event.AppName, req.Scope, req.Identity, event.Issuer, result,
+		event.AppName, event.Instance, req.Scope, req.Identity, event.Issuer, result,
 	).Inc()
 
 	if event.Result == audit.ResultSuccess {
 		metrics.TokenExchangeLatency.WithLabelValues(
-			event.AppName, req.Scope, req.Identity, event.Issuer,
+			event.AppName, event.Instance, req.Scope, req.Identity, event.Issuer,
 		).Observe(time.Since(start).Seconds())
 	}
 }

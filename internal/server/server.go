@@ -108,29 +108,90 @@ func New(cfg *config.Settings, slogger *slog.Logger) (*Server, error) {
 		Transport: githubTransport,
 	}
 
-	// Initialize GitHub App token providers.
-	appProviders := make(map[string]*github.AppTokenProvider, len(cfg.Apps))
-	appConfigs := make(map[string]github.AppConfig, len(cfg.Apps))
 	apiURL := "https://api.github.com"
 
+	// Flatten every app's normalized instances into one list — shared by
+	// the background pollers below, which sweep every physical instance of
+	// every app regardless of pooling, the same way they always have.
+	var poolInstances []github.PoolInstanceConfig
 	for name, app := range cfg.Apps {
-		provider := github.NewAppTokenProvider(name, app.AppID, app.ParsedKey, apiURL, githubHTTPClient)
-		appProviders[name] = provider
-		appConfigs[name] = github.AppConfig{
-			AppID:         app.AppID,
-			PrivateKey:    app.ParsedKey,
-			OrgPolicyRepo: app.OrgPolicyRepo,
+		for _, inst := range app.Instances {
+			poolInstances = append(poolInstances, github.PoolInstanceConfig{
+				LogicalApp: name,
+				Instance:   inst.Name,
+				AppConfig: github.AppConfig{
+					AppID:         inst.AppID,
+					PrivateKey:    inst.ParsedKey,
+					OrgPolicyRepo: app.OrgPolicyRepo,
+				},
+			})
 		}
-		slogger.Info("github app initialized", "app", name, "app_id", app.AppID)
 	}
 
-	// Initialize policy loader with per-app token providers, org policy
-	// repos, and resolution modes.
-	policyTPs := make(map[string]policy.TokenProvider, len(appProviders))
+	// Initialize the reachability prober before the app pools below, which
+	// take it as an optional dependency for their baseline liveness filter.
+	if cfg.Metrics.ReachabilityProbeEnabled && len(poolInstances) > 0 {
+		s.reachabilityProber = github.NewReachabilityProber(poolInstances, apiURL, cfg.Metrics.ReachabilityProbeInterval)
+	}
+
+	// Initialize rate limit poller.
+	if cfg.Metrics.RateLimitPollEnabled && len(poolInstances) > 0 {
+		s.rateLimitPoller = github.NewRateLimitPoller(poolInstances, apiURL, cfg.Metrics.RateLimitPollInterval)
+	}
+
+	// Initialize one AppPool per logical app, each wrapping every one of
+	// its (normalized) instances. Every app goes through a pool, even a
+	// single-instance one — that's what makes "pool of 1" behaviorally
+	// identical to a direct AppTokenProvider (see github.AppPool doc).
+	var reachability github.ReachabilityChecker
+	if s.reachabilityProber != nil {
+		// Assigned only when the concrete pointer is non-nil: passing a nil
+		// *ReachabilityProber directly as a ReachabilityChecker would
+		// produce a non-nil interface wrapping a nil pointer, defeating
+		// AppPool's own nil check for "no checker configured".
+		reachability = s.reachabilityProber
+	}
+
+	// pools is concrete (not an interface map) so the same *AppPool value
+	// can populate both appProviders (github.ExchangeApp, for the exchange
+	// handler's target-resolution/mint flow) and policyTPs (policy.TokenProvider,
+	// for the policy-read mint) below without an invalid interface-to-interface
+	// conversion — ExchangeApp and policy.TokenProvider don't share a method
+	// set, so a variable statically typed as one can't assign into the other.
+	pools := make(map[string]*github.AppPool, len(cfg.Apps))
+	for name, app := range cfg.Apps {
+		members := make([]github.PoolMember, 0, len(app.Instances))
+		for _, inst := range app.Instances {
+			provider := github.NewAppTokenProvider(name, inst.Name, inst.AppID, inst.ParsedKey, apiURL, githubHTTPClient)
+			members = append(members, github.PoolMember{Instance: inst.Name, Provider: provider})
+		}
+
+		pools[name] = github.NewAppPool(name, members, app.Rotation.Strategy, app.Rotation.MinRemainingPct, app.Rotation.MaxAttempts, reachability)
+
+		if app.Rotation.Strategy == "rate_limit_aware" {
+			slogger.Warn("rotation.strategy=rate_limit_aware is configured but this build does not yet implement the proactive rate-limit-aware ranking — the pool behaves like round_robin until that ships",
+				"app", name,
+			)
+		}
+		slogger.Info("github app pool initialized", "app", name, "instances", len(members), "rotation_strategy", app.Rotation.Strategy)
+	}
+
+	for _, w := range cfg.DuplicateAppIDWarnings() {
+		slogger.Warn(w)
+	}
+
+	appProviders := make(map[string]github.ExchangeApp, len(pools))
+	for name, pool := range pools {
+		appProviders[name] = pool
+	}
+
+	// Initialize policy loader with per-app token providers (the pools
+	// above), org policy repos, and resolution modes.
+	policyTPs := make(map[string]policy.TokenProvider, len(pools))
 	orgPolicyRepos := make(map[string]string, len(cfg.Apps))
 	policyModes := make(map[string]policy.Resolution, len(cfg.Apps))
-	for name, provider := range appProviders {
-		policyTPs[name] = provider
+	for name, pool := range pools {
+		policyTPs[name] = pool
 	}
 	for name, app := range cfg.Apps {
 		if app.OrgPolicyRepo != "" {
@@ -150,16 +211,6 @@ func New(cfg *config.Settings, slogger *slog.Logger) (*Server, error) {
 		slogger,
 		githubHTTPClient,
 	)
-
-	// Initialize rate limit poller.
-	if cfg.Metrics.RateLimitPollEnabled && len(appConfigs) > 0 {
-		s.rateLimitPoller = github.NewRateLimitPoller(appConfigs, apiURL, cfg.Metrics.RateLimitPollInterval)
-	}
-
-	// Initialize reachability prober.
-	if cfg.Metrics.ReachabilityProbeEnabled && len(appConfigs) > 0 {
-		s.reachabilityProber = github.NewReachabilityProber(appConfigs, apiURL, cfg.Metrics.ReachabilityProbeInterval)
-	}
 
 	// Initialize per-IP rate limiter.
 	if cfg.RateLimit.Enabled {

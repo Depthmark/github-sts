@@ -267,7 +267,7 @@ func TestRoutePattern(t *testing.T) {
 	}
 }
 
-func TestNew_WiresHealthAuthentication(t *testing.T) {
+func TestNew_WiresEndpointAuthentication(t *testing.T) {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("generate RSA key: %v", err)
@@ -279,7 +279,7 @@ func TestNew_WiresHealthAuthentication(t *testing.T) {
 			ShutdownTimeout: time.Second,
 		},
 		Apps: map[string]config.AppConfig{
-			"test": {AppID: 1, ParsedKey: key},
+			"test": {Instances: []config.AppInstanceConfig{{AppID: 1, ParsedKey: key}}},
 		},
 		OIDC: config.OIDCConfig{
 			AllowedIssuers: []string{"https://issuer.example.com"},
@@ -295,6 +295,10 @@ func TestNew_WiresHealthAuthentication(t *testing.T) {
 		BundleEnforcement: config.BundleEnforcementOptional,
 		Audit:             config.AuditConfig{BufferSize: 1},
 		Health:            config.HealthConfig{AuthToken: "health-secret"},
+		Metrics: config.MetricsConfig{
+			Enabled:   true,
+			AuthToken: "metrics-secret",
+		},
 	}
 
 	srv, err := New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -316,6 +320,8 @@ func TestNew_WiresHealthAuthentication(t *testing.T) {
 		{name: "health missing token", path: "/health", wantStatus: http.StatusUnauthorized},
 		{name: "health valid token", path: "/health", authorization: "Bearer health-secret", wantStatus: http.StatusOK},
 		{name: "ready remains unauthenticated", path: "/ready", wantStatus: http.StatusServiceUnavailable},
+		{name: "metrics missing token", path: "/metrics", wantStatus: http.StatusUnauthorized},
+		{name: "metrics valid token", path: "/metrics", authorization: "Bearer metrics-secret", wantStatus: http.StatusOK},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, tt.path, nil)

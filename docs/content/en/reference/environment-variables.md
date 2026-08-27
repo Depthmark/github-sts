@@ -34,6 +34,18 @@ All variables use the `GITHUBSTS_` prefix. Per-app variables follow `GITHUBSTS_A
 | `GITHUBSTS_APP_{NAME}_PRIVATE_KEY_PATH` | n/a | Path to PEM file |
 | `GITHUBSTS_APP_{NAME}_ORG_POLICY_REPO` | n/a | Central policy repository for repository-scoped requests (e.g. `.github`) |
 | `GITHUBSTS_APP_{NAME}_POLICY_RESOLUTION` | `org_first` | Resolution mode: `org_first`, `repo_first` (deprecated), or `org_only` |
+| `GITHUBSTS_APP_{NAME}_ROTATION_STRATEGY` | `round_robin` | Pool selection strategy: `round_robin` or `rate_limit_aware` (accepted, not yet implemented; see [Configuration]({{< relref "/reference/configuration#app-pools-multi-instance-rate-limit-rotation" >}})) |
+| `GITHUBSTS_APP_{NAME}_ROTATION_MIN_REMAINING_PCT` | `0` | `rate_limit_aware` only; currently has no effect |
+| `GITHUBSTS_APP_{NAME}_ROTATION_MAX_ATTEMPTS` | pool size, capped at `3` | Bound failover fan-out per request |
+
+Individual pool instances (`apps.<name>.instances[N]` in YAML) can also be set or overridden per-instance, 1-based and contiguous: the loader stops at the first index `N` where none of the four variables below is set.
+
+| Variable | Default | Description |
+|---|---|---|
+| `GITHUBSTS_APP_{NAME}_INSTANCE_{N}_APP_ID` | — | GitHub App numeric ID for pool instance `N` |
+| `GITHUBSTS_APP_{NAME}_INSTANCE_{N}_PRIVATE_KEY` | — | PEM string for pool instance `N` (mutually exclusive with `_PATH`) |
+| `GITHUBSTS_APP_{NAME}_INSTANCE_{N}_PRIVATE_KEY_PATH` | — | Path to PEM file for pool instance `N` |
+| `GITHUBSTS_APP_{NAME}_INSTANCE_{N}_NAME` | `app_id` (stringified) | Metrics/audit label for pool instance `N` |
 
 ## Policy & security settings
 

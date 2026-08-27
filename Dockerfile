@@ -5,7 +5,7 @@
 # Pinned by multi-arch index digest so a registry-side retag cannot swap base.
 # Refresh with: docker buildx imagetools inspect cgr.dev/chainguard/go:latest
 # ─────────────────────────────────────────────────────────────────────────────
-FROM cgr.dev/chainguard/go:latest@sha256:6d5010125095720198390ab38a3b5d174f1c748a122d5deda3a17590c8f3f9a7 AS builder
+FROM cgr.dev/chainguard/go:latest@sha256:d54b1367a7096e816d3629e74f6bcb0dc3f789936e677041fafbee9ab37350fe AS builder
 
 WORKDIR /build
 

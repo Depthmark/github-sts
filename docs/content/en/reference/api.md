@@ -160,7 +160,7 @@ Or via the Go client:
 err := client.RevokeToken(ctx, token, "https://api.github.com")
 ```
 
-When you use the `github-sts-action`, the token is revoked automatically at the end of the job. See [Use the GitHub Action]({{< relref "/integrations/use-github-action" >}}) for details.
+When you use the `github-sts-action`, the token is revoked automatically at the end of the job. See [Job Lifecycle]({{< relref "/integrations/github-action/job-lifecycle" >}}) for details.
 
 ## Health & Readiness
 
@@ -168,7 +168,7 @@ When you use the `github-sts-action`, the token is revoked automatically at the 
 |---|---|---|---|
 | `/health` | `GET` | `200` with liveness, security posture, and configured bundle state | `401` when health authentication is configured and the Bearer token is missing or incorrect |
 | `/ready` | `GET` | `200` `{"ready":true}` | `503` `{"ready":false}` |
-| `/metrics` | `GET` | Prometheus text format | n/a |
+| `/metrics` | `GET` | Prometheus text format | `401` when metrics authentication is configured and the Bearer token is missing or incorrect |
 
 `/health` is a liveness probe. When authentication is disabled or satisfied,
 it returns `200` as long as the process is up.

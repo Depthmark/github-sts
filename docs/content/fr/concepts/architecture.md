@@ -103,7 +103,7 @@ Cinq crédentiels distincts existent au cours d'un échange, chacun avec un dét
 
 github-sts signe le JWT d'App à l'aide de la clé privée, l'utilise pour s'authentifier auprès de GitHub, puis émet des jetons d'installation. La charge de travail ne reçoit jamais le JWT d'App, la clé privée, ni le jeton de lecture de politique.
 
-## Pipeline d'autorisation
+## Pipeline d'autorisation {#authorization-pipeline}
 
 Chaque requête passe par ces vérifications, dans l'ordre. Un échec à n'importe quelle étape arrête le pipeline et renvoie un `403` avec un `code` d'erreur spécifique.
 
@@ -236,8 +236,53 @@ config/examples/          Modèles de politiques de confiance prêts à l'emploi
 
 Les jetons d'installation eux-mêmes ne sont pas mis en cache ; chaque échange émet un nouveau jeton.
 
+## Pools d'Apps et basculement
+
+Un nom d'App logique peut être adossé à un pool de plusieurs GitHub Apps physiques (`apps.<name>.instances`) plutôt qu'à une seule, de sorte que le plafond effectif de limite de débit primaire GitHub pour cette App augmente avec le nombre d'instances. Voir [Configuration]({{< relref "/reference/configuration#pools-dapps-rotation-multi-instances-pour-la-limite-de-débit" >}}) pour le schéma. Une App à instance unique est, en interne, un pool d'une instance : toute App passe par le même chemin de sélection, donc il n'existe pas de chemin de code distinct susceptible de diverger.
+
+Une « instance », ici, est une GitHub App physique au sein du pool d'une App logique, pas un réplica du serveur github-sts. Les deux notions sont indépendantes : un pool existe indépendamment du nombre de réplicas github-sts en cours d'exécution, et chaque réplica sélectionne dans le même pool configuré. Voir [Considérations multi-réplicas](#considérations-multi-réplicas) ci-dessous pour la notion de réplica.
+
+```mermaid
+flowchart TD
+    A["Request arrives for app 'checkout'"]
+    B["Advance pool cursor,<br/>build ring order"]
+    C{"Reachability prober:<br/>any candidate reachable?"}
+    D["Filter out instances<br/>reported unreachable"]
+    E["Try next candidate<br/>in ring order"]
+    F{"Result"}
+    G["Return token +<br/>instance label"]
+    H{"Error retryable?<br/>(network/5xx/rate-limited)"}
+    I["Return error<br/>(no failover)"]
+    J{"max_attempts<br/>reached?"}
+    K["githubsts_app_pool_exhausted_total++"]
+
+    A --> B --> C
+    C -->|yes| D
+    C -->|no, all look down| E
+    D --> E
+    E --> F
+    F -->|success| G
+    F -->|failure| H
+    H -->|no| I
+    H -->|yes| J
+    J -->|no| E
+    J -->|yes| K
+```
+
+Par requête, `AppPool` :
+
+1. Avance un curseur partagé et construit un anneau à partir de celui-ci, de sorte que les propres tentatives d'une requête parcourent des membres consécutifs plutôt que de retirer au hasard.
+2. Écarte toute instance actuellement signalée comme inaccessible par la sonde d'accessibilité, sauf si cela écarterait toutes les instances candidates, auquel cas il tente quand même l'anneau non filtré. Un échec en direct fait autorité ; un état local en cache « probablement en panne » n'en fait pas.
+3. Tente les instances candidates dans l'ordre. En cas de succès, renvoie le jeton et l'étiquette de l'instance qui a servi. En cas d'échec réessayable (réseau/timeout, 5xx, ou un 403 portant un signal de limite de débit), il passe à l'instance candidate suivante, jusqu'à `rotation.max_attempts`. En cas d'échec non réessayable (422 pour incohérence d'autorisations/dépôts, ou toute autre erreur non classifiée), il renvoie immédiatement : un identifiant différent ne peut pas corriger un problème d'autorisations.
+4. Si toutes les instances tentées échouent, la requête échoue et `githubsts_app_pool_exhausted_total` s'incrémente. C'est la métrique à surveiller par alerte, car la chute de la limite de débit d'une seule instance ne signifie pas en soi que des requêtes échouent.
+
+Les appelants ne voient jamais quelle instance a servi une requête ; cela n'apparaît que dans l'étiquette `instance` des métriques et dans le journal d'audit (vide en cas d'échec de l'échange, car nommer une instance tentée arbitrairement parmi plusieurs ayant toutes échoué suggérerait à tort qu'elle est seule en cause).
+
+La stratégie `rotation.strategy` par défaut est `round_robin`, et non un classement tenant compte de la limite de débit, délibérément : avec R réplicas partageant un même pool, la vue qu'a un seul réplica de la limite de débit restante d'une instance ne reflète qu'environ 1/R du trafic qu'il a lui-même routé vers elle, et cet angle mort s'aggrave, plutôt que de s'améliorer, à mesure que le nombre de réplicas augmente. Le filtre d'accessibilité de base ci-dessus n'a pas ce problème : chaque réplica le dérive de sa propre sonde périodique contre l'API GitHub, pas du trafic de requêtes, donc il reste fiable quel que soit le nombre de réplicas. `rate_limit_aware` est accepté comme valeur de configuration mais pas encore implémenté (github-sts journalise un avertissement au démarrage si elle est définie) ; un pool ainsi configuré se comporte actuellement exactement comme `round_robin`.
+
 ## Considérations multi-réplicas
 
 - Utilisez `GITHUBSTS_JTI_BACKEND=redis` pour que la protection contre le rejeu JTI soit partagée entre les instances. Avec `memory`, un attaquant qui atteint un autre réplica peut rejouer un jeton OIDC.
 - Le cache des politiques de confiance est par instance ; les instances peuvent brièvement servir des politiques différentes après une modification de `.sts.yaml`. Réduisez `GITHUBSTS_POLICY_CACHE_TTL` si cela est important.
 - `/ready` renvoie `503` avec `{"ready":false}` tant que le serveur n'est pas en service et `200` avec `{"ready":true}` une fois qu'il l'est ; utilisez-le pour les vérifications de santé des équilibreurs de charge.
+- L'état d'accessibilité du pool d'Apps (utilisé pour le filtre de base ci-dessus) est lui aussi par réplica, mais, contrairement à la stratégie tenant compte de la limite de débit, ce n'est pas un angle mort significatif ; voir le raisonnement ci-dessus.

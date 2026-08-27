@@ -86,6 +86,58 @@ permissions:
   contents: read
 ```
 
+## Migration : étiquette `instance` des métriques de pool
+
+La mise à niveau vers une version avec les [pools d'Apps]({{< relref "/reference/configuration#pools-dapps-rotation-multi-instances-pour-la-limite-de-débit" >}}) ajoute une étiquette `instance` à chaque métrique de GitHub App, de limite de débit et d'accessibilité qui existait déjà. Cela s'applique à chaque déploiement, pas seulement à ceux qui configurent `instances:` : une App à instance unique est normalisée en interne comme un pool d'une instance, donc elle porte quand même l'étiquette (voir [Métriques]({{< relref "/reference/metrics" >}})) :
+
+```text
+githubsts_token_exchanges_total
+githubsts_token_exchange_duration_seconds
+githubsts_github_api_calls_total
+githubsts_github_tokens_issued_total
+githubsts_github_rate_limit_limit
+githubsts_github_rate_limit_remaining
+githubsts_github_rate_limit_used
+githubsts_github_rate_limit_reset_timestamp
+githubsts_github_rate_limit_remaining_percent
+githubsts_github_rate_limit_exceeded_total
+githubsts_github_secondary_rate_limit_total
+githubsts_github_secondary_rate_limit_retry_after_seconds
+githubsts_github_reachable
+githubsts_github_reachability_check_duration_seconds
+githubsts_github_reachability_failures_total
+```
+
+**Si chaque App reste à instance unique,** le nombre de séries est inchangé : chacune des métriques ci-dessus a toujours exactement une série par App (par resource, par endpoint, etc.), avec simplement une étiquette de plus. Une requête qui n'exige pas un ensemble d'étiquettes exact continue de renvoyer le même résultat. La plupart des tableaux de bord et alertes n'ont pas besoin d'être modifiés.
+
+**Si une App adopte un pool de N instances,** le nombre de séries de cette App pour chaque métrique ci-dessus est multiplié par N : une série par instance, pas une série agrégée. Un panneau ou une alerte écrit avant l'existence de l'étiquette affichera désormais, ou déclenchera une alerte sur, N séries distinctes au lieu d'une.
+
+**Avant** (instance unique, ou avant la mise à niveau) :
+
+```promql
+githubsts_github_rate_limit_remaining_percent{app="checkout"} < 10
+```
+
+**Après** (agrégation sur le nombre d'instances de l'App, quel qu'il soit, pour que la requête conserve son ancienne signification quelle que soit la taille du pool) :
+
+```promql
+min(githubsts_github_rate_limit_remaining_percent{app="checkout"}) by (app) < 10
+```
+
+Ou, pour alerter sur un identifiant précis plutôt que sur toute l'App logique (nouvelle capacité, non obligatoire) :
+
+```promql
+githubsts_github_rate_limit_remaining_percent{app="checkout", instance="checkout-2"} < 10
+```
+
+**Migration étape par étape :**
+
+1. Avant la mise à niveau, dressez la liste des panneaux de tableau de bord et des règles d'alerte référençant l'une des métriques ci-dessus.
+2. Pour chacun, décidez s'il doit continuer à rapporter une valeur par App (l'envelopper dans `sum`/`min`/`max` `by (...)` en excluant `instance` du regroupement) ou commencer à rapporter le détail par instance (ajouter `instance` à la clause `by (...)` à la place).
+3. Mettez à jour ces requêtes avant ou immédiatement après la mise à niveau ; le changement d'étiquette prend effet dès que la nouvelle version commence à servir du trafic.
+4. Déployez.
+5. Vérifiez que les panneaux affichent le nombre de séries attendu et que les alertes se déclenchent toujours dans les conditions attendues.
+
 ## Liste de contrôle avant mise à niveau
 
 1. Lisez les notes de version pour les changements cassants.

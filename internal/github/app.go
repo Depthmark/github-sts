@@ -48,7 +48,8 @@ type cachedJWT struct {
 // AppTokenProvider creates permission-scoped GitHub installation tokens
 // for the server-side exchange flow.
 type AppTokenProvider struct {
-	appName           string
+	appName           string // logical app name (e.g. "checkout") — stable across a pool
+	instance          string // this credential's identity within its pool (e.g. "checkout-2" or app_id); equals appName's app_id for a non-pooled app
 	appID             int64
 	privateKey        *rsa.PrivateKey
 	apiURL            string
@@ -62,13 +63,17 @@ type AppTokenProvider struct {
 	targetSF          singleflight.Group
 }
 
-// NewAppTokenProvider creates a server-side AppTokenProvider.
-func NewAppTokenProvider(appName string, appID int64, privateKey *rsa.PrivateKey, apiURL string, httpClient *http.Client) *AppTokenProvider {
+// NewAppTokenProvider creates a server-side AppTokenProvider. instance
+// labels this specific credential (e.g. "checkout-2") for metrics/logs when
+// it's one member of an AppPool; appName stays the logical app name shared
+// by every member of the same pool.
+func NewAppTokenProvider(appName, instance string, appID int64, privateKey *rsa.PrivateKey, apiURL string, httpClient *http.Client) *AppTokenProvider {
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 15 * time.Second}
 	}
 	return &AppTokenProvider{
 		appName:           appName,
+		instance:          instance,
 		appID:             appID,
 		privateKey:        privateKey,
 		apiURL:            apiURL,
@@ -77,6 +82,19 @@ func NewAppTokenProvider(appName string, appID int64, privateKey *rsa.PrivateKey
 		targetCache:       make(map[string]*cachedTarget),
 	}
 }
+
+// TokenMintError classifies a GetInstallationID/GetInstallationToken failure
+// for callers (AppPool) deciding whether retrying the same request against a
+// different pool credential is worth attempting. StatusCode is 0 when no
+// HTTP response was received (network/timeout error).
+type TokenMintError struct {
+	StatusCode int
+	Retryable  bool
+	Err        error
+}
+
+func (e *TokenMintError) Error() string { return e.Err.Error() }
+func (e *TokenMintError) Unwrap() error { return e.Err }
 
 // GenerateAppJWT returns a short-lived JWT for authenticating as the GitHub
 // App. The signed token is cached for 9 minutes (valid for 10) to avoid
@@ -140,49 +158,58 @@ func (p *AppTokenProvider) GetInstallationID(ctx context.Context, scope string) 
 	return v.(int64), nil
 }
 
-// fetchInstallationID performs the actual GitHub API call to resolve the
-// installation ID for the given org, and caches the result.
+// fetchInstallationID resolves the installation ID for org via this
+// specific credential. Every failure path is wrapped in a *TokenMintError
+// with Retryable: true — a failure here (not installed, bad credentials,
+// upstream error) is inherently a property of *this* instance, and another
+// pool member's independent credentials/installation may well succeed where
+// this one didn't (see design doc §5.6 on graceful degradation via
+// failover). This is unlike GetInstallationToken's 422, which reflects a
+// requested-permissions problem no amount of retrying can fix.
 func (p *AppTokenProvider) fetchInstallationID(ctx context.Context, org string) (int64, error) {
 	appJWT, err := p.GenerateAppJWT()
 	if err != nil {
-		return 0, fmt.Errorf("generating app JWT: %w", err)
+		return 0, &TokenMintError{Retryable: true, Err: fmt.Errorf("generating app JWT: %w", err)}
 	}
 
 	url := fmt.Sprintf("%s/orgs/%s/installation", p.apiURL, org)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return 0, err
+		return 0, &TokenMintError{Retryable: true, Err: err}
 	}
 	req.Header.Set("Authorization", "Bearer "+appJWT)
 	req.Header.Set("Accept", "application/vnd.github+json")
 
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
-		metrics.GitHubAPICalls.WithLabelValues(p.appName, "get_installation", "error").Inc()
-		return 0, fmt.Errorf("resolving installation for org %q: %w", org, err)
+		metrics.GitHubAPICalls.WithLabelValues(p.appName, p.instance, "get_installation", "error").Inc()
+		return 0, &TokenMintError{Retryable: true, Err: fmt.Errorf("resolving installation for org %q: %w", org, err)}
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	ExtractRateLimitHeaders(resp, p.appName, "get_installation")
+	ExtractRateLimitHeaders(resp, p.appName, p.instance, "get_installation")
 
 	if resp.StatusCode == http.StatusNotFound {
-		metrics.GitHubAPICalls.WithLabelValues(p.appName, "get_installation", "not_found").Inc()
-		return 0, fmt.Errorf("github app %q (app_id: %d) is not installed on organization %q — "+
-			"install it at https://github.com/organizations/%s/settings/installations",
-			p.appName, p.appID, org, org)
+		metrics.GitHubAPICalls.WithLabelValues(p.appName, p.instance, "get_installation", "not_found").Inc()
+		return 0, &TokenMintError{StatusCode: resp.StatusCode, Retryable: true, Err: fmt.Errorf(
+			"github app %q instance %q (app_id: %d) is not installed on organization %q — "+
+				"install it at https://github.com/organizations/%s/settings/installations",
+			p.appName, p.instance, p.appID, org, org)}
 	}
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		metrics.GitHubAPICalls.WithLabelValues(p.appName, "get_installation", "auth_error").Inc()
+		metrics.GitHubAPICalls.WithLabelValues(p.appName, p.instance, "get_installation", "auth_error").Inc()
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return 0, fmt.Errorf("github app %q (app_id: %d) authentication failed for org %q (HTTP %d) — "+
-			"verify the app_id and private_key are correct: %s",
-			p.appName, p.appID, org, resp.StatusCode, string(body))
+		return 0, &TokenMintError{StatusCode: resp.StatusCode, Retryable: true, Err: fmt.Errorf(
+			"github app %q instance %q (app_id: %d) authentication failed for org %q (HTTP %d) — "+
+				"verify the app_id and private_key are correct: %s",
+			p.appName, p.instance, p.appID, org, resp.StatusCode, string(body))}
 	}
 	if resp.StatusCode != http.StatusOK {
-		metrics.GitHubAPICalls.WithLabelValues(p.appName, "get_installation", "error").Inc()
+		metrics.GitHubAPICalls.WithLabelValues(p.appName, p.instance, "get_installation", "error").Inc()
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return 0, fmt.Errorf("resolving installation for org %q via app %q: GitHub API returned HTTP %d: %s",
-			org, p.appName, resp.StatusCode, string(body))
+		return 0, &TokenMintError{StatusCode: resp.StatusCode, Retryable: true, Err: fmt.Errorf(
+			"resolving installation for org %q via app %q instance %q: GitHub API returned HTTP %d: %s",
+			org, p.appName, p.instance, resp.StatusCode, string(body))}
 	}
 
 	var install struct {
@@ -190,10 +217,10 @@ func (p *AppTokenProvider) fetchInstallationID(ctx context.Context, org string) 
 		Permissions map[string]string `json:"permissions"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&install); err != nil {
-		return 0, err
+		return 0, &TokenMintError{StatusCode: resp.StatusCode, Retryable: true, Err: err}
 	}
 
-	metrics.GitHubAPICalls.WithLabelValues(p.appName, "get_installation", "ok").Inc()
+	metrics.GitHubAPICalls.WithLabelValues(p.appName, p.instance, "get_installation", "ok").Inc()
 
 	// Cache the result with timestamp. We capture the installation's granted
 	// permissions so we can diff them against requested permissions on a 422.
@@ -231,6 +258,13 @@ func (p *AppTokenProvider) GetGrantedPermissions(scope string) map[string]string
 }
 
 // GetInstallationToken creates a permission-scoped GitHub installation token.
+// GetInstallationToken creates a permission-scoped GitHub installation
+// token. Failures are wrapped in *TokenMintError (see the type doc):
+// network/timeout and 5xx/rate-limit responses are Retryable so AppPool can
+// fail over to another instance; a 422 (permission/repo mismatch) and any
+// other unclassified response are not — retrying elsewhere can't fix a
+// requested-permissions problem, and an unrecognized failure mode fails
+// closed rather than being silently masked by blind cross-credential retries.
 func (p *AppTokenProvider) GetInstallationToken(ctx context.Context, scope string, permissions map[string]string, repositories []string, caller string) (string, error) {
 	if repositories != nil && len(repositories) == 0 {
 		return "", fmt.Errorf("refusing to create an unrestricted installation token from an empty repository list")
@@ -256,7 +290,7 @@ func (p *AppTokenProvider) getInstallationToken(ctx context.Context, scope strin
 
 	appJWT, err := p.GenerateAppJWT()
 	if err != nil {
-		return "", fmt.Errorf("generating app JWT: %w", err)
+		return "", &TokenMintError{Retryable: true, Err: fmt.Errorf("generating app JWT: %w", err)}
 	}
 
 	// Build request body with permissions and optional repository restriction.
@@ -273,13 +307,13 @@ func (p *AppTokenProvider) getInstallationToken(ctx context.Context, scope strin
 
 	var reqBody bytes.Buffer
 	if err := json.NewEncoder(&reqBody).Encode(body); err != nil {
-		return "", err
+		return "", &TokenMintError{Retryable: true, Err: err}
 	}
 
 	url := fmt.Sprintf("%s/app/installations/%d/access_tokens", p.apiURL, installationID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, &reqBody)
 	if err != nil {
-		return "", err
+		return "", &TokenMintError{Retryable: true, Err: err}
 	}
 	req.Header.Set("Authorization", "Bearer "+appJWT)
 	req.Header.Set("Accept", "application/vnd.github+json")
@@ -287,15 +321,15 @@ func (p *AppTokenProvider) getInstallationToken(ctx context.Context, scope strin
 
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
-		metrics.GitHubAPICalls.WithLabelValues(p.appName, "create_token", "error").Inc()
-		return "", fmt.Errorf("creating installation token: %w", err)
+		metrics.GitHubAPICalls.WithLabelValues(p.appName, p.instance, "create_token", "error").Inc()
+		return "", &TokenMintError{Retryable: true, Err: fmt.Errorf("creating installation token: %w", err)}
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	ExtractRateLimitHeaders(resp, p.appName, caller)
+	ExtractRateLimitHeaders(resp, p.appName, p.instance, caller)
 
 	if resp.StatusCode == http.StatusUnprocessableEntity {
-		metrics.GitHubAPICalls.WithLabelValues(p.appName, "create_token", "error").Inc()
+		metrics.GitHubAPICalls.WithLabelValues(p.appName, p.instance, "create_token", "error").Inc()
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 
 		// Diff the requested permissions against what the installation
@@ -305,6 +339,7 @@ func (p *AppTokenProvider) getInstallationToken(ctx context.Context, scope strin
 		diff := DiffPermissions(permissions, granted)
 		slog.Error("github token issuance refused (HTTP 422)",
 			"app", p.appName,
+			"instance", p.instance,
 			"app_id", p.appID,
 			"scope", scope,
 			"installation_id", installationID,
@@ -317,37 +352,66 @@ func (p *AppTokenProvider) getInstallationToken(ctx context.Context, scope strin
 			"caller", caller,
 			"hint", permissionDiffHint(diff, granted),
 		)
-		return "", fmt.Errorf("github refused to create token for app %q scope %q — "+
-			"the requested permissions or repositories may exceed what the app is allowed (HTTP 422): %s",
-			p.appName, scope, string(respBody))
+		return "", &TokenMintError{StatusCode: resp.StatusCode, Retryable: false, Err: fmt.Errorf(
+			"github refused to create token for app %q instance %q scope %q — "+
+				"the requested permissions or repositories may exceed what the app is allowed (HTTP 422): %s",
+			p.appName, p.instance, scope, string(respBody))}
 	}
 	if resp.StatusCode != http.StatusCreated {
-		metrics.GitHubAPICalls.WithLabelValues(p.appName, "create_token", "error").Inc()
+		metrics.GitHubAPICalls.WithLabelValues(p.appName, p.instance, "create_token", "error").Inc()
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return "", fmt.Errorf("creating installation token for app %q scope %q: GitHub API returned HTTP %d: %s",
-			p.appName, scope, resp.StatusCode, string(respBody))
+		return "", &TokenMintError{
+			StatusCode: resp.StatusCode,
+			Retryable:  isRetryableTokenMintStatus(resp),
+			Err: fmt.Errorf("creating installation token for app %q instance %q scope %q: GitHub API returned HTTP %d: %s",
+				p.appName, p.instance, scope, resp.StatusCode, string(respBody)),
+		}
 	}
 
 	var result struct {
 		Token string `json:"token"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", err
+		return "", &TokenMintError{StatusCode: resp.StatusCode, Retryable: false, Err: err}
 	}
 
 	// Emit metrics — NEVER log the token value (BR-2A-17).
 	permStr := formatPermissions(permissions)
-	metrics.GitHubTokenIssued.WithLabelValues(p.appName, scope, permStr).Inc()
-	metrics.GitHubAPICalls.WithLabelValues(p.appName, "create_token", "ok").Inc()
-	slog.Info("installation token issued", "app", p.appName, "scope", scope, "permissions", permStr, "caller", caller)
+	metrics.GitHubTokenIssued.WithLabelValues(p.appName, p.instance, scope, permStr).Inc()
+	metrics.GitHubAPICalls.WithLabelValues(p.appName, p.instance, "create_token", "ok").Inc()
+	slog.Info("installation token issued", "app", p.appName, "instance", p.instance, "scope", scope, "permissions", permStr, "caller", caller)
 
 	return result.Token, nil
 }
 
+// isRetryableTokenMintStatus reports whether a non-201, non-422
+// GetInstallationToken response is worth retrying against a different pool
+// instance: primary rate limit (403 or 429 + remaining=0), secondary/abuse
+// rate limit (403 or 429 + Retry-After), or a 5xx. GitHub documents both 403
+// and 429 for primary and secondary rate-limit responses — see
+// https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api#exceeding-the-rate-limit.
+// Everything else (other 4xx, or a bare 403/429 with neither signal) fails
+// closed — not retried.
+func isRetryableTokenMintStatus(resp *http.Response) bool {
+	if resp.StatusCode >= 500 {
+		return true
+	}
+	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
+		if resp.Header.Get("Retry-After") != "" {
+			return true
+		}
+		if resp.Header.Get("X-RateLimit-Remaining") == "0" {
+			return true
+		}
+	}
+	return false
+}
+
 // ExtractRateLimitHeaders reads GitHub rate limit headers from an HTTP
 // response and updates Prometheus gauges. Also detects rate limit exceeded
-// conditions on 403 responses.
-func ExtractRateLimitHeaders(resp *http.Response, appName, caller string) {
+// conditions on 403 or 429 responses. instance labels which pool member (or,
+// for a non-pooled app, which normalized single instance) made the call.
+func ExtractRateLimitHeaders(resp *http.Response, appName, instance, caller string) {
 	resource := resp.Header.Get("X-RateLimit-Resource")
 	if resource == "" {
 		resource = "core"
@@ -355,7 +419,7 @@ func ExtractRateLimitHeaders(resp *http.Response, appName, caller string) {
 
 	if v := resp.Header.Get("X-RateLimit-Limit"); v != "" {
 		if n, err := strconv.ParseFloat(v, 64); err == nil {
-			metrics.GitHubRateLimitLimit.WithLabelValues(appName, resource).Set(n)
+			metrics.GitHubRateLimitLimit.WithLabelValues(appName, instance, resource).Set(n)
 		}
 	}
 
@@ -363,19 +427,19 @@ func ExtractRateLimitHeaders(resp *http.Response, appName, caller string) {
 	if v := resp.Header.Get("X-RateLimit-Remaining"); v != "" {
 		if n, err := strconv.ParseFloat(v, 64); err == nil {
 			remaining = n
-			metrics.GitHubRateLimitRemaining.WithLabelValues(appName, resource).Set(n)
+			metrics.GitHubRateLimitRemaining.WithLabelValues(appName, instance, resource).Set(n)
 		}
 	}
 
 	if v := resp.Header.Get("X-RateLimit-Used"); v != "" {
 		if n, err := strconv.ParseFloat(v, 64); err == nil {
-			metrics.GitHubRateLimitUsed.WithLabelValues(appName, resource).Set(n)
+			metrics.GitHubRateLimitUsed.WithLabelValues(appName, instance, resource).Set(n)
 		}
 	}
 
 	if v := resp.Header.Get("X-RateLimit-Reset"); v != "" {
 		if n, err := strconv.ParseFloat(v, 64); err == nil {
-			metrics.GitHubRateLimitResetTimestamp.WithLabelValues(appName, resource).Set(n)
+			metrics.GitHubRateLimitResetTimestamp.WithLabelValues(appName, instance, resource).Set(n)
 		}
 	}
 
@@ -387,22 +451,29 @@ func ExtractRateLimitHeaders(resp *http.Response, appName, caller string) {
 
 	if limit > 0 {
 		pct := (remaining / limit) * 100
-		metrics.GitHubRateLimitRemainingPercent.WithLabelValues(appName, resource).Set(pct)
+		metrics.GitHubRateLimitRemainingPercent.WithLabelValues(appName, instance, resource).Set(pct)
 	}
 
-	// Detect rate limit exceeded on 403.
-	if resp.StatusCode == http.StatusForbidden {
+	// Detect rate limit exceeded on 403 or 429 — GitHub documents both status
+	// codes for primary and secondary rate limits (see
+	// https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api#exceeding-the-rate-limit).
+	// Signal detection matches isRetryableTokenMintStatus exactly (an
+	// explicit Retry-After or X-RateLimit-Remaining: 0 header), so failover
+	// and observability share one contract: a header absent is not the same
+	// as a header present with value 0, and the parsed remaining float above
+	// (0 when the header is absent) is deliberately not reused here.
+	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
 		if retryAfter := resp.Header.Get("Retry-After"); retryAfter != "" {
 			// Secondary/abuse rate limit.
-			metrics.GitHubSecondaryRateLimitTotal.WithLabelValues(appName, caller).Inc()
+			metrics.GitHubSecondaryRateLimitTotal.WithLabelValues(appName, instance, caller).Inc()
 			if n, err := strconv.ParseFloat(retryAfter, 64); err == nil {
-				metrics.GitHubSecondaryRateLimitRetryAfter.WithLabelValues(appName).Set(n)
+				metrics.GitHubSecondaryRateLimitRetryAfter.WithLabelValues(appName, instance).Set(n)
 			}
-			slog.Warn("secondary rate limit hit", "app", appName, "retry_after", retryAfter, "caller", caller)
-		} else if remaining == 0 {
+			slog.Warn("secondary rate limit hit", "app", appName, "instance", instance, "status", resp.StatusCode, "retry_after", retryAfter, "caller", caller)
+		} else if resp.Header.Get("X-RateLimit-Remaining") == "0" {
 			// Primary rate limit exceeded.
-			metrics.GitHubRateLimitExceededTotal.WithLabelValues(appName, resource, caller).Inc()
-			slog.Warn("primary rate limit exceeded", "app", appName, "resource", resource, "caller", caller)
+			metrics.GitHubRateLimitExceededTotal.WithLabelValues(appName, instance, resource, caller).Inc()
+			slog.Warn("primary rate limit exceeded", "app", appName, "instance", instance, "status", resp.StatusCode, "resource", resource, "caller", caller)
 		}
 	}
 }

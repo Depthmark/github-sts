@@ -1,0 +1,75 @@
+{
+  "_comment": [
+    "Protected terminology for English to French documentation translation.",
+    "This is the authoritative copy referenced by docs/documentation-contract.md;",
+    "the table in that contract is the human-readable view of this file. Update",
+    "both together.",
+    "",
+    "'never_translate' holds strings that must survive translation byte for byte,",
+    "including every literal YAML and JWT claim key. 'terms' holds prose that has",
+    "one agreed French rendering."
+  ],
+  "source_language": "en",
+  "target_language": "fr",
+
+  "never_translate": [
+    "github-sts",
+    "github-sts-helm",
+    "github-sts-action",
+    "OIDC",
+    "GitHub App",
+    "GitHub Actions",
+    "JWKS",
+    "JWT",
+    "Rego",
+    "Helm",
+    "Kubernetes",
+    "Prometheus",
+    "mTLS",
+    "TLS"
+  ],
+
+  "claim_keys": {
+    "_comment": "Literal YAML and JWT keys. Never translated, even where the same word translates normally as prose.",
+    "issuer": "issuer",
+    "subject": "subject",
+    "subject_pattern": "subject_pattern",
+    "claim_pattern": "claim_pattern",
+    "audience": "audience",
+    "permissions": "permissions",
+    "github": "github",
+    "sources": "sources",
+    "target": "target",
+    "owner_id": "owner_id",
+    "repository_id": "repository_id"
+  },
+
+  "terms": {
+    "trust policy": "politique de confiance",
+    "trust policies": "politiques de confiance",
+    "token exchange": "échange de jeton",
+    "installation token": "jeton d'installation",
+    "short-lived token": "jeton temporaire",
+    "least privilege": "privilège minimal",
+    "replay": "rejeu",
+    "replay protection": "protection contre le rejeu",
+    "issuer": "émetteur",
+    "audience": "audience",
+    "bundle": "bundle",
+    "enterprise bundle": "bundle d'entreprise",
+    "policy revision": "révision de politique",
+    "digest": "empreinte",
+    "broker": "broker",
+    "workload": "charge de travail",
+    "scope": "portée",
+    "trust boundary": "limite de confiance"
+  },
+
+  "notes": {
+    "audience": "Keep the English word in prose: it is an OIDC concept, not a general-language term.",
+    "bundle": "Keep English in the Rego and OCI context. 'bundle d'entreprise' is acceptable prose for the feature as a whole.",
+    "issuer": "Translates to 'émetteur' as prose. As the literal key 'issuer:' it must stay English; see claim_keys.",
+    "broker": "The project calls the server a broker in both languages. Do not translate to 'courtier'.",
+    "handshake": "Prefer 'négociation TLS' over the literal 'poignée de main'."
+  }
+}

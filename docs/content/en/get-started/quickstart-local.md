@@ -61,5 +61,5 @@ real OIDC token from an identity provider, which this quickstart does not mint. 
 workflow and exchange it here.
 
 This container also runs with no TLS, no Redis, and no autoscaling; it's for trying github-sts,
-not running it. For a real deployment, see [Deploy with Helm](../../integrations/deploy-with-helm/)
+not running it. For a real deployment, see [the Helm chart quickstart]({{< relref "/integrations/helm-chart/quickstart" >}})
 and [Kubernetes](../../operations/kubernetes/).

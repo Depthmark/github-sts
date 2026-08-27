@@ -53,7 +53,7 @@ curl -X POST -H "Authorization: Bearer $OIDC_TOKEN" \
 
 Le jeton `ghs_…` renvoyé est un jeton d'installation GitHub App standard. Il expire selon la durée de vie des jetons d'installation de GitHub (actuellement une heure).
 
-### Réponses d'erreur
+### Réponses d'erreur {#error-responses}
 
 Les réponses d'erreur partagent cette forme :
 
@@ -93,7 +93,7 @@ Ou via le client Go :
 err := client.RevokeToken(ctx, token, "https://api.github.com")
 ```
 
-Lorsque vous utilisez la `github-sts-action`, le jeton est révoqué automatiquement à la fin du job. Consultez [Utiliser la GitHub Action]({{< relref "/integrations/use-github-action" >}}) pour plus de détails.
+Lorsque vous utilisez la `github-sts-action`, le jeton est révoqué automatiquement à la fin du job. Consultez [Cycle de vie du job]({{< relref "/integrations/github-action/job-lifecycle" >}}) pour plus de détails.
 
 ## Santé et préparation
 
@@ -101,7 +101,7 @@ Lorsque vous utilisez la `github-sts-action`, le jeton est révoqué automatique
 |---|---|---|---|
 | `/health` | `GET` | `200` avec l'état de vivacité, la posture de sécurité et l'état des bundles configurés | `401` lorsque l'authentification de santé est configurée et que le jeton Bearer est absent ou incorrect |
 | `/ready` | `GET` | `200` `{"ready":true}` | `503` `{"ready":false}` |
-| `/metrics` | `GET` | Format texte Prometheus | — |
+| `/metrics` | `GET` | Format texte Prometheus | `401` lorsque l'authentification des métriques est configurée et que le jeton Bearer est absent ou incorrect |
 
 `/health` est une sonde de vivacité. Lorsque l'authentification est désactivée
 ou satisfaite, il renvoie `200` tant que le processus est en marche. Définissez

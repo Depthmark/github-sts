@@ -277,6 +277,18 @@ func TestMetricsHandler_ValidToken(t *testing.T) {
 	}
 }
 
+func TestMetricsHandler_AuthSchemeIsCaseInsensitive(t *testing.T) {
+	h := MetricsHandler("secret-token")
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req.Header.Set("Authorization", "bearer secret-token")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+}
+
 func TestMetricsHandler_InvalidToken(t *testing.T) {
 	h := MetricsHandler("secret-token")
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
@@ -286,6 +298,9 @@ func TestMetricsHandler_InvalidToken(t *testing.T) {
 
 	if w.Code != http.StatusUnauthorized {
 		t.Errorf("status = %d, want 401", w.Code)
+	}
+	if got := w.Header().Get("WWW-Authenticate"); got != `Bearer realm="metrics"` {
+		t.Errorf("WWW-Authenticate = %q, want Bearer challenge", got)
 	}
 }
 

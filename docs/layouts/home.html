@@ -1,4 +1,8 @@
 {{ define "main" }}
+  {{/* The sidebar is hidden from md up, but it must exist in the DOM: it holds the
+       mobile drawer that the navbar hamburger toggles, and core/menu.js throws on a
+       null container, which leaves the hamburger inert on this page. */}}
+  {{ partial "sidebar.html" (dict "context" . "disableSidebar" true "displayPlaceholder" false) }}
   <main id="content" class="gg-landing">
     {{ .Content }}
   </main>

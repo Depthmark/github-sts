@@ -64,5 +64,5 @@ workflow GitHub Actions et l'échanger ici.
 
 Ce conteneur s'exécute aussi sans TLS, sans Redis et sans autoscaling ; c'est fait pour essayer
 github-sts, pas pour l'exploiter. Pour un déploiement réel, voir
-[Déployer avec Helm](../../integrations/deploy-with-helm/) et
+[le démarrage rapide du chart Helm]({{< relref "/integrations/helm-chart/quickstart" >}}) et
 [Kubernetes](../../operations/kubernetes/).

@@ -5,10 +5,14 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/depthmark/github-sts/internal/metrics"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 func generateTestKey(t *testing.T) *rsa.PrivateKey {
@@ -22,7 +26,7 @@ func generateTestKey(t *testing.T) *rsa.PrivateKey {
 
 func TestAppTokenProvider_GenerateAppJWT(t *testing.T) {
 	key := generateTestKey(t)
-	p := NewAppTokenProvider("test-app", 12345, key, "https://api.github.com", nil)
+	p := NewAppTokenProvider("test-app", "test-instance", 12345, key, "https://api.github.com", nil)
 	jwt, err := p.GenerateAppJWT()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -48,7 +52,7 @@ func TestAppTokenProvider_GetInstallationID_OrgOnly(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewAppTokenProvider("test-app", 12345, key, srv.URL, nil)
+	p := NewAppTokenProvider("test-app", "test-instance", 12345, key, srv.URL, nil)
 
 	// Repo-level scope should still use org endpoint.
 	id, err := p.GetInstallationID(context.Background(), "myorg/myrepo")
@@ -71,7 +75,7 @@ func TestAppTokenProvider_GetInstallationID_Caching(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewAppTokenProvider("test-app", 12345, key, srv.URL, nil)
+	p := NewAppTokenProvider("test-app", "test-instance", 12345, key, srv.URL, nil)
 
 	_, _ = p.GetInstallationID(context.Background(), "myorg")
 	_, _ = p.GetInstallationID(context.Background(), "myorg")
@@ -109,7 +113,7 @@ func TestAppTokenProvider_GetInstallationToken_WithPermissions(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewAppTokenProvider("test-app", 12345, key, srv.URL, nil)
+	p := NewAppTokenProvider("test-app", "test-instance", 12345, key, srv.URL, nil)
 
 	token, err := p.GetInstallationToken(context.Background(), "myorg",
 		map[string]string{"contents": "read"}, nil, "test")
@@ -148,7 +152,7 @@ func TestAppTokenProvider_GetInstallationToken_RepoRestriction(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewAppTokenProvider("test-app", 12345, key, srv.URL, nil)
+	p := NewAppTokenProvider("test-app", "test-instance", 12345, key, srv.URL, nil)
 
 	token, err := p.GetInstallationToken(context.Background(), "myorg/myrepo",
 		map[string]string{"contents": "read"}, nil, "test")
@@ -161,7 +165,7 @@ func TestAppTokenProvider_GetInstallationToken_RepoRestriction(t *testing.T) {
 }
 
 func TestAppTokenProvider_GetInstallationToken_RejectsEmptyRepositoryList(t *testing.T) {
-	p := NewAppTokenProvider("test-app", 12345, generateTestKey(t), "https://api.invalid", nil)
+	p := NewAppTokenProvider("test-app", "test-app", 12345, generateTestKey(t), "https://api.invalid", nil)
 
 	_, err := p.GetInstallationToken(context.Background(), "myorg", map[string]string{"contents": "read"}, []string{}, "test")
 	if err == nil || !strings.Contains(err.Error(), "empty repository list") {
@@ -182,33 +186,82 @@ func TestExtractRateLimitHeaders(t *testing.T) {
 	}
 
 	// Should not panic.
-	ExtractRateLimitHeaders(resp, "test-app", "test")
+	ExtractRateLimitHeaders(resp, "test-app", "test-instance", "test")
 }
 
-func TestExtractRateLimitHeaders_403_PrimaryExceeded(t *testing.T) {
-	resp := &http.Response{
-		StatusCode: http.StatusForbidden,
-		Header: http.Header{
-			"X-Ratelimit-Remaining": {"0"},
-			"X-Ratelimit-Limit":     {"5000"},
-			"X-Ratelimit-Resource":  {"core"},
-		},
-	}
+func TestExtractRateLimitHeaders_PrimaryExceeded(t *testing.T) {
+	for _, status := range []int{http.StatusForbidden, http.StatusTooManyRequests} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			app := "rl-primary-" + http.StatusText(status)
+			resp := &http.Response{
+				StatusCode: status,
+				Header: http.Header{
+					"X-Ratelimit-Remaining": {"0"},
+					"X-Ratelimit-Limit":     {"5000"},
+					"X-Ratelimit-Resource":  {"core"},
+				},
+			}
 
-	// Should not panic — logs a warning.
-	ExtractRateLimitHeaders(resp, "test-app", "test")
+			ExtractRateLimitHeaders(resp, app, "test-instance", "test")
+
+			if got := testutil.ToFloat64(metrics.GitHubRateLimitExceededTotal.WithLabelValues(app, "test-instance", "core", "test")); got != 1 {
+				t.Errorf("GitHubRateLimitExceededTotal = %v, want 1", got)
+			}
+			if got := testutil.ToFloat64(metrics.GitHubSecondaryRateLimitTotal.WithLabelValues(app, "test-instance", "test")); got != 0 {
+				t.Errorf("GitHubSecondaryRateLimitTotal = %v, want 0 (this is a primary limit, not secondary)", got)
+			}
+		})
+	}
 }
 
-func TestExtractRateLimitHeaders_403_SecondaryLimit(t *testing.T) {
-	resp := &http.Response{
-		StatusCode: http.StatusForbidden,
-		Header: http.Header{
-			"Retry-After": {"60"},
-		},
-	}
+func TestExtractRateLimitHeaders_SecondaryLimit(t *testing.T) {
+	for _, status := range []int{http.StatusForbidden, http.StatusTooManyRequests} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			app := "rl-secondary-" + http.StatusText(status)
+			resp := &http.Response{
+				StatusCode: status,
+				Header: http.Header{
+					"Retry-After": {"60"},
+				},
+			}
 
-	// Should not panic — logs a warning.
-	ExtractRateLimitHeaders(resp, "test-app", "test")
+			ExtractRateLimitHeaders(resp, app, "test-instance", "test")
+
+			if got := testutil.ToFloat64(metrics.GitHubSecondaryRateLimitTotal.WithLabelValues(app, "test-instance", "test")); got != 1 {
+				t.Errorf("GitHubSecondaryRateLimitTotal = %v, want 1", got)
+			}
+			if got := testutil.ToFloat64(metrics.GitHubSecondaryRateLimitRetryAfter.WithLabelValues(app, "test-instance")); got != 60 {
+				t.Errorf("GitHubSecondaryRateLimitRetryAfter = %v, want 60", got)
+			}
+			if got := testutil.ToFloat64(metrics.GitHubRateLimitExceededTotal.WithLabelValues(app, "test-instance", "core", "test")); got != 0 {
+				t.Errorf("GitHubRateLimitExceededTotal = %v, want 0 (this is a secondary limit, not primary)", got)
+			}
+		})
+	}
+}
+
+// TestExtractRateLimitHeaders_NoSignal_DoesNotCountAsExceeded guards a
+// regression where the primary-limit check compared a parsed float that
+// defaults to 0 when X-RateLimit-Remaining is absent — indistinguishable
+// from the header actually being "0" — so any bare 403/429 (a permissions
+// error, a WAF block, anything with no rate-limit headers at all) was
+// misclassified and counted as a rate limit event.
+func TestExtractRateLimitHeaders_NoSignal_DoesNotCountAsExceeded(t *testing.T) {
+	for _, status := range []int{http.StatusForbidden, http.StatusTooManyRequests} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			app := "rl-nosignal-" + http.StatusText(status)
+			resp := &http.Response{StatusCode: status, Header: http.Header{}}
+
+			ExtractRateLimitHeaders(resp, app, "test-instance", "test")
+
+			if got := testutil.ToFloat64(metrics.GitHubRateLimitExceededTotal.WithLabelValues(app, "test-instance", "core", "test")); got != 0 {
+				t.Errorf("GitHubRateLimitExceededTotal = %v, want 0 (no signal present, must not be counted as a rate limit event)", got)
+			}
+			if got := testutil.ToFloat64(metrics.GitHubSecondaryRateLimitTotal.WithLabelValues(app, "test-instance", "test")); got != 0 {
+				t.Errorf("GitHubSecondaryRateLimitTotal = %v, want 0", got)
+			}
+		})
+	}
 }
 
 func TestDiffPermissions(t *testing.T) {
@@ -301,7 +354,7 @@ func TestAppTokenProvider_GetInstallationToken_422CapturesDiff(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewAppTokenProvider("test-app", 12345, key, srv.URL, nil)
+	p := NewAppTokenProvider("test-app", "test-instance", 12345, key, srv.URL, nil)
 
 	_, err := p.GetInstallationToken(context.Background(), "myorg/myrepo",
 		map[string]string{"administration": "write", "contents": "write"}, nil, "test")
@@ -356,5 +409,156 @@ func TestExtractOrg(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("extractOrg(%q) = %q, want %q", tt.scope, got, tt.want)
 		}
+	}
+}
+
+// --- TokenMintError retryability classification (design doc §5.2.1) ---
+//
+// This table is the contract AppPool's failover logic depends on, so it's
+// tested directly against GetInstallationToken/GetInstallationID rather
+// than only indirectly through pool-level behavior (see app_pool_test.go).
+
+func TestGetInstallationToken_RetryabilityClassification(t *testing.T) {
+	tests := []struct {
+		name          string
+		handler       http.HandlerFunc
+		closeServer   bool // simulate a network/transport error
+		wantRetryable bool
+		wantStatus    int // 0 = don't check (transport error has no status)
+	}{
+		{
+			name:          "403 primary rate limit exceeded",
+			handler:       statusHandler(http.StatusForbidden, map[string]string{"X-RateLimit-Remaining": "0"}),
+			wantRetryable: true,
+			wantStatus:    http.StatusForbidden,
+		},
+		{
+			name:          "403 secondary/abuse rate limit",
+			handler:       statusHandler(http.StatusForbidden, map[string]string{"Retry-After": "30"}),
+			wantRetryable: true,
+			wantStatus:    http.StatusForbidden,
+		},
+		{
+			name:          "bare 403 with neither rate-limit signal",
+			handler:       statusHandler(http.StatusForbidden, nil),
+			wantRetryable: false,
+			wantStatus:    http.StatusForbidden,
+		},
+		{
+			name:          "5xx",
+			handler:       statusHandler(http.StatusServiceUnavailable, nil),
+			wantRetryable: true,
+			wantStatus:    http.StatusServiceUnavailable,
+		},
+		{
+			name:          "422 permission mismatch",
+			handler:       statusHandler(http.StatusUnprocessableEntity, nil),
+			wantRetryable: false,
+			wantStatus:    http.StatusUnprocessableEntity,
+		},
+		{
+			name:          "unrecognized future status",
+			handler:       statusHandler(http.StatusTeapot, nil),
+			wantRetryable: false,
+			wantStatus:    http.StatusTeapot,
+		},
+		{
+			name:          "network/transport error",
+			closeServer:   true,
+			wantRetryable: true,
+			wantStatus:    0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := tt.handler
+			if handler == nil {
+				handler = succeedHandler("unused")
+			}
+			srv := newMockGitHubServer(42, handler)
+			apiURL := srv.URL
+			if tt.closeServer {
+				srv.Close()
+			} else {
+				defer srv.Close()
+			}
+
+			key := generateTestKey(t)
+			p := NewAppTokenProvider("test-app", "test-instance", 12345, key, apiURL, nil)
+			_, err := p.GetInstallationToken(context.Background(), "myorg/myrepo", map[string]string{"contents": "read"}, nil, "test")
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			var mintErr *TokenMintError
+			if !errors.As(err, &mintErr) {
+				t.Fatalf("expected *TokenMintError, got %T: %v", err, err)
+			}
+			if mintErr.Retryable != tt.wantRetryable {
+				t.Errorf("Retryable = %v, want %v", mintErr.Retryable, tt.wantRetryable)
+			}
+			if tt.wantStatus != 0 && mintErr.StatusCode != tt.wantStatus {
+				t.Errorf("StatusCode = %d, want %d", mintErr.StatusCode, tt.wantStatus)
+			}
+		})
+	}
+}
+
+func TestFetchInstallationID_FailuresAreRetryable(t *testing.T) {
+	// Every fetchInstallationID failure is a property of this specific
+	// instance's credentials/installation — another pool member's
+	// independent credentials may well succeed where this one didn't (see
+	// design doc §5.6). Unlike GetInstallationToken's 422, there is no
+	// "retrying elsewhere can't help" case here.
+	tests := []struct {
+		name   string
+		status int
+	}{
+		{"not installed", http.StatusNotFound},
+		{"auth failed", http.StatusUnauthorized},
+		{"forbidden", http.StatusForbidden},
+		{"server error", http.StatusInternalServerError},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tt.status)
+			}))
+			defer srv.Close()
+
+			key := generateTestKey(t)
+			p := NewAppTokenProvider("test-app", "test-instance", 12345, key, srv.URL, nil)
+			_, err := p.GetInstallationID(context.Background(), "myorg")
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			var mintErr *TokenMintError
+			if !errors.As(err, &mintErr) {
+				t.Fatalf("expected *TokenMintError, got %T: %v", err, err)
+			}
+			if !mintErr.Retryable {
+				t.Errorf("Retryable = false for HTTP %d, want true", tt.status)
+			}
+		})
+	}
+}
+
+func TestFetchInstallationID_TransportErrorIsRetryable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	srv.Close() // already closed — every request is a transport error
+
+	key := generateTestKey(t)
+	p := NewAppTokenProvider("test-app", "test-instance", 12345, key, srv.URL, nil)
+	_, err := p.GetInstallationID(context.Background(), "myorg")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	var mintErr *TokenMintError
+	if !errors.As(err, &mintErr) {
+		t.Fatalf("expected *TokenMintError, got %T: %v", err, err)
+	}
+	if !mintErr.Retryable {
+		t.Error("expected Retryable = true for a transport error")
 	}
 }

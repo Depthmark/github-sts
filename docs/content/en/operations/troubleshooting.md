@@ -64,6 +64,15 @@ grep abc-123 /var/log/github-sts.log
 |---|---|
 | **Exchange returns `409`** with `code: "replay_detected"` | The OIDC token's `jti` was already used. Obtain a fresh token. If you are running multiple replicas, set `GITHUBSTS_JTI_BACKEND=redis`. |
 
+### App pools
+
+| Problem | Solution |
+|---|---|
+| **Exchange returns `502`** with `code: "upstream_error"` and `githubsts_app_pool_exhausted_total` rising for that app | Every instance in the app's pool failed for this request, not just one. Check each instance's credentials and installation individually: `githubsts_github_reachable{app=...,instance=...}` and the `instance`-labeled log lines around the failure narrow it to a specific one. |
+| **One instance never gets selected (`githubsts_app_pool_selection_total{...,outcome="skipped_unreachable"}` climbing for it)** | The reachability prober currently reports that instance down. Confirm its credentials and GitHub App installation are still valid; a revoked or misconfigured key looks the same as a network partition from the pool's point of view. |
+| **`rotation.strategy: rate_limit_aware` doesn't change instance selection** | Expected in this release: `rate_limit_aware` is accepted as config but not yet implemented; the pool behaves like `round_robin`. Check the startup log for the `rotation.strategy=rate_limit_aware is configured but this build does not yet implement...` warning. See [Configuration]({{< relref "/reference/configuration#app-pools-multi-instance-rate-limit-rotation" >}}). |
+| **Startup log: `app_id N is used by more than one logical app`** | A warning, not an error: two logical apps' pools share the same `app_id`, so they share one GitHub rate-limit bucket. Allowed, but confirm it's intentional rather than a copy-pasted instance block. |
+
 ### Upstream and audit
 
 | Problem | Solution |

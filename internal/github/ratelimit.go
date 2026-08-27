@@ -21,16 +21,39 @@ type AppConfig struct {
 	OrgPolicyRepo string
 }
 
-// RateLimitPoller periodically polls GitHub rate limit endpoints for all
-// app installations. Self-contained — manages its own JWT signing and
-// token cache, isolated from the exchange-path AppTokenProvider.
+// PoolInstanceConfig identifies one physical GitHub App instance for the
+// background pollers (RateLimitPoller, ReachabilityProber), which sweep
+// every instance of every configured app on a fixed interval rather than
+// going through AppPool/AppTokenProvider — each poller manages its own JWT
+// signing and token cache, isolated from the exchange-path request flow.
+// For a non-pooled app, this is that app's single normalized instance.
+type PoolInstanceConfig struct {
+	LogicalApp string // the app name callers pass as ?app=
+	Instance   string // this instance's label within its pool
+	AppConfig
+}
+
+// poolInstanceKey uniquely identifies one instance across every pool.
+// Keying by LogicalApp+Instance together (not Instance alone) matters
+// because an instance's label defaults to its app_id, and the same app_id
+// may legitimately be reused across two different logical apps' pools (see
+// config.Settings.DuplicateAppIDWarnings) — Instance alone could collide in
+// that case.
+type poolInstanceKey struct {
+	logicalApp string
+	instance   string
+}
+
+// RateLimitPoller periodically polls GitHub rate limit endpoints for every
+// configured instance's installations. Self-contained — manages its own JWT
+// signing and token cache, isolated from the exchange-path AppTokenProvider.
 type RateLimitPoller struct {
-	apps              map[string]AppConfig
+	instances         []PoolInstanceConfig
 	apiURL            string
 	interval          time.Duration
-	installationCache map[string][]installationEntry
+	installationCache map[poolInstanceKey][]installationEntry
 	installationTTL   time.Duration
-	tokenCache        map[string]tokenEntry
+	tokenCache        map[tokenCacheKey]tokenEntry
 	httpClient        *http.Client
 	mu                sync.Mutex
 	cancel            context.CancelFunc
@@ -47,15 +70,24 @@ type tokenEntry struct {
 	expiresAt time.Time
 }
 
-// NewRateLimitPoller creates a rate limit poller.
-func NewRateLimitPoller(apps map[string]AppConfig, apiURL string, interval time.Duration) *RateLimitPoller {
+// tokenCacheKey additionally scopes a token cache entry by installation ID:
+// one instance can be installed on multiple orgs, each with its own token.
+type tokenCacheKey struct {
+	poolInstanceKey
+	installationID int64
+}
+
+// NewRateLimitPoller creates a rate limit poller over the given flat list of
+// pool instances (one entry per physical GitHub App, across every
+// configured logical app).
+func NewRateLimitPoller(instances []PoolInstanceConfig, apiURL string, interval time.Duration) *RateLimitPoller {
 	return &RateLimitPoller{
-		apps:              apps,
+		instances:         instances,
 		apiURL:            apiURL,
 		interval:          interval,
-		installationCache: make(map[string][]installationEntry),
+		installationCache: make(map[poolInstanceKey][]installationEntry),
 		installationTTL:   10 * time.Minute,
-		tokenCache:        make(map[string]tokenEntry),
+		tokenCache:        make(map[tokenCacheKey]tokenEntry),
 		httpClient:        &http.Client{Timeout: 15 * time.Second},
 	}
 }
@@ -92,28 +124,29 @@ func (p *RateLimitPoller) pollLoop(ctx context.Context) {
 }
 
 func (p *RateLimitPoller) pollAll(ctx context.Context) {
-	for appName, appCfg := range p.apps {
-		installations, err := p.getInstallations(ctx, appName, appCfg)
+	for _, pi := range p.instances {
+		key := poolInstanceKey{logicalApp: pi.LogicalApp, instance: pi.Instance}
+		installations, err := p.getInstallations(ctx, key, pi.AppConfig)
 		if err != nil {
-			slog.Error("rate limit poller: failed to get installations", "app", appName, "error", err)
+			slog.Error("rate limit poller: failed to get installations", "app", pi.LogicalApp, "instance", pi.Instance, "error", err)
 			continue
 		}
 
 		for _, inst := range installations {
-			token, err := p.getOrCreateToken(ctx, appName, appCfg, inst.id)
+			token, err := p.getOrCreateToken(ctx, key, pi.AppConfig, inst.id)
 			if err != nil {
-				slog.Error("rate limit poller: failed to get token", "app", appName, "installation", inst.id, "error", err)
+				slog.Error("rate limit poller: failed to get token", "app", pi.LogicalApp, "instance", pi.Instance, "installation", inst.id, "error", err)
 				continue
 			}
 
-			p.pollRateLimit(ctx, appName, token, inst.account)
+			p.pollRateLimit(ctx, pi.LogicalApp, pi.Instance, token, inst.account)
 		}
 	}
 }
 
-func (p *RateLimitPoller) getInstallations(ctx context.Context, appName string, cfg AppConfig) ([]installationEntry, error) {
+func (p *RateLimitPoller) getInstallations(ctx context.Context, key poolInstanceKey, cfg AppConfig) ([]installationEntry, error) {
 	p.mu.Lock()
-	cached, ok := p.installationCache[appName]
+	cached, ok := p.installationCache[key]
 	if ok && len(cached) > 0 && time.Since(cached[0].fetchedAt) < p.installationTTL {
 		p.mu.Unlock()
 		return cached, nil
@@ -168,14 +201,14 @@ func (p *RateLimitPoller) getInstallations(ctx context.Context, appName string, 
 	}
 
 	p.mu.Lock()
-	p.installationCache[appName] = installations
+	p.installationCache[key] = installations
 	p.mu.Unlock()
 
 	return installations, nil
 }
 
-func (p *RateLimitPoller) getOrCreateToken(ctx context.Context, appName string, cfg AppConfig, installationID int64) (string, error) {
-	cacheKey := fmt.Sprintf("%s:%d", appName, installationID)
+func (p *RateLimitPoller) getOrCreateToken(ctx context.Context, key poolInstanceKey, cfg AppConfig, installationID int64) (string, error) {
+	cacheKey := tokenCacheKey{poolInstanceKey: key, installationID: installationID}
 
 	p.mu.Lock()
 	if entry, ok := p.tokenCache[cacheKey]; ok && time.Now().Before(entry.expiresAt) {
@@ -224,7 +257,7 @@ func (p *RateLimitPoller) getOrCreateToken(ctx context.Context, appName string, 
 	return result.Token, nil
 }
 
-func (p *RateLimitPoller) pollRateLimit(ctx context.Context, appName, token, account string) {
+func (p *RateLimitPoller) pollRateLimit(ctx context.Context, appName, instance, token, account string) {
 	url := fmt.Sprintf("%s/rate_limit", p.apiURL)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -235,12 +268,12 @@ func (p *RateLimitPoller) pollRateLimit(ctx context.Context, appName, token, acc
 
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
-		slog.Error("rate limit poll failed", "app", appName, "account", account, "error", err)
+		slog.Error("rate limit poll failed", "app", appName, "instance", instance, "account", account, "error", err)
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	ExtractRateLimitHeaders(resp, appName, "rate_limit_poller")
+	ExtractRateLimitHeaders(resp, appName, instance, "rate_limit_poller")
 }
 
 func (p *RateLimitPoller) signJWT(cfg AppConfig) (string, error) {

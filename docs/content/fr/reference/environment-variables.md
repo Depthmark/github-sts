@@ -35,6 +35,18 @@ Toutes les variables utilisent le préfixe `GITHUBSTS_`. Les variables par App s
 | `GITHUBSTS_APP_{NAME}_PRIVATE_KEY_PATH` | — | Chemin vers le fichier PEM |
 | `GITHUBSTS_APP_{NAME}_ORG_POLICY_REPO` | — | Dépôt des politiques d'organisation (par ex. `.github`) |
 | `GITHUBSTS_APP_{NAME}_POLICY_RESOLUTION` | `org_first` | Mode de résolution : `org_first`, `repo_first` (obsolète) ou `org_only` |
+| `GITHUBSTS_APP_{NAME}_ROTATION_STRATEGY` | `round_robin` | Stratégie de sélection du pool : `round_robin` ou `rate_limit_aware` (acceptée, pas encore implémentée ; voir [Configuration]({{< relref "/reference/configuration#pools-dapps-rotation-multi-instances-pour-la-limite-de-débit" >}})) |
+| `GITHUBSTS_APP_{NAME}_ROTATION_MIN_REMAINING_PCT` | `0` | `rate_limit_aware` uniquement ; actuellement sans effet |
+| `GITHUBSTS_APP_{NAME}_ROTATION_MAX_ATTEMPTS` | taille du pool, plafonnée à `3` | Limite le nombre de bascules par requête |
+
+Chaque instance d'un pool (`apps.<name>.instances[N]` en YAML) peut aussi être définie ou surchargée individuellement, en base 1 et de façon contiguë : le chargeur s'arrête au premier index `N` où aucune des quatre variables ci-dessous n'est définie.
+
+| Variable | Par défaut | Description |
+|---|---|---|
+| `GITHUBSTS_APP_{NAME}_INSTANCE_{N}_APP_ID` | — | ID numérique de la GitHub App pour l'instance `N` du pool |
+| `GITHUBSTS_APP_{NAME}_INSTANCE_{N}_PRIVATE_KEY` | — | Chaîne PEM pour l'instance `N` du pool (mutuellement exclusive avec `_PATH`) |
+| `GITHUBSTS_APP_{NAME}_INSTANCE_{N}_PRIVATE_KEY_PATH` | — | Chemin vers le fichier PEM pour l'instance `N` du pool |
+| `GITHUBSTS_APP_{NAME}_INSTANCE_{N}_NAME` | `app_id` (converti en chaîne) | Étiquette de métriques/audit pour l'instance `N` du pool |
 
 ## Paramètres de politique et de sécurité
 

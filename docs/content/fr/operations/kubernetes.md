@@ -6,7 +6,7 @@ translationKey: kubernetes
 translationStatus: pending-review
 ---
 
-Un chart Helm est maintenu dans le dépôt [github-sts-helm](https://github.com/Depthmark/github-sts-helm). Pour installer le chart, voir [Déployer avec Helm]({{< relref "/integrations/deploy-with-helm" >}}). Cette page couvre le comportement de github-sts une fois en service dans un cluster : sondes, montage de secrets, terminaison TLS et cache multi-réplicas.
+Un chart Helm est maintenu dans le dépôt [github-sts-helm](https://github.com/Depthmark/github-sts-helm). Pour installer le chart, voir [Installation du chart Helm]({{< relref "/integrations/helm-chart/installation" >}}). Cette page couvre le comportement de github-sts une fois en service dans un cluster : sondes, montage de secrets, terminaison TLS et cache multi-réplicas.
 
 ## Sondes
 
@@ -22,7 +22,7 @@ Le chart `github-sts-helm` actuel utilise une sonde HTTP de vivacité
 cette sonde. Un déploiement compatible doit injecter
 `GITHUBSTS_HEALTH_AUTH_TOKEN` depuis un Secret Kubernetes et utiliser une sonde
 de vivacité TCP, ou fournir un câblage personnalisé équivalent. Consultez
-[Déployer avec Helm]({{< relref "/integrations/deploy-with-helm" >}}) pour la
+[Compatibilité]({{< relref "/integrations/compatibility" >}}) pour la
 limitation du hook de test du chart.
 
 ## Montage de secrets
@@ -63,7 +63,7 @@ extraVolumeMounts:
 
 ## Terminaison TLS
 
-Le modèle recommandé est de terminer le TLS à l'ingress/Gateway et de conserver le pod en HTTP simple ; voir le bloc `ingress` dans [Déployer avec Helm]({{< relref "/integrations/deploy-with-helm" >}}) pour un exemple complet.
+Le modèle recommandé est de terminer le TLS à l'ingress/Gateway et de conserver le pod en HTTP simple ; voir le bloc `ingress` dans [Réseau]({{< relref "/integrations/helm-chart/networking" >}}) pour un exemple complet.
 
 Pour les déploiements exigeant un TLS de bout en bout, github-sts peut également servir HTTPS directement. C'est utile pour les clusters renforcés qui rechiffrent le trafic entre la Gateway et le backend (`BackendTLSPolicy` de Gateway API avec `ServerOnly` ou `ClientAndServer`), ou pour les déploiements autonomes/VM sans ingress. Activez-le via la configuration du serveur :
 
@@ -95,7 +95,7 @@ extraVolumeMounts:
 
 L'exécution de plus d'un réplica change le comportement de deux éléments :
 
-- **Cache JTI.** Avec le backend `memory`, chaque réplica a son propre ensemble de rejeu, donc un attaquant qui atteint un autre réplica peut rejouer un jeton OIDC. Utilisez `jti.backend: redis` (voir [Déployer avec Helm]({{< relref "/integrations/deploy-with-helm" >}}) pour les valeurs) pour que chaque instance partage le même ensemble de rejeu.
+- **Cache JTI.** Avec le backend `memory`, chaque réplica a son propre ensemble de rejeu, donc un attaquant qui atteint un autre réplica peut rejouer un jeton OIDC. Utilisez `jti.backend: redis` (voir la [référence des valeurs]({{< relref "/integrations/helm-chart/values" >}})) pour que chaque instance partage le même ensemble de rejeu.
 - **Cache des politiques de confiance.** Par instance, TTL `60s`. Les instances peuvent brièvement servir des politiques différentes après une modification de `.sts.yaml`.
 - **Sondes.** Chaque réplica sert son propre point de terminaison `/ready`.
 
