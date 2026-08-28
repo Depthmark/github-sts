@@ -216,6 +216,7 @@ func (m *LiveManager) fetchAndInstall(ctx context.Context, kind string) error {
 		var verificationErr *verificationError
 		if errors.As(err, &verificationErr) {
 			metrics.BundleVerifyTotal.WithLabelValues(m.name, "failure").Inc()
+			m.logSignatureFailure(kind, err)
 		} else {
 			metrics.BundlePullTotal.WithLabelValues(m.name, "failure").Inc()
 		}
@@ -299,6 +300,20 @@ func (m *LiveManager) signatureVerificationMode() string {
 		return "cosign_public_key"
 	}
 	return "cosign_keyless"
+}
+
+// logSignatureFailure surfaces the verifier's typed failure phase. Without it a
+// missing signature, an unreachable registry, and a bad signature all look the
+// same in the logs, and only the first is safe to resolve by re-signing.
+func (m *LiveManager) logSignatureFailure(kind string, err error) {
+	var sigErr *signatureError
+	if !errors.As(err, &sigErr) {
+		return
+	}
+	m.slogger.Error("bundle "+kind+": signature verification failed",
+		"signature_error_code", sigErr.Code,
+		"signature_operation", sigErr.Operation,
+	)
 }
 
 func (m *LiveManager) logSignatureVerification(kind, mode string) {

@@ -2,7 +2,6 @@ package bundle
 
 import (
 	"context"
-	"crypto"
 	"fmt"
 	"io"
 	"os"
@@ -12,10 +11,6 @@ import (
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
-	"github.com/sigstore/cosign/v2/pkg/cosign"
-	ociremote "github.com/sigstore/cosign/v2/pkg/oci/remote"
-	"github.com/sigstore/sigstore/pkg/cryptoutils"
-	"github.com/sigstore/sigstore/pkg/signature"
 )
 
 // OCILoader pulls an OPA bundle stored as an OCI image/artifact and verifies
@@ -202,46 +197,6 @@ func resolveBasicPassword(auth RegistryAuthConfig) (string, error) {
 		return password, nil
 	}
 	return "", fmt.Errorf("bundle oci loader: registry basic auth requires password file or env")
-}
-
-func verifyCosignSignature(ctx context.Context, ref name.Reference, verify VerifyConfig, opts []remote.Option) error {
-	trustedRoot, err := cosign.TrustedRoot()
-	if err != nil {
-		return fmt.Errorf("bundle oci loader: loading sigstore trust root: %w", err)
-	}
-	co := &cosign.CheckOpts{
-		RegistryClientOpts: []ociremote.Option{ociremote.WithRemoteOptions(opts...)},
-		TrustedMaterial:    trustedRoot,
-		ClaimVerifier:      cosign.SimpleClaimVerifier,
-	}
-	if verify.PublicKeyRef != "" {
-		verifier, err := loadPublicKeyVerifier(verify.PublicKeyRef)
-		if err != nil {
-			return fmt.Errorf("bundle oci loader: loading cosign public key %q: %w", verify.PublicKeyRef, err)
-		}
-		co.SigVerifier = verifier
-	} else {
-		co.Identities = []cosign.Identity{{
-			Issuer:        verify.CertificateOIDCIssuer,
-			SubjectRegExp: verify.CertificateIdentityRegexp,
-		}}
-	}
-	if _, _, err := cosign.VerifyImageSignatures(ctx, ref, co); err != nil {
-		return fmt.Errorf("bundle oci loader: cosign verification failed for %q: %w", ref.String(), err)
-	}
-	return nil
-}
-
-func loadPublicKeyVerifier(path string) (signature.Verifier, error) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	pub, err := cryptoutils.UnmarshalPEMToPublicKey(raw)
-	if err != nil {
-		return nil, fmt.Errorf("pem to public key: %w", err)
-	}
-	return signature.LoadVerifier(pub, crypto.SHA256)
 }
 
 func validateVerifyConfig(verify VerifyConfig) error {

@@ -1,4 +1,4 @@
-.PHONY: build test test-race test-rego test-oci-cosign-local lint coverage vuln-check clean docker \
+.PHONY: build test test-race test-rego lint coverage vuln-check clean docker \
         ci act act-actions hooks validate-examples validate-repository-policies \
         docs-serve docs-build docs-check docs-links docs-style docs-translate \
         docs-hugo-version docs-satellites
@@ -79,12 +79,11 @@ test-rego:
 	opa check --strict $(REGO_DIR)
 	opa test $(REGO_DIR)
 
-# Run local OCI/cosign integration test using a throwaway Docker registry.
-# Requires docker, opa, and go. Uses cosign directly when installed, otherwise
-# runs a pinned cosign CLI via go run. Uses a cosign key pair so it can run
-# locally without a Fulcio/OIDC keyless signing flow.
-test-oci-cosign-local:
-	tools/local-oci-cosign-test.sh
+# The cosign format compatibility matrix needs Docker, a throwaway registry, and
+# two pinned cosign binaries, so it lives outside this repository in
+# Depthmark-Lab/test-github-sts/scripts/local-oci-cosign-test.sh. The Go side is
+# TestOCILoader_CosignCompatibility, which skips unless that harness supplies
+# GITHUBSTS_OCI_COMPAT_REGISTRY and GITHUBSTS_OCI_COMPAT_PUBLIC_KEY.
 
 # Run tests with coverage
 coverage:

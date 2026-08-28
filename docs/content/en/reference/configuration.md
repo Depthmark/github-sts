@@ -182,6 +182,17 @@ bundle must be built with the same authoritative OPA manifest revision:
 opa build --revision 42 -b policy -o bundle.tar.gz
 ```
 
+The broker verifies one OCI signature storage format: a standardized Sigstore
+bundle published as an OCI 1.1 referrer, which cosign v3 produces by default.
+The legacy `sha256-<digest>.sig` tag and the transitional OCI 1.1 referrer are
+not verified, and a bundle carrying only one of those is treated as unsigned.
+See [Compatibility]({{< relref "/integrations/compatibility" >}}) for the
+producer requirements.
+
+Transparency verification is always on. There is no configuration setting,
+environment variable, or flag that disables Rekor, SCT, or timestamp checking in
+either format, in keyless or public-key mode.
+
 The cosign signature covers the OCI artifact containing `.manifest`. The broker
 compares that manifest revision with `expected_policy_revision` before swapping
 the runtime snapshot. A mismatch or missing revision fails initial installation;

@@ -28,6 +28,48 @@ La version du chart Helm suit un tag d'image github-sts compatible. Vérifiez le
 
 L'Action utilise l'API stable `/sts/exchange`. Les montées de version mineure peuvent ajouter des paramètres optionnels ; les paramètres existants et les formes de réponse restent stables.
 
+## Format de signature cosign
+
+`github-sts` vérifie exactement un format de stockage de signature OCI : un
+bundle Sigstore standardisé publié en référent OCI 1.1, de type de média
+`application/vnd.dev.sigstore.bundle.v0.3+json`. Cosign v3 le produit par
+défaut.
+
+| Format | Emplacement dans le registre | Produit par | Vérifié |
+|---|---|---|---|
+| Bundle Sigstore standardisé | Référent OCI 1.1, `application/vnd.dev.sigstore.bundle.v0.3+json` | cosign v3 par défaut ; cosign v2.6 avec `--new-bundle-format=true` | Oui |
+| Signature simple historique | Tag mutable `sha256-<digest>.sig` | cosign v2 par défaut ; cosign v3 avec `--registry-referrers-mode=legacy` | Non |
+| Transitoire OCI 1.1 | Référent, `application/vnd.dev.cosign.artifact.sig.v1+json` | cosign avec `COSIGN_EXPERIMENTAL=1 --registry-referrers-mode=oci-1-1` | Non |
+
+Un bundle ne portant qu'une signature non prise en charge est considéré comme
+non signé. L'erreur nomme le format trouvé, afin que la correction consiste à
+re-signer plutôt qu'à chercher une signature absente.
+
+### Exigences côté producteur
+
+Signez avec cosign v3 et son format par défaut. Si vous publiez avec cosign v2,
+passez explicitement `--new-bundle-format=true` : v2 utilise par défaut le
+format historique qui n'est plus accepté.
+
+Épinglez la version de cosign dans la chaîne de publication. Le format écrit
+dépend de la version majeure de cosign : un `cosign` non épinglé dans `$PATH`
+décide donc si le bundle produit est vérifiable.
+
+### Exigences du registre
+
+Le broker liste les référents via l'API Referrers d'OCI et bascule sur le schéma
+de tag de référents lorsqu'un registre ne l'implémente pas ; les registres
+antérieurs à cette API fonctionnent donc toujours.
+
+[Publier des bundles signés]({{< relref "/integrations/publishing-bundles" >}})
+liste les versions minimales de cosign et du registre, et fournit une sonde pour
+confirmer ce que votre propre registre stocke.
+
+Les listes de référents doivent être lisibles par les mêmes identifiants que
+ceux qui téléchargent le bundle. Si la découverte est refusée alors que le
+téléchargement réussit, la vérification échoue avec `discovery_failed` plutôt
+que de signaler le bundle comme non signé.
+
 ## Incompatibilités connues
 
 | Problème | Résolution |
