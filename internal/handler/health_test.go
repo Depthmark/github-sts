@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"sync/atomic"
 	"testing"
 
@@ -28,13 +29,11 @@ func TestHealthHandler_Always200(t *testing.T) {
 	}
 }
 
-func TestHealthHandler_ImmutableSubjectPosture(t *testing.T) {
+func TestHealthHandler_SecurityPosture(t *testing.T) {
 	h := HealthHandler(nil, SecurityPosture{
 		RequireImmutableSubjectClaims: false,
-		LegacySubjectOptOut:           true,
 		BundleEnforcement:             bundle.EnforcementOptional,
-		EnterprisePolicyRequired:      false,
-		YAMLOnlyAuthorization:         true,
+		YAMLOnlyAuthorizationPossible: true,
 	})
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	w := httptest.NewRecorder()
@@ -48,20 +47,13 @@ func TestHealthHandler_ImmutableSubjectPosture(t *testing.T) {
 	if !ok {
 		t.Fatalf("body.security missing or wrong shape: %v", body)
 	}
-	if security["require_immutable_subject_claims"] != false {
-		t.Errorf("require_immutable_subject_claims = %v, want false", security["require_immutable_subject_claims"])
+	want := map[string]any{
+		"require_immutable_subject_claims": false,
+		"bundle_enforcement":               bundle.EnforcementOptional,
+		"yaml_only_authorization_possible": true,
 	}
-	if security["legacy_subject_opt_out"] != true {
-		t.Errorf("legacy_subject_opt_out = %v, want true", security["legacy_subject_opt_out"])
-	}
-	if security["bundle_enforcement"] != bundle.EnforcementOptional {
-		t.Errorf("bundle_enforcement = %v, want optional", security["bundle_enforcement"])
-	}
-	if security["enterprise_policy_required"] != false {
-		t.Errorf("enterprise_policy_required = %v, want false", security["enterprise_policy_required"])
-	}
-	if security["yaml_only_authorization"] != true {
-		t.Errorf("yaml_only_authorization = %v, want true", security["yaml_only_authorization"])
+	if !reflect.DeepEqual(security, want) {
+		t.Errorf("security = %#v, want %#v", security, want)
 	}
 }
 
@@ -159,8 +151,7 @@ func TestHealthHandler_RequiredBundleUnavailable(t *testing.T) {
 	available := false
 	rep := &fakeBundleReporter{enabled: true, available: &available}
 	h := HealthHandler(rep, SecurityPosture{
-		BundleEnforcement:        bundle.EnforcementRequired,
-		EnterprisePolicyRequired: true,
+		BundleEnforcement: bundle.EnforcementRequired,
 	})
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/health", nil))

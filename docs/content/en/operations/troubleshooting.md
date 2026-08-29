@@ -27,7 +27,7 @@ grep abc-123 /var/log/github-sts.log
 | **Startup fails** with `bundle_enforcement is required` | Set top-level `bundle_enforcement` or `GITHUBSTS_BUNDLE_ENFORCEMENT` to exactly `required` or `optional`. There is no implicit default. |
 | **Required-mode startup fails bundle validation** | Configure exactly one global bundle with `apps: []` and `fail_mode: closed`. Every required-mode bundle must be cosign verified and use an OCI ref pinned to `@sha256:` plus 64 lowercase hex characters. |
 | **Startup fails mandatory bundle admission** | Verify the baseline exposes `data.sts.enterprise.v1.decision` and `.metadata`; metadata declares v1, a nonempty policy revision, both required controls, and a known-good admission context. That context must allow and all four isolated negative probes must deny. |
-| **Startup warns that enterprise bundle enforcement is optional** | This is deliberate posture signaling. Use `required` for production. `/health.security.yaml_only_authorization` is `true` if no bundles are configured or any App lacks bundle coverage. |
+| **Startup warns that enterprise bundle enforcement is optional** | This is deliberate posture signaling. Use `required` for production. `/health.security.yaml_only_authorization_possible` is `true` only when at least one configured App lacks global or App-scoped bundle coverage. |
 
 ### OIDC validation
 
@@ -137,10 +137,10 @@ curl -s http://localhost:8080/health | jq '{security, bundles}'
 curl -s http://localhost:8080/metrics | grep githubsts_bundle_enforcement_required
 ```
 
-Production should report `bundle_enforcement: "required"`,
-`enterprise_policy_required: true`, `yaml_only_authorization: false`, and metric
-value `1`. Per-bundle health should identify exactly one `mandatory: true`
-baseline whose `policy_revision` matches its configured
+Production should report `require_immutable_subject_claims: true`,
+`bundle_enforcement: "required"`, `yaml_only_authorization_possible: false`,
+and metric value `1`. Per-bundle health should identify exactly one
+`mandatory: true` baseline whose `policy_revision` matches its configured
 `expected_policy_revision`. Audit events always carry
 `bundle_enforcement`; when evaluation runs, use `org_decision.applicable` and
 `org_decision.evaluated` to distinguish participation from a fault. Evaluated

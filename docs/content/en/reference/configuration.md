@@ -368,6 +368,6 @@ Optional posture is deliberately visible:
 | Signal | Value |
 |---|---|
 | Startup log | Warning that enterprise bundle enforcement is explicitly optional; reports whether authorization is YAML-only |
-| `/health.security` | `bundle_enforcement: optional`, `enterprise_policy_required: false`, and `yaml_only_authorization: true` when no bundle is configured or at least one App lacks bundle coverage |
+| `/health.security` | `bundle_enforcement: optional`; `yaml_only_authorization_possible: true` only when at least one configured App lacks global or App-scoped bundle coverage |
 | `/metrics` | `githubsts_bundle_enforcement_required 0` (`1` in required mode) |
 | Exchange audit | `bundle_enforcement: optional` on every event; bundle digest/decisions are absent when no bundle evaluates |

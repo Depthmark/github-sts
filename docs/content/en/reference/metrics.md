@@ -141,11 +141,13 @@ Visibility into instance selection for a pooled app (`apps.<name>.instances`; se
 | `githubsts_bundle_policy_exception_seconds_until_expiration` | Gauge | Seconds until exception expiration by bundle, digest, exception ID, rule ID, and owner |
 | `githubsts_bundle_policy_exception_hits_total` | Counter | Exchanges where a Rego decision reported an exception hit |
 
-Check `/health.security.bundle_enforcement`, `enterprise_policy_required`, and
-`yaml_only_authorization` after every rollout. Each configured `bundles[]`
-status reports `mandatory` and the admitted `policy_revision` alongside
-digest, age, enabled state, and pull errors. Health remains liveness-only
-even when an exchange would fail closed.
+Check `/health.security.bundle_enforcement` and
+`yaml_only_authorization_possible` after every rollout. The latter is always
+`false` in required mode. In optional mode, it is `true` only when at least one
+configured App lacks both global and App-scoped bundle coverage. Each
+configured `bundles[]` status reports `mandatory` and the admitted
+`policy_revision` alongside digest, age, enabled state, and pull errors. Health
+remains liveness-only even when an exchange would fail closed.
 
 Exchange audit events include `bundle_enforcement`. Once the bundle path is
 reached, they add `bundle_digest` and `org_decision.applicable` /

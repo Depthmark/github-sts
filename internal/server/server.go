@@ -237,14 +237,14 @@ func New(cfg *config.Settings, slogger *slog.Logger) (*Server, error) {
 			"risk", "legacy subject format is vulnerable to repository namespace reuse",
 		)
 	}
-	yamlOnlyAuthorization := yamlOnlyAuthorizationPossible(cfg)
+	yamlOnlyAuthPossible := yamlOnlyAuthorizationPossible(cfg)
 	if cfg.BundleEnforcement == config.BundleEnforcementRequired {
 		metrics.BundleEnforcementRequired.Set(1)
 	} else {
 		metrics.BundleEnforcementRequired.Set(0)
 		slogger.Warn("enterprise bundle enforcement is explicitly optional",
 			"setting", "bundle_enforcement",
-			"yaml_only_authorization", yamlOnlyAuthorization,
+			"yaml_only_authorization_possible", yamlOnlyAuthPossible,
 			"risk", "token exchange does not require enterprise policy participation",
 		)
 	}
@@ -299,10 +299,8 @@ func New(cfg *config.Settings, slogger *slog.Logger) (*Server, error) {
 	}
 	healthHandler := handler.HealthHandler(bundleReporter, handler.SecurityPosture{
 		RequireImmutableSubjectClaims: cfg.RequireImmutableSubjectClaims(),
-		LegacySubjectOptOut:           !cfg.RequireImmutableSubjectClaims(),
 		BundleEnforcement:             cfg.BundleEnforcement,
-		EnterprisePolicyRequired:      cfg.BundleEnforcement == config.BundleEnforcementRequired,
-		YAMLOnlyAuthorization:         yamlOnlyAuthorization,
+		YAMLOnlyAuthorizationPossible: yamlOnlyAuthPossible,
 	})
 	mux.Handle("GET /health", handler.OptionalBearerAuth(cfg.Health.AuthToken, "health", healthHandler))
 	mux.HandleFunc("GET /ready", handler.ReadinessHandler(&s.ready))

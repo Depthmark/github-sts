@@ -20,14 +20,12 @@ type BundleHealthReporter interface {
 	BundleStatuses() []bundle.Status
 }
 
-// SecurityPosture exposes security-sensitive compatibility switches in health
-// output without affecting liveness.
+// SecurityPosture exposes security-sensitive configuration and authorization
+// capability in health output without affecting liveness.
 type SecurityPosture struct {
 	RequireImmutableSubjectClaims bool   `json:"require_immutable_subject_claims"`
-	LegacySubjectOptOut           bool   `json:"legacy_subject_opt_out"`
 	BundleEnforcement             string `json:"bundle_enforcement"`
-	EnterprisePolicyRequired      bool   `json:"enterprise_policy_required"`
-	YAMLOnlyAuthorization         bool   `json:"yaml_only_authorization"`
+	YAMLOnlyAuthorizationPossible bool   `json:"yaml_only_authorization_possible"`
 }
 
 // HealthHandler returns a handler for the liveness probe.
