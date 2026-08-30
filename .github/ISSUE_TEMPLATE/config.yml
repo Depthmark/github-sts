@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/Depthmark/github-sts/security/advisories/new
+    about: Never open a public issue for a vulnerability. Use private reporting so a fix can ship before the details are public.
+  - name: Documentation
+    url: https://depthmark.github.io/github-sts/
+    about: Configuration reference, OIDC issuer guides, deployment, and the security model.
+  - name: Troubleshooting guide
+    url: https://depthmark.github.io/github-sts/operations/troubleshooting/
+    about: Rejected exchanges, policy denials, and OIDC verification failures are covered here first.

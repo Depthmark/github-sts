@@ -8,6 +8,6 @@ translationStatus: pending-review
 
 {{< cards >}}
 {{< card link="changelog" title="Journal des modifications" icon="document-text" subtitle="Historique des versions et compatibilité des versions" >}}
-{{< card link="contributing" title="Contribuer" icon="pencil" subtitle="Processus de contribution à la documentation et commandes locales" >}}
+{{< card link="contributing" title="Contribuer" icon="pencil" subtitle="Installation locale, vérifications qui encadrent une modification, et fusion" >}}
 {{< card link="security" title="Sécurité" icon="lock-closed" subtitle="Versions prises en charge et signalement des vulnérabilités" >}}
 {{< /cards >}}

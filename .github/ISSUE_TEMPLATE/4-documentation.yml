@@ -1,0 +1,53 @@
+name: Documentation issue
+description: A documentation page is wrong, missing, unclear, or out of sync between languages.
+title: "[Docs]: "
+labels: ["documentation"]
+body:
+  - type: input
+    id: page
+    attributes:
+      label: Page
+      description: The URL on https://depthmark.github.io/github-sts/, or the path under `docs/content/`.
+      placeholder: https://depthmark.github.io/github-sts/reference/configuration/
+    validations:
+      required: true
+
+  - type: dropdown
+    id: language
+    attributes:
+      label: Language
+      options:
+        - English
+        - French
+        - Both
+    validations:
+      required: true
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What kind of problem is it?
+      options:
+        - Wrong or outdated information
+        - Missing information
+        - Unclear or hard to follow
+        - Broken link or anchor
+        - Translation missing or out of sync
+        - Example does not work
+    validations:
+      required: true
+
+  - type: textarea
+    id: detail
+    attributes:
+      label: What is wrong?
+      description: Quote the passage if it is a correction. Say what you were trying to do if it is a gap.
+    validations:
+      required: true
+
+  - type: textarea
+    id: fix
+    attributes:
+      label: Suggested fix
+    validations:
+      required: false
