@@ -1,11 +1,4 @@
----
-title: Contributing
-description: How to set up github-sts locally, what the checks enforce, and how to get a change merged.
-weight: 2
-translationKey: contributing
----
-
-This page mirrors [`CONTRIBUTING.md`](https://github.com/Depthmark/github-sts/blob/main/CONTRIBUTING.md) in the repository, which is the canonical copy.
+# Contributing to github-sts
 
 github-sts exchanges OIDC tokens for short-lived, scoped GitHub installation tokens. Because it mints credentials, a change here can widen what a caller is allowed to do. That shapes how contributions are reviewed: correctness and blast radius come before convenience.
 
@@ -101,9 +94,9 @@ uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
 A tag is mutable, and an action that is replaced upstream runs with the job's token. The repository is scored by [OpenSSF Scorecard](https://scorecard.dev/viewer/?uri=github.com/Depthmark/github-sts), which checks this.
 
-## Security {#security}
+## Security
 
-Report vulnerabilities privately through [GitHub Security Advisories](https://github.com/Depthmark/github-sts/security/advisories/new). Do not open a public issue. Response times and the disclosure process are on the [Security]({{< relref "/resources/security" >}}) page.
+Report vulnerabilities privately through [GitHub Security Advisories](https://github.com/Depthmark/github-sts/security/advisories/new). Do not open a public issue. Response times and the disclosure process are on the [Security page](https://depthmark.github.io/github-sts/resources/security/).
 
 In every change, whatever its size:
 
@@ -113,4 +106,4 @@ In every change, whatever its size:
 
 ## License
 
-github-sts is released under the [MIT License](https://github.com/Depthmark/github-sts/blob/main/LICENSE). Contributions are accepted under the same license.
+github-sts is released under the [MIT License](LICENSE). Contributions are accepted under the same license.

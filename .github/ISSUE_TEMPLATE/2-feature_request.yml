@@ -1,0 +1,65 @@
+name: Feature request
+description: Propose a capability github-sts does not have yet.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Start with the problem, not the solution. A concrete scenario that github-sts cannot
+        serve today is worth more than a proposed API, and it usually leads to a better one.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: What are you doing today instead, and why is that not good enough?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which area does this touch?
+      options:
+        - Token exchange endpoint
+        - OIDC verification (issuer, JWKS, claims)
+        - Trust policy language and evaluation
+        - GitHub App configuration or multi-instance pooling
+        - Bundle enforcement / attestation
+        - Observability (metrics, logs, dashboards)
+        - Deployment and operations
+        - Go client library
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like it to do?
+      description: Sketch the configuration, request, or policy as you would want to write it.
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What alternatives have you considered?
+      description: Including alternatives outside github-sts.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: impact
+    attributes:
+      label: Impact
+      description: Check anything that applies. None of these disqualify a proposal.
+      options:
+        - label: This would widen the set of tokens github-sts can mint, or the claims it trusts.
+          required: false
+        - label: This would change existing configuration or policy behaviour (breaking change).
+          required: false
+        - label: I am willing to open a pull request for this.
+          required: false

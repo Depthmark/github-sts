@@ -1,0 +1,149 @@
+name: Bug report
+description: github-sts behaves differently than the documentation says it should.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this.
+
+        **Do not use this form for a security vulnerability.** Report it privately through
+        [GitHub Security Advisories](https://github.com/Depthmark/github-sts/security/advisories/new)
+        so a fix can ship before the details are public.
+
+        **Redact before you paste.** Token exchange traffic carries private keys, installation
+        tokens, OIDC claims, and organization names. Replace anything sensitive with `REDACTED`.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Before you file
+      options:
+        - label: I searched the [existing issues](https://github.com/Depthmark/github-sts/issues?q=is%3Aissue) and this is not a duplicate.
+          required: true
+        - label: I checked the [troubleshooting guide](https://depthmark.github.io/github-sts/operations/troubleshooting/).
+          required: true
+        - label: This is not a security vulnerability.
+          required: true
+        - label: Everything I paste below is redacted of private keys, tokens, and claims I cannot share publicly.
+          required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Release tag or image digest. `ghcr.io/depthmark/github-sts:<tag>` or `@sha256:...`.
+      placeholder: v0.0.4
+    validations:
+      required: true
+
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: How are you running it?
+      options:
+        - Container image (ghcr.io)
+        - Kubernetes
+        - Built from source
+        - Go client library (client/)
+        - github-sts-bundle CLI
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part is misbehaving?
+      description: A best guess is fine. Pick "Not sure" if the failure does not point anywhere obvious.
+      options:
+        - Token exchange endpoint
+        - OIDC verification (issuer, JWKS, claims)
+        - Trust policy evaluation (Rego)
+        - GitHub App or installation resolution
+        - Bundle enforcement / attestation
+        - Health, metrics, or logging
+        - Configuration loading (file or GITHUBSTS_* variables)
+        - Go client library
+        - Not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: issuer
+    attributes:
+      label: OIDC issuer
+      options:
+        - GitHub Actions
+        - Azure
+        - Other or custom issuer
+        - Not applicable
+    validations:
+      required: false
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+      description: Link the documented behaviour you are relying on, if there is a page for it.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened instead?
+      description: Include the HTTP status and error body if an exchange was rejected.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: A maintainer should be able to follow these without inventing any missing detail.
+      placeholder: |
+        1. Start github-sts with the configuration below
+        2. Run the workflow / call the endpoint with ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Configuration
+      description: |
+        The relevant part of your config file or `GITHUBSTS_*` variables, redacted.
+        See the [configuration reference](https://depthmark.github.io/github-sts/reference/configuration/)
+        and [environment variables](https://depthmark.github.io/github-sts/reference/environment-variables/).
+      render: yaml
+    validations:
+      required: true
+
+  - type: textarea
+    id: policy
+    attributes:
+      label: Trust policy
+      description: The `.sts.yaml` policy or Rego rule involved, if the failure is a policy denial.
+      render: yaml
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Server logs around the failure, redacted. Attach a file or a gist if they are long.
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Anything else we should know?
+      description: Workarounds you found, when it started, related issues or pull requests.
+    validations:
+      required: false

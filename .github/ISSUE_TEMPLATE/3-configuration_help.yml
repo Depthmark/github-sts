@@ -1,0 +1,55 @@
+name: Configuration help
+description: github-sts is not doing what you want and you are not sure it is a bug.
+title: "[Help]: "
+labels: ["question", "configuration"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Rejected exchanges are usually a trust policy or OIDC claim mismatch rather than a defect.
+        The [troubleshooting guide](https://depthmark.github.io/github-sts/operations/troubleshooting/)
+        covers the common ones. If this turns out to be a bug, a maintainer will relabel it.
+
+        **Redact before you paste.** Replace private keys, tokens, and claims you cannot share with `REDACTED`.
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      placeholder: v0.0.4
+    validations:
+      required: true
+
+  - type: textarea
+    id: goal
+    attributes:
+      label: What are you trying to do?
+      description: The end state you want, not the setting you are currently fighting with.
+    validations:
+      required: true
+
+  - type: textarea
+    id: current
+    attributes:
+      label: What happens instead?
+      description: Include the HTTP status and error body, or the policy decision you got.
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Configuration and trust policy
+      description: Redacted config, `GITHUBSTS_*` variables, and the `.sts.yaml` policy involved.
+      render: yaml
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Redacted server logs around the rejection.
+      render: shell
+    validations:
+      required: false
