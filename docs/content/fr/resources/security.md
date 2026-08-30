@@ -20,7 +20,7 @@ Nous prenons en charge la dernière version et la version précédente. Les vers
 **N'ouvrez pas d'issue publique.** Signalez plutôt les vulnérabilités en privé :
 
 1. Utilisez le [signalement privé de vulnérabilité](https://github.com/Depthmark/github-sts/security/advisories/new) de GitHub (recommandé)
-2. Ou écrivez à [oss-security@depthmark.net](mailto:oss-security@depthmark.net) en indiquant `github-sts` dans l'objet
+2. Ou écrivez à [oss-security@adelisle.com](mailto:oss-security@adelisle.com) en indiquant `github-sts` dans l'objet
 
 Incluez :
 

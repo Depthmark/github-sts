@@ -25,7 +25,7 @@ maintainers; pick whichever is easier for you.
    The report, the discussion, the draft advisory, and the CVE request all stay
    in one private thread that you keep access to.
 2. **Email.** Write to
-   [oss-security@depthmark.net](mailto:oss-security@depthmark.net) with
+   [oss-security@adelisle.com](mailto:oss-security@adelisle.com) with
    `github-sts` in the subject line. Use this if you cannot or would rather not
    use GitHub.
 

@@ -19,7 +19,7 @@ We support the latest release and one version back. Older versions do not receiv
 **Do not open a public issue.** Instead, report vulnerabilities privately:
 
 1. Use GitHub's [private vulnerability reporting](https://github.com/Depthmark/github-sts/security/advisories/new) (preferred)
-2. Or email [oss-security@depthmark.net](mailto:oss-security@depthmark.net) with `github-sts` in the subject line
+2. Or email [oss-security@adelisle.com](mailto:oss-security@adelisle.com) with `github-sts` in the subject line
 
 Include:
 
