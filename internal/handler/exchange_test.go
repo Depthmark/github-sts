@@ -58,9 +58,14 @@ func (m *mockPolicyLoader) Load(_ context.Context, request policy.LoadRequest) (
 }
 
 type mockExchangeApp struct {
-	target       github.TargetIdentity
-	resolveErr   error
-	token        string
+	target     github.TargetIdentity
+	resolveErr error
+	token      string
+	// expiresAt overrides the minted token's expiry. Zero means "behave like
+	// GitHub and report one hour out"; noExpiry forces the degraded case
+	// where GitHub sent nothing usable.
+	expiresAt    time.Time
+	noExpiry     bool
 	instance     string
 	mintErr      error
 	resolveCalls int
@@ -85,17 +90,25 @@ func (m *mockExchangeApp) ResolveTarget(_ context.Context, scope github.Reposito
 	return m.target, nil
 }
 
-func (m *mockExchangeApp) GetInstallationTokenForTarget(_ context.Context, target github.TargetIdentity, permissions map[string]string, _ string) (string, string, error) {
+func (m *mockExchangeApp) GetInstallationTokenForTarget(_ context.Context, target github.TargetIdentity, permissions map[string]string, _ string) (github.IssuedToken, string, error) {
 	m.mintCalls++
 	m.lastTarget = target
 	m.lastPerms = permissions
 	if m.mintErr != nil {
-		return "", "", m.mintErr
+		return github.IssuedToken{}, "", m.mintErr
 	}
-	if m.token == "" {
-		return "ghs_test", m.instance, nil
+	token := m.token
+	if token == "" {
+		token = "ghs_test"
 	}
-	return m.token, m.instance, nil
+	expiresAt := m.expiresAt
+	if expiresAt.IsZero() && !m.noExpiry {
+		expiresAt = time.Now().Add(time.Hour)
+	}
+	if m.noExpiry {
+		expiresAt = time.Time{}
+	}
+	return github.IssuedToken{Token: token, ExpiresAt: expiresAt}, m.instance, nil
 }
 
 // recordingAuditLogger captures audit events for assertion.
@@ -1034,6 +1047,87 @@ func TestValidateField(t *testing.T) {
 			err := validateField("test", tt.value, tt.maxLen)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("validateField(%q) error = %v, wantErr = %v", tt.value, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// expires_in is what lets a caller schedule its own refresh instead of
+// hardcoding GitHub's one-hour default, so it must reflect the expiry GitHub
+// actually returned — measured at response time, rounded down.
+func TestExchange_ReportsExpiresIn(t *testing.T) {
+	app := &mockExchangeApp{
+		target: github.TargetIdentity{
+			Scope: "org/target", Owner: "org", OwnerID: "1001", Repository: "target", RepositoryID: "3001",
+		},
+		expiresAt: time.Now().Add(30 * time.Minute),
+	}
+	h := authorizedExchangeHandler(app, &mockPolicyLoader{pol: validExchangePolicy("2001", "3001")}, &recordingAuditLogger{})
+
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, authorizedExchangeRequest())
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	var resp ExchangeResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	// A few seconds of slack for test-machine scheduling; the point is that
+	// the value tracks the mint's expiry rather than a constant.
+	if resp.ExpiresIn > 1800 || resp.ExpiresIn < 1795 {
+		t.Fatalf("expires_in = %d, want just under 1800", resp.ExpiresIn)
+	}
+}
+
+// When GitHub gives no usable expiry the broker must stay silent rather than
+// invent one — a caller that trusts a guessed lifetime refreshes at the wrong
+// time, which is worse than falling back to its own heuristic.
+func TestExchange_OmitsExpiresInWhenUnknown(t *testing.T) {
+	app := &mockExchangeApp{
+		target: github.TargetIdentity{
+			Scope: "org/target", Owner: "org", OwnerID: "1001", Repository: "target", RepositoryID: "3001",
+		},
+		noExpiry: true,
+	}
+	h := authorizedExchangeHandler(app, &mockPolicyLoader{pol: validExchangePolicy("2001", "3001")}, &recordingAuditLogger{})
+
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, authorizedExchangeRequest())
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if _, present := raw["expires_in"]; present {
+		t.Fatalf("expires_in = %v, want the key absent when the lifetime is unknown", raw["expires_in"])
+	}
+	if raw["token"] != "ghs_test" {
+		t.Fatalf("token = %v, want the exchange to still succeed", raw["token"])
+	}
+}
+
+func TestExpiresIn(t *testing.T) {
+	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name      string
+		expiresAt time.Time
+		want      int64
+	}{
+		{"one hour out", now.Add(time.Hour), 3600},
+		{"rounds down to whole seconds", now.Add(time.Hour + 999*time.Millisecond), 3600},
+		{"unknown expiry", time.Time{}, 0},
+		{"already elapsed", now.Add(-time.Minute), 0},
+		{"expiring now", now, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := expiresIn(tt.expiresAt, now); got != tt.want {
+				t.Fatalf("expiresIn(%v) = %d, want %d", tt.expiresAt, got, tt.want)
 			}
 		})
 	}

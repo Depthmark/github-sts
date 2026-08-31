@@ -205,9 +205,9 @@ func (p *AppPool) ResolveTarget(ctx context.Context, scope RepositoryScope) (Tar
 // GetInstallationTokenForTarget implements github.ExchangeApp: same
 // ring/failover mechanics as GetInstallationToken, applied to minting a
 // token restricted to an already-resolved immutable target.
-func (p *AppPool) GetInstallationTokenForTarget(ctx context.Context, target TargetIdentity, permissions map[string]string, caller string) (string, string, error) {
-	return runOnRing(p, ctx, func(m PoolMember) (string, error) {
-		token, _, err := m.Provider.GetInstallationTokenForTarget(ctx, target, permissions, caller)
-		return token, err
+func (p *AppPool) GetInstallationTokenForTarget(ctx context.Context, target TargetIdentity, permissions map[string]string, caller string) (IssuedToken, string, error) {
+	return runOnRing(p, ctx, func(m PoolMember) (IssuedToken, error) {
+		issued, _, err := m.Provider.GetInstallationTokenForTarget(ctx, target, permissions, caller)
+		return issued, err
 	})
 }

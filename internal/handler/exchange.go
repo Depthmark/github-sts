@@ -37,12 +37,35 @@ type ExchangeRequest struct {
 }
 
 // ExchangeResponse is returned on successful token exchange.
+//
+// ExpiresIn is the token's remaining lifetime in seconds, named and shaped
+// after RFC 8693 / RFC 6749 so a caller can schedule its own refresh instead
+// of hardcoding GitHub's current one-hour default. It is measured from the
+// expiry GitHub returned, at the moment the broker writes the response, and
+// rounded down so it never over-promises. The field is omitted — never sent
+// as a guess — when GitHub gave no usable expiry (see github.IssuedToken);
+// callers must handle its absence by falling back to their own heuristic.
 type ExchangeResponse struct {
 	Token       string            `json:"token"`
+	ExpiresIn   int64             `json:"expires_in,omitempty"`
 	Scope       string            `json:"scope"`
 	App         string            `json:"app"`
 	Identity    string            `json:"identity"`
 	Permissions map[string]string `json:"permissions"`
+}
+
+// expiresIn converts an absolute token expiry into the RFC 6749 expires_in
+// lifetime: whole seconds remaining, rounded down, and 0 (which
+// ExchangeResponse omits) for an unknown or already-elapsed expiry.
+func expiresIn(expiresAt, now time.Time) int64 {
+	if expiresAt.IsZero() {
+		return 0
+	}
+	remaining := int64(expiresAt.Sub(now) / time.Second)
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
 }
 
 // ErrorResponse is returned on exchange errors.
@@ -675,7 +698,7 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	token, instance, err := provider.GetInstallationTokenForTarget(r.Context(), targetIdentity, pol.Permissions, traceID)
+	issued, instance, err := provider.GetInstallationTokenForTarget(r.Context(), targetIdentity, pol.Permissions, traceID)
 	if err != nil {
 		event.Result = audit.ResultGitHubError
 		event.ErrorReason = fmt.Sprintf("github token issuance failed: %v", err)
@@ -703,7 +726,8 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.emitResult(event, req, start)
 
 	writeJSON(w, http.StatusOK, ExchangeResponse{
-		Token:       token,
+		Token:       issued.Token,
+		ExpiresIn:   expiresIn(issued.ExpiresAt, time.Now()),
 		Scope:       req.Scope,
 		App:         appName,
 		Identity:    req.Identity,

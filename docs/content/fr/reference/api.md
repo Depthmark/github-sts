@@ -41,6 +41,7 @@ curl -X POST -H "Authorization: Bearer $OIDC_TOKEN" \
 ```json
 {
   "token": "ghs_xxxxxxxxxxxxxxxxxxxx",
+  "expires_in": 3600,
   "scope": "myorg/myrepo",
   "app": "default",
   "identity": "ci",
@@ -51,7 +52,17 @@ curl -X POST -H "Authorization: Bearer $OIDC_TOKEN" \
 }
 ```
 
-Le jeton `ghs_…` renvoyé est un jeton d'installation GitHub App standard. Il expire selon la durée de vie des jetons d'installation de GitHub (actuellement une heure).
+Le jeton `ghs_…` renvoyé est un jeton d'installation GitHub App standard.
+
+`expires_in` est la durée de vie restante du jeton, en secondes entières. C'est le champ que
+l'échange de jeton OAuth 2.0 (RFC 8693) définit à cet usage. Le serveur le calcule à partir de
+l'expiration renvoyée par GitHub avec le jeton et le mesure au moment où il écrit la réponse :
+lisez-le plutôt que de coder en dur la durée de vie actuelle d'une heure appliquée par GitHub.
+Renouvelez le jeton avant que la valeur n'atteigne zéro, car il cesse alors de fonctionner.
+
+Le champ est absent lorsque GitHub n'a renvoyé aucune expiration exploitable. Le jeton reste
+valide : repliez-vous sur votre propre intervalle de renouvellement au lieu de traiter cette
+absence comme une erreur.
 
 ### Réponses d'erreur {#error-responses}
 

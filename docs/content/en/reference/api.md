@@ -40,6 +40,7 @@ curl -X POST -H "Authorization: Bearer $OIDC_TOKEN" \
 ```json
 {
   "token": "ghs_xxxxxxxxxxxxxxxxxxxx",
+  "expires_in": 3600,
   "scope": "myorg/myrepo",
   "app": "default",
   "identity": "ci",
@@ -50,7 +51,16 @@ curl -X POST -H "Authorization: Bearer $OIDC_TOKEN" \
 }
 ```
 
-The returned `ghs_…` token is a standard GitHub App installation token. It expires according to GitHub's installation token lifetime (currently one hour).
+The returned `ghs_…` token is a standard GitHub App installation token.
+
+`expires_in` is the token's remaining lifetime in whole seconds, the field OAuth 2.0 Token
+Exchange (RFC 8693) defines for this purpose. The server derives it from the expiry GitHub
+returned with the token and measures it when it writes the response, so read it instead of
+hardcoding GitHub's current one-hour lifetime. Refresh before the value reaches zero: the token
+stops working when it does.
+
+The field is absent when GitHub returned no usable expiry. The token still works, so fall back to
+your own refresh interval rather than treating the absence as an error.
 
 ### Error responses
 

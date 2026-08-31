@@ -70,6 +70,7 @@ curl -H "Authorization: Bearer $OIDC_TOKEN" \
 ```json
 {
   "token": "ghs_xxxxxxxxxxxxxxxxxxxx",
+  "expires_in": 3600,
   "scope": "myorg/myrepo",
   "app": "default",
   "identity": "ci",
@@ -81,7 +82,10 @@ curl -H "Authorization: Bearer $OIDC_TOKEN" \
 ```
 
 Le jeton `ghs_…` est un jeton d'installation GitHub App standard, limité exactement aux dépôts et
-permissions déclarés par la politique. Pour un wrapper prêt à l'emploi autour de cet échange dans
+permissions déclarés par la politique. `expires_in` indique le nombre de secondes qu'il lui reste,
+ce qui permet à un job de longue durée de le renouveler à temps au lieu de supposer une durée de
+vie. Voir [la référence API]({{< relref "/reference/api" >}}) pour les cas où le champ est absent.
+Pour un wrapper prêt à l'emploi autour de cet échange dans
 Actions, voir [le démarrage rapide de la GitHub Action]({{< relref "/integrations/github-action/quickstart" >}}). Le `curl` manuel
 ci-dessus fonctionne depuis n'importe quel système CI capable de produire un jeton OIDC.
 

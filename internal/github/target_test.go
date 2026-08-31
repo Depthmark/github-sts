@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseRepositoryScope(t *testing.T) {
@@ -134,8 +135,8 @@ func TestAppTokenProvider_GetInstallationTokenForTarget_UsesRepositoryID(t *test
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if token != "ghs_test" {
-		t.Fatalf("token = %q", token)
+	if token.Token != "ghs_test" {
+		t.Fatalf("token = %q", token.Token)
 	}
 	if len(repositoryIDs) != 1 || repositoryIDs[0] != float64(1198676434) {
 		t.Fatalf("repository_ids = %v", repositoryIDs)
@@ -165,6 +166,75 @@ func targetTestServer(t *testing.T, owner, repository string, ownerID, repositor
 			})
 		default:
 			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+}
+
+// GitHub's expires_at is the only source of truth for a token's lifetime;
+// the broker must carry it through rather than assume the one-hour default.
+func TestAppTokenProvider_GetInstallationTokenForTarget_ParsesExpiry(t *testing.T) {
+	want := time.Now().Add(42 * time.Minute).UTC().Truncate(time.Second)
+	srv := targetTestServerWithExpiry(t, want.Format(time.RFC3339))
+	defer srv.Close()
+	p := NewAppTokenProvider("test-app", "test-app", 12345, generateTestKey(t), srv.URL, nil)
+
+	token, _, err := p.GetInstallationTokenForTarget(context.Background(), TargetIdentity{
+		Scope: "Depthmark/github-sts", RepositoryID: "1198676434",
+	}, map[string]string{"contents": "read"}, "test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !token.ExpiresAt.Equal(want) {
+		t.Fatalf("ExpiresAt = %v, want %v", token.ExpiresAt, want)
+	}
+}
+
+// A missing or malformed expires_at must not cost the caller a token it can
+// still use — the lifetime degrades to unknown, the mint still succeeds.
+func TestAppTokenProvider_GetInstallationTokenForTarget_UnusableExpiry(t *testing.T) {
+	for name, raw := range map[string]string{
+		"absent":      "",
+		"unparseable": "not-a-timestamp",
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := targetTestServerWithExpiry(t, raw)
+			defer srv.Close()
+			p := NewAppTokenProvider("test-app", "test-app", 12345, generateTestKey(t), srv.URL, nil)
+
+			token, _, err := p.GetInstallationTokenForTarget(context.Background(), TargetIdentity{
+				Scope: "Depthmark/github-sts", RepositoryID: "1198676434",
+			}, map[string]string{"contents": "read"}, "test")
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if token.Token != "ghs_test" {
+				t.Fatalf("token = %q, want the mint to still succeed", token.Token)
+			}
+			if !token.ExpiresAt.IsZero() {
+				t.Fatalf("ExpiresAt = %v, want the zero time", token.ExpiresAt)
+			}
+		})
+	}
+}
+
+// targetTestServerWithExpiry mints a token carrying the given raw expires_at
+// value; an empty string omits the field entirely.
+func targetTestServerWithExpiry(t *testing.T, expiresAt string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/installation"):
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]int64{"id": 42})
+		case strings.Contains(r.URL.Path, "/access_tokens"):
+			body := map[string]string{"token": "ghs_test"}
+			if expiresAt != "" {
+				body["expires_at"] = expiresAt
+			}
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(body)
+		default:
+			t.Errorf("unexpected request path %q", r.URL.Path)
 		}
 	}))
 }
