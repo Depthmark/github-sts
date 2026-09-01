@@ -48,6 +48,26 @@ grep abc-123 /var/log/github-sts.log
 | **L'échange renvoie `403`** avec `code: "policy_not_found"` | Vérifiez que la politique de confiance existe à `{base_path}/{app}/{identity}.sts.yaml` dans le dépôt cible (ou le dépôt de politiques d'organisation, selon `policy_resolution`). Un chemin de fichier incorrect ou une GitHub App sans accès en lecture au fichier de politique produit la même erreur. |
 | **L'échange renvoie `403`** avec `code: "policy_denied"` | La politique existe mais l'évaluation a échoué (subject, claim_pattern). Recherchez `trace_id` dans les journaux serveur pour l'écart précis. |
 
+### Vérification de signature de bundle
+
+Chaque échec de signature journalise un `signature_error_code` et un
+`signature_operation`. Le code nomme la phase en échec, ce qui indique s'il faut
+re-signer, corriger l'accès au registre ou mettre à jour un producteur.
+
+| `signature_error_code` | Ce qui s'est passé | Que faire |
+|---|---|---|
+| `signature_not_found` | Le digest résolu n'a aucun référent de bundle Sigstore standardisé | Signez le digest avec cosign v3, ou vérifiez que le digest résolu est bien celui attendu. Un bundle ne portant qu'un tag historique `sha256-<digest>.sig` aboutit ici |
+| `discovery_failed` | La liste des référents a échoué : refus, limite de débit, délai dépassé ou erreur serveur | Corrigez l'accès au registre pour les identifiants de téléchargement. Ce cas n'est délibérément pas signalé comme signature absente, car le registre n'a rien indiqué |
+| `unsupported_signature_format` | Un référent de signature existe mais utilise le format transitoire OCI 1.1, ou une version de bundle Sigstore que cette version ne sait pas vérifier | Re-signez avec les valeurs par défaut de cosign v3. Le bundle est signé, mais pas dans un format lu par cette version |
+| `malformed_signature` | Un référent de signature existe mais n'a pu être récupéré ni analysé, ou il désigne un autre digest sujet | Re-signez le bundle. Une divergence de sujet signifie que la signature appartient à un autre contenu |
+| `predicate_mismatch` | Une attestation est cryptographiquement valide mais n'est pas une signature d'image cosign | Le digest a été signé par une attestation SBOM ou de provenance plutôt qu'une signature. Utilisez `cosign sign` |
+| `cryptographic_verification_failed` | La signature, l'identité du certificat, l'émetteur OIDC ou les preuves de transparence ne satisfont pas la politique de confiance | Lisez la cause encapsulée. Causes fréquentes : mauvaise clé, `certificate_identity_regexp` ne correspondant pas au workflow signataire, ou entrée Rekor manquante |
+| `trust_root_unavailable` | La racine de confiance Sigstore ou la clé publique configurée n'a pu être chargée | Vérifiez l'accès sortant au miroir TUF Sigstore, ou que `public_key_ref` pointe vers un PEM lisible |
+
+Seul le format de bundle Sigstore standardisé est vérifié. Un bundle dont la
+seule signature est un tag historique `sha256-<digest>.sig` renvoie
+`signature_not_found` : pour ce broker, il n'est pas signé.
+
 ### Rejeu
 
 | Problème | Solution |

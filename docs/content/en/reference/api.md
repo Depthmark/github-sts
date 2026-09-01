@@ -207,10 +207,12 @@ Use HTTPS whenever the Bearer token crosses a network. The loopback example
 uses HTTP only for local verification.
 
 Its `security` object reports `require_immutable_subject_claims`,
-`legacy_subject_opt_out`, `bundle_enforcement`,
-`enterprise_policy_required`, and `yaml_only_authorization`. Explicit optional
-mode reports `enterprise_policy_required: false`; `yaml_only_authorization` is
-true when no bundle is configured or at least one App lacks bundle coverage.
+`bundle_enforcement`, and `yaml_only_authorization_possible`.
+`yaml_only_authorization_possible` is always `false` in required mode. In
+optional mode, it is `true` only when at least one configured App lacks both
+global bundle coverage and App-scoped bundle coverage. This field describes a
+configuration capability, not the authorization path taken by a specific
+exchange.
 `/ready` returns `200` with `{"ready":true}` once the server is serving and
 `503` with `{"ready":false}` while it is not. Readiness is not gated on GitHub
 API reachability; the reachability prober only updates the

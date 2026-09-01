@@ -9,6 +9,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
 	"io"
 	"log/slog"
@@ -335,6 +336,20 @@ func TestNew_WiresEndpointAuthentication(t *testing.T) {
 				t.Errorf("status = %d, want %d", w.Code, tt.wantStatus)
 			}
 		})
+	}
+
+	healthReq := httptest.NewRequest(http.MethodGet, "/health", nil)
+	healthReq.Header.Set("Authorization", "Bearer health-secret")
+	healthResponse := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(healthResponse, healthReq)
+	var healthBody struct {
+		Security handler.SecurityPosture `json:"security"`
+	}
+	if err := json.NewDecoder(healthResponse.Body).Decode(&healthBody); err != nil {
+		t.Fatalf("decode health response: %v", err)
+	}
+	if !healthBody.Security.YAMLOnlyAuthorizationPossible {
+		t.Error("yaml_only_authorization_possible = false, want true without bundle coverage")
 	}
 
 	defaultHealth := config.HealthConfig{}

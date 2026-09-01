@@ -182,6 +182,17 @@ bundle must be built with the same authoritative OPA manifest revision:
 opa build --revision 42 -b policy -o bundle.tar.gz
 ```
 
+The broker verifies one OCI signature storage format: a standardized Sigstore
+bundle published as an OCI 1.1 referrer, which cosign v3 produces by default.
+The legacy `sha256-<digest>.sig` tag and the transitional OCI 1.1 referrer are
+not verified, and a bundle carrying only one of those is treated as unsigned.
+See [Compatibility]({{< relref "/integrations/compatibility" >}}) for the
+producer requirements.
+
+Transparency verification is always on. There is no configuration setting,
+environment variable, or flag that disables Rekor, SCT, or timestamp checking in
+either format, in keyless or public-key mode.
+
 The cosign signature covers the OCI artifact containing `.manifest`. The broker
 compares that manifest revision with `expected_policy_revision` before swapping
 the runtime snapshot. A mismatch or missing revision fails initial installation;
@@ -357,6 +368,6 @@ Optional posture is deliberately visible:
 | Signal | Value |
 |---|---|
 | Startup log | Warning that enterprise bundle enforcement is explicitly optional; reports whether authorization is YAML-only |
-| `/health.security` | `bundle_enforcement: optional`, `enterprise_policy_required: false`, and `yaml_only_authorization: true` when no bundle is configured or at least one App lacks bundle coverage |
+| `/health.security` | `bundle_enforcement: optional`; `yaml_only_authorization_possible: true` only when at least one configured App lacks global or App-scoped bundle coverage |
 | `/metrics` | `githubsts_bundle_enforcement_required 0` (`1` in required mode) |
 | Exchange audit | `bundle_enforcement: optional` on every event; bundle digest/decisions are absent when no bundle evaluates |

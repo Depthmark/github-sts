@@ -27,7 +27,7 @@ grep abc-123 /var/log/github-sts.log
 | **Startup fails** with `bundle_enforcement is required` | Set top-level `bundle_enforcement` or `GITHUBSTS_BUNDLE_ENFORCEMENT` to exactly `required` or `optional`. There is no implicit default. |
 | **Required-mode startup fails bundle validation** | Configure exactly one global bundle with `apps: []` and `fail_mode: closed`. Every required-mode bundle must be cosign verified and use an OCI ref pinned to `@sha256:` plus 64 lowercase hex characters. |
 | **Startup fails mandatory bundle admission** | Verify the baseline exposes `data.sts.enterprise.v1.decision` and `.metadata`; metadata declares v1, a nonempty policy revision, both required controls, and a known-good admission context. That context must allow and all four isolated negative probes must deny. |
-| **Startup warns that enterprise bundle enforcement is optional** | This is deliberate posture signaling. Use `required` for production. `/health.security.yaml_only_authorization` is `true` if no bundles are configured or any App lacks bundle coverage. |
+| **Startup warns that enterprise bundle enforcement is optional** | This is deliberate posture signaling. Use `required` for production. `/health.security.yaml_only_authorization_possible` is `true` only when at least one configured App lacks global or App-scoped bundle coverage. |
 
 ### OIDC validation
 
@@ -57,6 +57,27 @@ grep abc-123 /var/log/github-sts.log
 | **Exchange returns `503`** with `code: "bundle_stale"` | A fail-closed bundle exceeded `max_staleness`. Restore pull/verification and retry after a successful refresh. |
 | **Exchange returns `503`** with `code: "bundle_unavailable"` | Required enforcement could not prove mandatory baseline participation. Check `/health` per-bundle `mandatory`, `enabled`, digest, policy revision, and pull error fields. |
 | **Exchange returns `503`** with `code: "bundle_evaluation_failed"` | Evaluation faulted rather than returning a deny. Correlate `trace_id` for timeout, strict built-in, or malformed-result details. |
+
+### Bundle signature verification
+
+Every signature failure reports a `signature_error_code` and a
+`signature_operation` in the logs. The code names the phase that failed, which
+is what tells you whether to re-sign, fix registry access, or upgrade a
+publisher.
+
+| `signature_error_code` | What happened | What to do |
+|---|---|---|
+| `signature_not_found` | The resolved digest has no standardized Sigstore bundle referrer | Sign the digest with cosign v3, or check that you resolved the digest you think you did. A bundle carrying only a legacy `sha256-<digest>.sig` tag lands here |
+| `discovery_failed` | Listing referrers failed: denied, rate limited, timed out, or a server error | Fix registry access for the pull credentials. This is deliberately not reported as a missing signature, because the registry never said what is attached |
+| `unsupported_signature_format` | A signature referrer exists but is the transitional OCI 1.1 format, or a Sigstore bundle version this build cannot verify | Re-sign with cosign v3 defaults. The bundle is signed, just not in a format this build reads |
+| `malformed_signature` | A signature referrer exists but could not be fetched or parsed, or it names a different subject digest | Re-sign the bundle. A subject mismatch means the signature belongs to other content |
+| `predicate_mismatch` | An attestation verified cryptographically but is not a cosign image signature | Something signed the digest with an SBOM or provenance attestation rather than a signature. Sign with `cosign sign` |
+| `cryptographic_verification_failed` | The signature, certificate identity, OIDC issuer, or transparency evidence did not satisfy the trust policy | Read the wrapped cause. Common causes are the wrong key, a `certificate_identity_regexp` that does not match the signing workflow, or a missing Rekor entry |
+| `trust_root_unavailable` | The Sigstore trusted root or the configured public key could not be loaded | Check outbound access to the Sigstore TUF mirror, or that `public_key_ref` points at a readable PEM |
+
+Only the standardized Sigstore bundle format is verified. A bundle whose only
+signature is a legacy `sha256-<digest>.sig` tag reports `signature_not_found`,
+because as far as this broker is concerned it is unsigned.
 
 ### Replay
 
@@ -116,10 +137,10 @@ curl -s http://localhost:8080/health | jq '{security, bundles}'
 curl -s http://localhost:8080/metrics | grep githubsts_bundle_enforcement_required
 ```
 
-Production should report `bundle_enforcement: "required"`,
-`enterprise_policy_required: true`, `yaml_only_authorization: false`, and metric
-value `1`. Per-bundle health should identify exactly one `mandatory: true`
-baseline whose `policy_revision` matches its configured
+Production should report `require_immutable_subject_claims: true`,
+`bundle_enforcement: "required"`, `yaml_only_authorization_possible: false`,
+and metric value `1`. Per-bundle health should identify exactly one
+`mandatory: true` baseline whose `policy_revision` matches its configured
 `expected_policy_revision`. Audit events always carry
 `bundle_enforcement`; when evaluation runs, use `org_decision.applicable` and
 `org_decision.evaluated` to distinguish participation from a fault. Evaluated

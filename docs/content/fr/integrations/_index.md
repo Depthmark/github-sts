@@ -12,4 +12,5 @@ translationStatus: pending-review
 {{< card link="end-to-end-github-actions-on-kubernetes" title="De bout en bout sur Kubernetes" icon="check-circle" subtitle="Procédure complète : Helm + STS + Action + vérification" >}}
 {{< card link="compatibility" title="Compatibilité" icon="clipboard-list" subtitle="Combinaisons de versions prises en charge et incompatibilités connues" >}}
 {{< card link="monitor-usage" title="Surveiller l'utilisation" icon="chart-bar" subtitle="Métriques Prometheus et entrées du journal d'audit à surveiller" >}}
+{{< card link="publishing-bundles" title="Publier des bundles signés" icon="upload" subtitle="Versions minimales de cosign et du registre, avec des exemples pour GHCR, Harbor, Nexus et Artifactory" >}}
 {{< /cards >}}

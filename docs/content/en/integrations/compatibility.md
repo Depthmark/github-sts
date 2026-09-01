@@ -27,6 +27,47 @@ The Helm chart version tracks a compatible github-sts image tag. Check the chart
 
 The Action uses the stable `/sts/exchange` API. Minor version bumps may add optional parameters; existing parameters and response shapes remain stable.
 
+## Cosign signature format
+
+`github-sts` verifies exactly one OCI signature storage format: a standardized
+Sigstore bundle published as an OCI 1.1 referrer, media type
+`application/vnd.dev.sigstore.bundle.v0.3+json`. Cosign v3 produces it by
+default.
+
+| Format | Where it lives in the registry | Produced by | Verified |
+|---|---|---|---|
+| Standardized Sigstore bundle | OCI 1.1 referrer, `application/vnd.dev.sigstore.bundle.v0.3+json` | cosign v3 defaults; cosign v2.6 with `--new-bundle-format=true` | Yes |
+| Legacy simple signing | Mutable `sha256-<digest>.sig` tag | cosign v2 defaults; cosign v3 with `--registry-referrers-mode=legacy` | No |
+| Transitional OCI 1.1 | Referrer, `application/vnd.dev.cosign.artifact.sig.v1+json` | cosign with `COSIGN_EXPERIMENTAL=1 --registry-referrers-mode=oci-1-1` | No |
+
+A bundle carrying only an unsupported signature is treated as unsigned. The
+error names which format was found, so the fix is to re-sign rather than to
+investigate a missing signature.
+
+### Publisher requirements
+
+Sign with cosign v3 and its default format. If you publish with cosign v2, pass
+`--new-bundle-format=true` explicitly, because v2 defaults to the legacy format
+that is no longer accepted.
+
+Pin the cosign version in the publishing pipeline. The format written depends on
+the cosign major version, so an unpinned `cosign` on `$PATH` decides whether the
+resulting bundle is verifiable.
+
+### Registry requirements
+
+The broker lists referrers through the OCI Referrers API and falls back to the
+referrers tag scheme when a registry does not implement it, so registries
+predating that API still work.
+
+[Publishing signed bundles]({{< relref "/integrations/publishing-bundles" >}})
+lists the minimum cosign and registry versions, and gives a probe for confirming
+what your own registry stores.
+
+Referrer listings must be readable by the same credentials that pull the bundle.
+If discovery is denied while the pull succeeds, verification fails with
+`discovery_failed` rather than reporting the bundle as unsigned.
+
 ## Known incompatibilities
 
 | Issue | Resolution |

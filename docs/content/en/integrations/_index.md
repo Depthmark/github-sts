@@ -11,4 +11,5 @@ translationKey: integrations
 {{< card link="end-to-end-github-actions-on-kubernetes" title="End-to-End on Kubernetes" icon="check-circle" subtitle="Complete walkthrough: Helm + STS + Action + verification" >}}
 {{< card link="compatibility" title="Compatibility" icon="clipboard-list" subtitle="Supported release combinations and known incompatibilities" >}}
 {{< card link="monitor-usage" title="Monitor usage" icon="chart-bar" subtitle="Prometheus metrics and audit log entries to watch" >}}
+{{< card link="publishing-bundles" title="Publishing signed bundles" icon="upload" subtitle="Minimum cosign and registry versions, with examples for GHCR, Harbor, Nexus, and Artifactory" >}}
 {{< /cards >}}
