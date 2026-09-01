@@ -4,8 +4,11 @@
 package policy
 
 import (
+	"crypto/sha1"
+	"encoding/hex"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/depthmark/github-sts/internal/yamlstrict"
@@ -68,19 +71,74 @@ type TrustPolicy struct {
 	Permissions    map[string]string `yaml:"permissions"`
 	GitHub         *GitHubPolicy     `yaml:"github,omitempty"`
 
-	// centralized is true when the policy was loaded from the org policy repo
-	// rather than the requesting repo. Set by the loader, never serialized.
-	centralized bool
+	// provenance records where this policy came from and which exact bytes
+	// were parsed. Set by the loader, never serialized into the policy
+	// file itself.
+	provenance Provenance
+}
+
+// Provenance identifies the exact trust policy that governed one exchange.
+//
+// The org Rego bundle has carried a digest in the audit trail since it was
+// introduced, on the reasoning that a decision record is only as good as its
+// ability to name what produced it. The YAML policy is the other half of the
+// same decision, and the half that names the permissions, so it needs the
+// same treatment.
+//
+// BlobSHA is git's own object hash of the bytes that were parsed, which
+// makes the record verifiable offline by anyone with a clone:
+//
+//	git hash-object .github/sts/default/ci.sts.yaml   # matches BlobSHA
+//	git log --find-object=<BlobSHA>                   # the commits behind it
+//
+// It is content-addressed rather than history-addressed on purpose: it
+// survives force-pushes and rebases, and two commits carrying identical
+// policy bytes are genuinely the same policy for audit purposes.
+type Provenance struct {
+	// Repository is the owner/repo that actually served the file, which
+	// under org_first or repo_first resolution is not knowable from the
+	// request alone.
+	Repository string
+	// Path is the file path within Repository.
+	Path string
+	// BlobSHA is the git blob SHA-1 of the parsed bytes. Empty when the
+	// policy did not come from a fetch (tests, in-memory loaders).
+	BlobSHA string
+	// Centralized reports resolution from the org policy repo rather than
+	// the requesting repo. The distinction has authorization consequences
+	// under ResolutionRepoFirst, where a repo owner can override the
+	// centralized policy.
+	Centralized bool
+}
+
+// Source returns "centralized" or "repository": which side won resolution.
+// A bounded value, safe to filter and group on in a log aggregator.
+func (p Provenance) Source() string {
+	if p.Centralized {
+		return "centralized"
+	}
+	return "repository"
+}
+
+// Provenance returns where this policy was loaded from.
+func (p *TrustPolicy) Provenance() Provenance { return p.provenance }
+
+// SetSource records the repository, path, and content hash a policy was
+// fetched from. Intended for use by the loader.
+func (p *TrustPolicy) SetSource(repository, path, blobSHA string) {
+	p.provenance.Repository = repository
+	p.provenance.Path = path
+	p.provenance.BlobSHA = blobSHA
 }
 
 // Centralized reports whether this policy was resolved from the centralized
 // org policy repo. The token issuer must force per-request repo scoping in
 // that case so a centralized identity cannot mint a cross-repo token.
-func (p *TrustPolicy) Centralized() bool { return p.centralized }
+func (p *TrustPolicy) Centralized() bool { return p.provenance.Centralized }
 
 // SetCentralized marks the policy as having been loaded from the org policy
 // repo. Intended for use by the loader.
-func (p *TrustPolicy) SetCentralized(v bool) { p.centralized = v }
+func (p *TrustPolicy) SetCentralized(v bool) { p.provenance.Centralized = v }
 
 // Resolution selects how the loader resolves an identity policy when both a
 // requesting repo and an org policy repo could host it.
@@ -399,4 +457,23 @@ var ValidPermissionValues = map[string]bool{
 	"read":  true,
 	"write": true,
 	"admin": true,
+}
+
+// GitBlobSHA returns git's object hash for the given file content: the same
+// value as `git hash-object <file>` and as GitHub's `sha` field for a blob.
+//
+// It is computed locally from bytes already in hand, so recording policy
+// provenance costs no additional GitHub API call -- which matters in a
+// broker whose whole app-pool design exists to conserve rate-limit budget.
+//
+// This is SHA-1 because git is SHA-1; the point is to match git's identity,
+// not to provide a collision-resistant primitive. The value is an audit
+// record describing what was evaluated, never an input to an authorization
+// decision, so SHA-1's collision weakness does not apply here.
+func GitBlobSHA(content []byte) string {
+	h := sha1.New() //nolint:gosec // git object identity, not a security primitive
+	// hash.Hash.Write is documented never to return an error.
+	h.Write([]byte("blob " + strconv.Itoa(len(content)) + "\x00"))
+	h.Write(content)
+	return hex.EncodeToString(h.Sum(nil))
 }

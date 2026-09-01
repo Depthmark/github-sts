@@ -120,7 +120,7 @@ permissions:
 
 > Une politique d'organisation centralisée fixe le jeton émis au seul dépôt dérivé de la revendication OIDC `sub` ; elle n'accorde pas un accès à l'échelle de l'organisation.
 
-### Résolution de politique
+### Résolution de politique {#policy-resolution}
 
 Lorsque la même identité possède un fichier de politique à la fois dans le dépôt demandeur et dans le dépôt de politiques d'organisation, `policy_resolution` détermine lequel l'emporte :
 

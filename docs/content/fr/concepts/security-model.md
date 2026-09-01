@@ -106,5 +106,33 @@ Chaque échange de jeton produit une entrée de journal d'audit structurée cont
 - `error_reason`: la raison d'un échange rejeté
 - `duration_ms`: la latence de l'échange
 - `user_agent`, `remote_ip`: les métadonnées de la requête
+- `policy_repository`, `policy_path`: le fichier qui a régi cet échange
+- `policy_blob_sha`: le hachage d'objet git des octets de politique exactement évalués
+- `policy_source`: `centralized` (dépôt de politiques de l'organisation) ou `repository` (dépôt demandeur)
+
+### Provenance de la politique
+
+`bundle_digest` a toujours identifié le bundle Rego ayant filtré une décision. La politique de confiance YAML constitue l'autre moitié de cette décision, et celle qui nomme les permissions : elle reçoit donc la même empreinte.
+
+```text
+policy_repository=myorg/.github-private
+policy_path=.github/sts/default/ci.sts.yaml
+policy_blob_sha=58970eea7611182acab5675ba8f56451ca607cda
+policy_source=centralized
+```
+
+`policy_blob_sha` est le hachage d'objet propre à git des octets analysés, calculé localement à partir du contenu déjà récupéré : l'enregistrer ne coûte donc aucun appel supplémentaire à l'API GitHub. La valeur est vérifiable hors ligne à partir d'un clone :
+
+```bash
+# le journal correspond-il à ce que contient le dépôt aujourd'hui ?
+git hash-object .github/sts/default/ci.sts.yaml
+
+# quels commits ont introduit ces octets exacts ?
+git log --find-object=58970eea7611182acab5675ba8f56451ca607cda
+```
+
+L'adressage par contenu est délibéré. Un hachage de blob survit aux force-push et aux rebases, et deux commits portant des octets de politique identiques constituent la même politique du point de vue de l'audit. Le commit reste atteignable, à la demande, via `--find-object`. Le hachage est en SHA-1 parce que git est en SHA-1 : l'objectif est de correspondre à l'identité git, et la valeur est un enregistrement de ce qui a été évalué, jamais une entrée d'une décision d'autorisation.
+
+`policy_source` indique quel côté a remporté la résolution. Ce n'est pas cosmétique : en [résolution `repo_first`]({{< relref "/concepts/trust-policies#policy-resolution" >}}), le propriétaire d'un dépôt peut supplanter la politique centralisée de l'organisation, et le journal d'audit est le seul endroit où cette différence reste visible a posteriori.
 
 Le `trace_id` est renvoyé dans la réponse d'erreur JSON afin que les clients puissent corréler leur rejet au journal côté serveur. Les champs `error` et `code` de la réponse sont délibérément génériques ; la raison complète n'apparaît que dans les journaux.

@@ -356,7 +356,17 @@ func (l *GitHubPolicyLoader) fetchPolicyFile(ctx context.Context, token, repo, f
 		return nil, fmt.Errorf("parsing policy from %s/%s: %w", repo, filePath, err)
 	}
 
+	// Record which repo actually served these bytes, and their git object
+	// hash. Both are already in hand here, so provenance costs no extra
+	// API call. Under org_first/repo_first resolution the serving repo is
+	// not knowable from the request alone, which is precisely why it has
+	// to be captured at the point of the fetch.
+	policy.SetSource(repo, filePath, GitBlobSHA(body))
+
 	metrics.PolicyLoadsTotal.WithLabelValues(appName, "github", "ok").Inc()
+	l.slogger.Debug("policy loaded",
+		"repo", repo, "path", filePath, "blob_sha", policy.Provenance().BlobSHA,
+	)
 	return policy, nil
 }
 

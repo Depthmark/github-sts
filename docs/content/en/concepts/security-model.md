@@ -103,5 +103,33 @@ Every token exchange produces a structured audit log entry containing:
 - `error_reason`: the reason for a rejected exchange
 - `duration_ms`: exchange latency
 - `user_agent`, `remote_ip`: request metadata
+- `policy_repository`, `policy_path`: the file that governed this exchange
+- `policy_blob_sha`: git object hash of the exact policy bytes evaluated
+- `policy_source`: `centralized` (org policy repo) or `repository` (requesting repo)
+
+### Policy provenance
+
+`bundle_digest` has always named which Rego bundle gated a decision. The YAML trust policy is the other half of that decision, and the half that names the permissions, so it is fingerprinted the same way:
+
+```text
+policy_repository=myorg/.github-private
+policy_path=.github/sts/default/ci.sts.yaml
+policy_blob_sha=58970eea7611182acab5675ba8f56451ca607cda
+policy_source=centralized
+```
+
+`policy_blob_sha` is git's own object hash of the bytes that were parsed, computed locally from the fetched content, so recording it costs no additional GitHub API call. It is verifiable offline against a clone:
+
+```bash
+# does the log match what is in the repo today?
+git hash-object .github/sts/default/ci.sts.yaml
+
+# which commits introduced these exact bytes?
+git log --find-object=58970eea7611182acab5675ba8f56451ca607cda
+```
+
+Content addressing is deliberate. A blob hash survives force-pushes and rebases, and two commits carrying identical policy bytes are the same policy as far as an audit is concerned. The commit is still reachable, lazily, through `--find-object`. The hash is SHA-1 because git is SHA-1: the goal is to match git's identity, and the value is a record of what was evaluated, never an input to an authorization decision.
+
+`policy_source` records which side won resolution. This is not cosmetic. Under [`repo_first` resolution]({{< relref "/concepts/trust-policies#policy-resolution" >}}) a repository owner can override the centralized org policy, and the audit trail is the only place that difference remains visible after the fact.
 
 The `trace_id` is returned in the JSON error response so clients can correlate their rejection to the server-side log. The `error` and `code` fields in the response are deliberately generic; the full reason is only in the logs.
