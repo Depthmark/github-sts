@@ -62,8 +62,8 @@ When the setting is empty, the endpoint remains unauthenticated. HTTPS protects 
 
 | Metric | Type | Description |
 |---|---|---|
-| `githubsts_token_exchanges_total` | Counter | Exchange attempts by app, instance, scope, identity, issuer, result |
-| `githubsts_token_exchange_duration_seconds` | Histogram | Exchange latency by app, instance, scope, identity, issuer |
+| `githubsts_token_exchanges_total` | Counter | Exchange attempts by github_app, github_app_instance, scope, identity, issuer, result |
+| `githubsts_token_exchange_duration_seconds` | Histogram | Exchange latency by github_app, github_app_instance, scope, identity, issuer |
 | `githubsts_oidc_validation_errors_total` | Counter | OIDC failures by issuer, reason |
 
 ## JTI replay prevention
@@ -77,24 +77,24 @@ When the setting is empty, the endpoint remains unauthenticated. HTTPS protects 
 
 | Metric | Type | Description |
 |---|---|---|
-| `githubsts_policy_loads_total` | Counter | Policy loads by app, backend, result |
-| `githubsts_policy_cache_hits_total` | Counter | Cache hits by app |
-| `githubsts_policy_cache_misses_total` | Counter | Cache misses by app |
+| `githubsts_policy_loads_total` | Counter | Policy loads by github_app, backend, result |
+| `githubsts_policy_cache_hits_total` | Counter | Cache hits by github_app |
+| `githubsts_policy_cache_misses_total` | Counter | Cache misses by github_app |
 
 ## GitHub API metrics
 
 | Metric | Type | Description |
 |---|---|---|
-| `githubsts_github_api_calls_total` | Counter | GitHub API calls by app, instance, endpoint, result |
-| `githubsts_github_tokens_issued_total` | Counter | Tokens issued by app, instance, scope, permissions |
-| `githubsts_github_rate_limit_remaining` | Gauge | Remaining rate limit by app, instance, resource |
-| `githubsts_github_rate_limit_limit` | Gauge | Maximum requests allowed in current window, by app, instance, resource |
-| `githubsts_github_rate_limit_used` | Gauge | Requests used in current window, by app, instance, resource |
-| `githubsts_github_rate_limit_reset_timestamp` | Gauge | Unix epoch timestamp when window resets, by app, instance, resource |
-| `githubsts_github_rate_limit_remaining_percent` | Gauge | Percentage of rate limit remaining, by app, instance, resource |
-| `githubsts_github_rate_limit_exceeded_total` | Counter | Primary rate limit exceeded events, by app, instance, resource, caller |
-| `githubsts_github_secondary_rate_limit_total` | Counter | Secondary (abuse) rate limit events, by app, instance, caller |
-| `githubsts_github_secondary_rate_limit_retry_after_seconds` | Gauge | Current retry-after in seconds, by app, instance |
+| `githubsts_github_api_calls_total` | Counter | GitHub API calls by github_app, github_app_instance, api_endpoint, result |
+| `githubsts_github_tokens_issued_total` | Counter | Tokens issued by github_app, github_app_instance, scope, permissions |
+| `githubsts_github_rate_limit_remaining` | Gauge | Remaining rate limit by github_app, github_app_instance, resource |
+| `githubsts_github_rate_limit_limit` | Gauge | Maximum requests allowed in current window, by github_app, github_app_instance, resource |
+| `githubsts_github_rate_limit_used` | Gauge | Requests used in current window, by github_app, github_app_instance, resource |
+| `githubsts_github_rate_limit_reset_timestamp` | Gauge | Unix epoch timestamp when window resets, by github_app, github_app_instance, resource |
+| `githubsts_github_rate_limit_remaining_percent` | Gauge | Percentage of rate limit remaining, by github_app, github_app_instance, resource |
+| `githubsts_github_rate_limit_exceeded_total` | Counter | Primary rate limit exceeded events, by github_app, github_app_instance, resource, caller |
+| `githubsts_github_secondary_rate_limit_total` | Counter | Secondary (abuse) rate limit events, by github_app, github_app_instance, caller |
+| `githubsts_github_secondary_rate_limit_retry_after_seconds` | Gauge | Current retry-after in seconds, by github_app, github_app_instance |
 
 Every pool member (`instance` label) has its own rate limit series: an app with 3 instances reports 3 independent `githubsts_github_rate_limit_remaining` series, not one aggregate. A single-instance (non-pooled) app still carries the label, with `instance` equal to that app's one normalized instance.
 
@@ -102,9 +102,9 @@ Every pool member (`instance` label) has its own rate limit series: an app with 
 
 | Metric | Type | Description |
 |---|---|---|
-| `githubsts_github_reachable` | Gauge | GitHub API reachability (1/0) by app, instance |
-| `githubsts_github_reachability_check_duration_seconds` | Histogram | Latency of reachability probes, by app, instance |
-| `githubsts_github_reachability_failures_total` | Counter | Reachability probe failures, by app, instance, reason |
+| `githubsts_github_reachable` | Gauge | GitHub API reachability (1/0) by github_app, github_app_instance |
+| `githubsts_github_reachability_check_duration_seconds` | Histogram | Latency of reachability probes, by github_app, github_app_instance |
+| `githubsts_github_reachability_failures_total` | Counter | Reachability probe failures, by github_app, github_app_instance, reason |
 
 ## App pool metrics
 
@@ -112,9 +112,9 @@ Visibility into instance selection for a pooled app (`apps.<name>.instances`; se
 
 | Metric | Type | Description |
 |---|---|---|
-| `githubsts_app_pool_instances` | Gauge | Configured pool size, by app |
-| `githubsts_app_pool_selection_total` | Counter | Selection outcomes, by app, instance, outcome |
-| `githubsts_app_pool_exhausted_total` | Counter | Requests where every pool instance failed, by app |
+| `githubsts_app_pool_instances` | Gauge | Configured pool size, by github_app |
+| `githubsts_app_pool_selection_total` | Counter | Selection outcomes, by github_app, github_app_instance, outcome |
+| `githubsts_app_pool_exhausted_total` | Counter | Requests where every pool instance failed, by github_app |
 
 `githubsts_app_pool_selection_total`'s `outcome` label is one of `selected`, `skipped_unreachable`, or `failover` today. (`skipped_rate_limited` is reserved for the planned `rate_limit_aware` strategy, which is not yet implemented; see [Configuration]({{< relref "/reference/configuration#app-pools-multi-instance-rate-limit-rotation" >}}).)
 
@@ -125,7 +125,7 @@ Visibility into instance selection for a pooled app (`apps.<name>.instances`; se
 | Metric | Type | Description |
 |---|---|---|
 | `githubsts_bundle_enforcement_required` | Gauge | `1` in required mode; `0` in explicitly optional mode |
-| `githubsts_org_decision_total` | Counter | Enterprise Rego outcomes by app, bundle, and result (`allow`, `deny`, `error`, or `not_evaluated`) |
+| `githubsts_org_decision_total` | Counter | Enterprise Rego outcomes by github_app, bundle, and result (`allow`, `deny`, `error`, or `not_evaluated`) |
 | `githubsts_bundle_pull_total` | Counter | Bundle pull attempts by bundle and result |
 | `githubsts_bundle_verify_total` | Counter | Cosign verification attempts by bundle and result (`success`, `failure`, or explicit `skipped`) |
 | `githubsts_bundle_loaded_digest_info` | Gauge | Current loaded bundle digest by bundle |
@@ -134,7 +134,7 @@ Visibility into instance selection for a pooled app (`apps.<name>.instances`; se
 | `githubsts_bundle_stale_evals_total` | Counter | Exchanges evaluated with stale bundles by bundle and fail mode |
 | `githubsts_bundle_policy_revision_info` | Gauge | Active signed Rego tuple by bundle, digest, and policy revision |
 | `githubsts_bundle_policy_revision_changes_total` | Counter | Policy revision reload outcomes by bundle |
-| `githubsts_bundle_policy_decisions_total` | Counter | Aggregate Rego decision impact by app, bundle, digest, and result |
+| `githubsts_bundle_policy_decisions_total` | Counter | Aggregate Rego decision impact by github_app, bundle, digest, and result |
 | `githubsts_bundle_policy_rule_decisions_total` | Counter | Rego decisions by bounded enterprise rule ID |
 | `githubsts_bundle_policy_exceptions_total` | Gauge | Discovered exception inventory by bundle, digest, and status |
 | `githubsts_bundle_policy_exception_expiration_timestamp_seconds` | Gauge | Exception expiration timestamp by bundle, digest, exception ID, rule ID, and owner |

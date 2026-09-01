@@ -115,19 +115,19 @@ githubsts_github_reachability_failures_total
 **Avant** (instance unique, ou avant la mise à niveau) :
 
 ```promql
-githubsts_github_rate_limit_remaining_percent{app="checkout"} < 10
+githubsts_github_rate_limit_remaining_percent{github_app="checkout"} < 10
 ```
 
 **Après** (agrégation sur le nombre d'instances de l'App, quel qu'il soit, pour que la requête conserve son ancienne signification quelle que soit la taille du pool) :
 
 ```promql
-min(githubsts_github_rate_limit_remaining_percent{app="checkout"}) by (app) < 10
+min(githubsts_github_rate_limit_remaining_percent{github_app="checkout"}) by (github_app) < 10
 ```
 
 Ou, pour alerter sur un identifiant précis plutôt que sur toute l'App logique (nouvelle capacité, non obligatoire) :
 
 ```promql
-githubsts_github_rate_limit_remaining_percent{app="checkout", instance="checkout-2"} < 10
+githubsts_github_rate_limit_remaining_percent{github_app="checkout", github_app_instance="checkout-2"} < 10
 ```
 
 **Migration étape par étape :**
@@ -137,6 +137,45 @@ githubsts_github_rate_limit_remaining_percent{app="checkout", instance="checkout
 3. Mettez à jour ces requêtes avant ou immédiatement après la mise à niveau ; le changement d'étiquette prend effet dès que la nouvelle version commence à servir du trafic.
 4. Déployez.
 5. Vérifiez que les panneaux affichent le nombre de séries attendu et que les alertes se déclenchent toujours dans les conditions attendues.
+
+## Migration : renommage des étiquettes de métriques pour éviter les collisions Kubernetes
+
+**Cette version renomme trois étiquettes sur toutes les métriques `githubsts_`. Chaque requête de tableau de bord et chaque règle d'alerte qui les sélectionne doit être mise à jour.**
+
+| Ancienne étiquette | Nouvelle étiquette | Motif du changement |
+|---|---|---|
+| `app` | `github_app` | Étiquette de charge de travail Kubernetes, et étiquette de flux Loki |
+| `instance` | `github_app_instance` | Cible de scrape Prometheus (`ip-du-pod:port`) |
+| `endpoint` | `api_endpoint` | ServiceMonitor de Prometheus Operator : nom du port de service scrapé |
+
+Une collision de ce type ne lève jamais d'erreur. Le scrape l'emporte silencieusement, et la valeur propre à l'application est soit renommée en `exported_*`, soit purement perdue. La panne ne se manifeste que par un panneau qui ne renvoie aucune ligne.
+
+C'était déjà le cas. Une variable de tableau de bord « GitHub App Instance » fondée sur `exported_instance` restait définitivement vide, car cette étiquette n'existait sur aucune série : le scrape avait pris `instance` et la valeur du membre du pool n'y avait pas survécu. Sous les anciens noms, **aucune étiquette par instance n'était interrogeable sur les métriques.** Après ce renommage, `github_app_instance` existe et fonctionne.
+
+**Avant :**
+
+```promql
+githubsts_github_rate_limit_remaining_percent{app="checkout", instance="checkout-2"} < 10
+sum(rate(githubsts_github_tokens_issued_total[5m])) by (app)
+githubsts_github_api_calls_total{endpoint="create_token"}
+```
+
+**Après :**
+
+```promql
+githubsts_github_rate_limit_remaining_percent{github_app="checkout", github_app_instance="checkout-2"} < 10
+sum(rate(githubsts_github_tokens_issued_total[5m])) by (github_app)
+githubsts_github_api_calls_total{api_endpoint="create_token"}
+```
+
+**Migration pas à pas :**
+
+1. Recherchez `githubsts_` dans les tableaux de bord et les règles d'alerte, et listez chaque requête qui sélectionne ou regroupe sur `app`, `instance` ou `endpoint`.
+2. Réécrivez-les avec les nouveaux noms. Toute requête qui utilisait auparavant `exported_app` ou `exported_instance` doit désormais utiliser simplement `github_app` / `github_app_instance` : le préfixe `exported_` n'existait qu'à cause de la collision et disparaît avec elle.
+3. Déployez, puis vérifiez que les panneaux renvoient des lignes. Un panneau silencieusement vide est précisément le mode de défaillance que ce renommage corrige : vérifiez plutôt que de supposer.
+4. La continuité des séries ne survit pas à un renommage d'étiquette : les anciennes séries s'arrêtent et de nouvelles commencent. Les requêtes de plage couvrant la mise à niveau montreront une rupture.
+
+Un test de garde (`internal/metrics/labels_test.go`) fait désormais échouer la compilation si une métrique déclare `app`, `instance`, `job`, `endpoint`, `service`, `namespace`, `pod`, `container` ou `node` : cette classe de collision ne peut plus réapparaître.
 
 ## Liste de contrôle avant mise à niveau
 

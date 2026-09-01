@@ -128,19 +128,19 @@ githubsts_github_reachability_failures_total
 **Before** (single instance, or before upgrading):
 
 ```promql
-githubsts_github_rate_limit_remaining_percent{app="checkout"} < 10
+githubsts_github_rate_limit_remaining_percent{github_app="checkout"} < 10
 ```
 
 **After** (aggregate across however many instances the app has, so the query keeps its old meaning regardless of pool size):
 
 ```promql
-min(githubsts_github_rate_limit_remaining_percent{app="checkout"}) by (app) < 10
+min(githubsts_github_rate_limit_remaining_percent{github_app="checkout"}) by (github_app) < 10
 ```
 
 Or, to alert on a specific credential instead of the whole logical app (new capability, not required):
 
 ```promql
-githubsts_github_rate_limit_remaining_percent{app="checkout", instance="checkout-2"} < 10
+githubsts_github_rate_limit_remaining_percent{github_app="checkout", github_app_instance="checkout-2"} < 10
 ```
 
 **Step-by-step migration:**
@@ -150,6 +150,45 @@ githubsts_github_rate_limit_remaining_percent{app="checkout", instance="checkout
 3. Update those queries before or immediately after the upgrade; the label change takes effect the moment the new version starts serving traffic.
 4. Deploy.
 5. Confirm panels render the expected series count and alerts still fire on the expected condition.
+
+## Migration: metric labels renamed to avoid Kubernetes collisions
+
+**This release renames three metric labels on every `githubsts_` metric. Every dashboard query and alert rule that selects on them must be updated.**
+
+| Old label | New label | Why it had to change |
+|---|---|---|
+| `app` | `github_app` | Kubernetes workload label, and a Loki stream label |
+| `instance` | `github_app_instance` | Prometheus scrape target (`pod-ip:port`) |
+| `endpoint` | `api_endpoint` | Prometheus Operator ServiceMonitor: the scraped service port name |
+
+A collision here never raises an error. The scrape wins silently, and the application's own value is either renamed to `exported_*` or lost outright. The failure only shows up as a panel that returns no rows.
+
+That was already happening. A "GitHub App Instance" dashboard variable built on `exported_instance` was permanently empty, because that label never existed on any series: the scrape had taken `instance` and the pool member's value did not survive. Under the old names, **there was no queryable per-instance label on metrics at all.** After this rename, `github_app_instance` exists and works.
+
+**Before:**
+
+```promql
+githubsts_github_rate_limit_remaining_percent{app="checkout", instance="checkout-2"} < 10
+sum(rate(githubsts_github_tokens_issued_total[5m])) by (app)
+githubsts_github_api_calls_total{endpoint="create_token"}
+```
+
+**After:**
+
+```promql
+githubsts_github_rate_limit_remaining_percent{github_app="checkout", github_app_instance="checkout-2"} < 10
+sum(rate(githubsts_github_tokens_issued_total[5m])) by (github_app)
+githubsts_github_api_calls_total{api_endpoint="create_token"}
+```
+
+**Step-by-step migration:**
+
+1. Grep dashboards and alert rules for `githubsts_` and list every query selecting or grouping on `app`, `instance`, or `endpoint`.
+2. Rewrite them with the new names. Any query that previously used `exported_app` or `exported_instance` should now use the plain `github_app` / `github_app_instance` -- the `exported_` prefix existed only because of the collision and is gone with it.
+3. Deploy, then confirm panels return rows. A silently empty panel is the exact failure mode this rename fixes, so verify rather than assume.
+4. Series continuity does not carry across a label rename: old series stop and new ones begin. Range queries spanning the upgrade will show a break.
+
+A guard test (`internal/metrics/labels_test.go`) now fails the build if any metric declares `app`, `instance`, `job`, `endpoint`, `service`, `namespace`, `pod`, `container`, or `node`, so this class of collision cannot come back.
 
 ## Pre-upgrade checklist
 

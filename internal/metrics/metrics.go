@@ -36,13 +36,13 @@ var (
 	TokenExchangesTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "githubsts_token_exchanges_total",
 		Help: "Total token exchange attempts.",
-	}, []string{"app", "instance", "scope", "identity", "issuer", "result"})
+	}, []string{"github_app", "github_app_instance", "scope", "identity", "issuer", "result"})
 
 	TokenExchangeLatency = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "githubsts_token_exchange_duration_seconds",
 		Help:    "Token exchange duration in seconds.",
 		Buckets: []float64{0.1, 0.25, 0.5, 1.0, 2.5, 5.0},
-	}, []string{"app", "instance", "scope", "identity", "issuer"})
+	}, []string{"github_app", "github_app_instance", "scope", "identity", "issuer"})
 
 	OIDCValidationErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "githubsts_oidc_validation_errors_total",
@@ -91,34 +91,45 @@ var (
 	PolicyLoadsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "githubsts_policy_loads_total",
 		Help: "Total policy file load attempts.",
-	}, []string{"app", "backend", "result"})
+	}, []string{"github_app", "backend", "result"})
 
 	PolicyCacheHits = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "githubsts_policy_cache_hits_total",
 		Help: "Policy cache hits.",
-	}, []string{"app"})
+	}, []string{"github_app"})
 
 	PolicyCacheMisses = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "githubsts_policy_cache_misses_total",
 		Help: "Policy cache misses.",
-	}, []string{"app"})
+	}, []string{"github_app"})
 )
 
-// GitHub App metrics. Labeled by both app (the logical name callers pass as
-// ?app=) and instance (which physical pool member handled the call — for a
-// non-pooled app this is that app's single normalized instance, so existing
-// single-instance deployments still get one series per app, just qualified
-// by a second label).
+// GitHub App metrics. Labeled by both github_app (the logical name callers
+// pass as ?app=) and github_app_instance (which physical pool member handled
+// the call — for a non-pooled app this is that app's single normalized
+// instance, so existing single-instance deployments still get one series per
+// app, just qualified by a second label).
+//
+// LABEL NAMING RULE: never use a bare `app`, `instance`, `endpoint`, `job`,
+// `namespace`, `pod`, `container`, `service` or `node` label on a metric.
+// Every one of those is injected by Kubernetes service discovery or by
+// Prometheus Operator's ServiceMonitor, and a collision does not error — the
+// scrape silently wins and the application's value is either renamed to
+// `exported_*` or lost outright. That is not hypothetical here: a
+// "GitHub App Instance" dashboard variable built on `exported_instance` was
+// found to be permanently empty, because the label it selected on never
+// existed. Prefix application labels (`github_app`, `github_app_instance`,
+// `api_endpoint`) so they survive scraping intact.
 var (
 	GitHubAPICalls = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "githubsts_github_api_calls_total",
 		Help: "Total GitHub API calls.",
-	}, []string{"app", "instance", "endpoint", "result"})
+	}, []string{"github_app", "github_app_instance", "api_endpoint", "result"})
 
 	GitHubTokenIssued = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "githubsts_github_tokens_issued_total",
 		Help: "GitHub installation tokens issued.",
-	}, []string{"app", "instance", "scope", "permissions"})
+	}, []string{"github_app", "github_app_instance", "scope", "permissions"})
 )
 
 // GitHub API rate limit metrics.
@@ -126,47 +137,48 @@ var (
 	GitHubRateLimitLimit = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "githubsts_github_rate_limit_limit",
 		Help: "Maximum number of requests allowed in the current rate limit window.",
-	}, []string{"app", "instance", "resource"})
+	}, []string{"github_app", "github_app_instance", "resource"})
 
 	GitHubRateLimitRemaining = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "githubsts_github_rate_limit_remaining",
 		Help: "Remaining requests before rate limit is reached.",
-	}, []string{"app", "instance", "resource"})
+	}, []string{"github_app", "github_app_instance", "resource"})
 
 	GitHubRateLimitUsed = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "githubsts_github_rate_limit_used",
 		Help: "Requests used in the current rate limit window.",
-	}, []string{"app", "instance", "resource"})
+	}, []string{"github_app", "github_app_instance", "resource"})
 
 	GitHubRateLimitResetTimestamp = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "githubsts_github_rate_limit_reset_timestamp",
 		Help: "Unix epoch timestamp when the rate limit window resets.",
-	}, []string{"app", "instance", "resource"})
+	}, []string{"github_app", "github_app_instance", "resource"})
 
 	GitHubRateLimitRemainingPercent = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "githubsts_github_rate_limit_remaining_percent",
 		Help: "Percentage of rate limit remaining.",
-	}, []string{"app", "instance", "resource"})
+	}, []string{"github_app", "github_app_instance", "resource"})
 
 	// GitHubRateLimitExceededTotal and GitHubSecondaryRateLimitTotal below
 	// still carry the pre-existing "caller" label, which has its own,
 	// unrelated unbounded-cardinality problem (it's the per-request trace
 	// ID on the exchange path) — see .agent-tasks/multi-instance-app-rate-limit-rotation.md
-	// §11. Out of scope here: this change only adds "instance" mechanically.
+	// §11. Out of scope here: that change only added the instance label
+	// mechanically.
 	GitHubRateLimitExceededTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "githubsts_github_rate_limit_exceeded_total",
 		Help: "Total primary rate limit exceeded events.",
-	}, []string{"app", "instance", "resource", "caller"})
+	}, []string{"github_app", "github_app_instance", "resource", "caller"})
 
 	GitHubSecondaryRateLimitTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "githubsts_github_secondary_rate_limit_total",
 		Help: "Total secondary (abuse) rate limit events from GitHub.",
-	}, []string{"app", "instance", "caller"})
+	}, []string{"github_app", "github_app_instance", "caller"})
 
 	GitHubSecondaryRateLimitRetryAfter = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "githubsts_github_secondary_rate_limit_retry_after_seconds",
 		Help: "Current retry-after value in seconds when secondary rate limit is active.",
-	}, []string{"app", "instance"})
+	}, []string{"github_app", "github_app_instance"})
 )
 
 // GitHub reachability metrics.
@@ -174,18 +186,18 @@ var (
 	GitHubReachable = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "githubsts_github_reachable",
 		Help: "Whether GitHub API is reachable (1 = reachable, 0 = unreachable).",
-	}, []string{"app", "instance"})
+	}, []string{"github_app", "github_app_instance"})
 
 	GitHubReachabilityCheckDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "githubsts_github_reachability_check_duration_seconds",
 		Help:    "Latency of reachability probe to GitHub API.",
 		Buckets: []float64{0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0},
-	}, []string{"app", "instance"})
+	}, []string{"github_app", "github_app_instance"})
 
 	GitHubReachabilityFailuresTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "githubsts_github_reachability_failures_total",
 		Help: "Total GitHub reachability probe failures.",
-	}, []string{"app", "instance", "reason"})
+	}, []string{"github_app", "github_app_instance", "reason"})
 )
 
 // App pool metrics — visibility into instance rotation for a pooled app
@@ -195,14 +207,14 @@ var (
 	AppPoolInstances = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "githubsts_app_pool_instances",
 		Help: "Configured pool size for a logical app.",
-	}, []string{"app"})
+	}, []string{"github_app"})
 
 	// AppPoolSelectionTotal's outcome label is one of: selected,
 	// skipped_unreachable, skipped_rate_limited, failover.
 	AppPoolSelectionTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "githubsts_app_pool_selection_total",
 		Help: "Pool instance selection outcomes.",
-	}, []string{"app", "instance", "outcome"})
+	}, []string{"github_app", "github_app_instance", "outcome"})
 
 	// AppPoolExhaustedTotal is the alert-worthy signal: every instance in
 	// the pool failed for one request. Alert on this, not on any single
@@ -210,7 +222,7 @@ var (
 	AppPoolExhaustedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "githubsts_app_pool_exhausted_total",
 		Help: "Total requests where every pool instance failed.",
-	}, []string{"app"})
+	}, []string{"github_app"})
 )
 
 // OPA bundle metrics. The bundle is the org-rego guardrail layer pulled
@@ -221,7 +233,7 @@ var (
 	OrgDecisionTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "githubsts_org_decision_total",
 		Help: "Org-rego bundle outcomes. result is allow|deny|error|not_evaluated.",
-	}, []string{"app", "bundle", "result"})
+	}, []string{"github_app", "bundle", "result"})
 
 	BundlePullTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "githubsts_bundle_pull_total",
@@ -273,7 +285,7 @@ var (
 	BundlePolicyDecisionsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "githubsts_bundle_policy_decisions_total",
 		Help: "Policy decisions by app, bundle, digest, and result.",
-	}, []string{"app", "bundle", "digest", "result"})
+	}, []string{"github_app", "bundle", "digest", "result"})
 
 	BundlePolicyRuleDecisionsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "githubsts_bundle_policy_rule_decisions_total",
@@ -298,7 +310,7 @@ var (
 	BundlePolicyExceptionHitsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "githubsts_bundle_policy_exception_hits_total",
 		Help: "Exchange attempts where a policy decision reported an exception hit.",
-	}, []string{"bundle", "digest", "exception_id", "rule_id", "owner", "app"})
+	}, []string{"bundle", "digest", "exception_id", "rule_id", "owner", "github_app"})
 
 	BundleEnforcementRequired = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "githubsts_bundle_enforcement_required",
