@@ -522,13 +522,27 @@ func extractOrg(scope string) string {
 	return scope
 }
 
+// formatPermissions renders a permission set as a compact
+// "name:level,name:level" string, sorted by permission name.
+//
+// The sort is not cosmetic. This string is used as a Prometheus label value
+// on githubsts_github_tokens_issued_total, and Go randomizes map iteration
+// order: an unsorted join produces a different string on different calls for
+// the *same* permission set, splitting one logical time series into as many
+// as n! of them and making log lines for identical grants fail to group.
 func formatPermissions(perms map[string]string) string {
 	if len(perms) == 0 {
 		return "all"
 	}
-	parts := make([]string, 0, len(perms))
-	for k, v := range perms {
-		parts = append(parts, k+":"+v)
+	names := make([]string, 0, len(perms))
+	for name := range perms {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	parts := make([]string, 0, len(names))
+	for _, name := range names {
+		parts = append(parts, name+":"+perms[name])
 	}
 	return strings.Join(parts, ",")
 }

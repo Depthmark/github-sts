@@ -62,8 +62,8 @@ Lorsque le paramètre est vide, le point de terminaison reste sans authentificat
 
 | Métrique | Type | Description |
 |---|---|---|
-| `githubsts_token_exchanges_total` | Counter | Tentatives d'échange par app, instance, scope, identity, issuer, result |
-| `githubsts_token_exchange_duration_seconds` | Histogram | Latence d'échange par app, instance, scope, identity, issuer |
+| `githubsts_token_exchanges_total` | Counter | Tentatives d'échange par github_app, github_app_instance, scope, identity, issuer, result |
+| `githubsts_token_exchange_duration_seconds` | Histogram | Latence d'échange par github_app, github_app_instance, scope, identity, issuer |
 | `githubsts_oidc_validation_errors_total` | Counter | Échecs OIDC par issuer, reason |
 
 ## Prévention de rejeu JTI
@@ -77,24 +77,24 @@ Lorsque le paramètre est vide, le point de terminaison reste sans authentificat
 
 | Métrique | Type | Description |
 |---|---|---|
-| `githubsts_policy_loads_total` | Counter | Chargements de politique par app, backend, result |
-| `githubsts_policy_cache_hits_total` | Counter | Succès du cache par app |
-| `githubsts_policy_cache_misses_total` | Counter | Échecs du cache par app |
+| `githubsts_policy_loads_total` | Counter | Chargements de politique par github_app, backend, result |
+| `githubsts_policy_cache_hits_total` | Counter | Succès du cache par github_app |
+| `githubsts_policy_cache_misses_total` | Counter | Échecs du cache par github_app |
 
 ## Métriques de l'API GitHub
 
 | Métrique | Type | Description |
 |---|---|---|
-| `githubsts_github_api_calls_total` | Counter | Appels à l'API GitHub par app, instance, endpoint, result |
-| `githubsts_github_tokens_issued_total` | Counter | Jetons émis par app, instance, scope, permissions |
-| `githubsts_github_rate_limit_remaining` | Gauge | Limite de débit restante par app, instance, resource |
-| `githubsts_github_rate_limit_limit` | Gauge | Requêtes maximales autorisées dans la fenêtre courante, par app, instance, resource |
-| `githubsts_github_rate_limit_used` | Gauge | Requêtes utilisées dans la fenêtre courante, par app, instance, resource |
-| `githubsts_github_rate_limit_reset_timestamp` | Gauge | Horodatage Unix du redémarrage de la fenêtre, par app, instance, resource |
-| `githubsts_github_rate_limit_remaining_percent` | Gauge | Pourcentage de la limite de débit restant, par app, instance, resource |
-| `githubsts_github_rate_limit_exceeded_total` | Counter | Événements de dépassement de la limite de débit primaire, par app, instance, resource, caller |
-| `githubsts_github_secondary_rate_limit_total` | Counter | Événements de limite de débit secondaire (abus), par app, instance, caller |
-| `githubsts_github_secondary_rate_limit_retry_after_seconds` | Gauge | Valeur retry-after actuelle en secondes, par app, instance |
+| `githubsts_github_api_calls_total` | Counter | Appels à l'API GitHub par github_app, github_app_instance, api_endpoint, result |
+| `githubsts_github_tokens_issued_total` | Counter | Jetons émis par github_app, github_app_instance, scope, permissions |
+| `githubsts_github_rate_limit_remaining` | Gauge | Limite de débit restante par github_app, github_app_instance, resource |
+| `githubsts_github_rate_limit_limit` | Gauge | Requêtes maximales autorisées dans la fenêtre courante, par github_app, github_app_instance, resource |
+| `githubsts_github_rate_limit_used` | Gauge | Requêtes utilisées dans la fenêtre courante, par github_app, github_app_instance, resource |
+| `githubsts_github_rate_limit_reset_timestamp` | Gauge | Horodatage Unix du redémarrage de la fenêtre, par github_app, github_app_instance, resource |
+| `githubsts_github_rate_limit_remaining_percent` | Gauge | Pourcentage de la limite de débit restant, par github_app, github_app_instance, resource |
+| `githubsts_github_rate_limit_exceeded_total` | Counter | Événements de dépassement de la limite de débit primaire, par github_app, github_app_instance, resource, caller |
+| `githubsts_github_secondary_rate_limit_total` | Counter | Événements de limite de débit secondaire (abus), par github_app, github_app_instance, caller |
+| `githubsts_github_secondary_rate_limit_retry_after_seconds` | Gauge | Valeur retry-after actuelle en secondes, par github_app, github_app_instance |
 
 Chaque instance du pool (étiquette `instance`) a sa propre série de limite de débit : une App avec 3 instances rapporte 3 séries `githubsts_github_rate_limit_remaining` indépendantes, pas une seule agrégée. Une App non poolée (une seule instance) porte quand même l'étiquette, avec `instance` égale à son unique instance normalisée.
 
@@ -102,9 +102,9 @@ Chaque instance du pool (étiquette `instance`) a sa propre série de limite de 
 
 | Métrique | Type | Description |
 |---|---|---|
-| `githubsts_github_reachable` | Gauge | Accessibilité de l'API GitHub (1/0) par app, instance |
-| `githubsts_github_reachability_check_duration_seconds` | Histogram | Latence des sondes d'accessibilité, par app, instance |
-| `githubsts_github_reachability_failures_total` | Counter | Échecs des sondes d'accessibilité, par app, instance, reason |
+| `githubsts_github_reachable` | Gauge | Accessibilité de l'API GitHub (1/0) par github_app, github_app_instance |
+| `githubsts_github_reachability_check_duration_seconds` | Histogram | Latence des sondes d'accessibilité, par github_app, github_app_instance |
+| `githubsts_github_reachability_failures_total` | Counter | Échecs des sondes d'accessibilité, par github_app, github_app_instance, reason |
 
 ## Métriques de pool d'Apps
 
@@ -112,9 +112,9 @@ Visibilité sur la sélection d'instance pour une App poolée (`apps.<name>.inst
 
 | Métrique | Type | Description |
 |---|---|---|
-| `githubsts_app_pool_instances` | Gauge | Taille du pool configurée, par app |
-| `githubsts_app_pool_selection_total` | Counter | Résultats de sélection, par app, instance, outcome |
-| `githubsts_app_pool_exhausted_total` | Counter | Requêtes où toutes les instances du pool ont échoué, par app |
+| `githubsts_app_pool_instances` | Gauge | Taille du pool configurée, par github_app |
+| `githubsts_app_pool_selection_total` | Counter | Résultats de sélection, par github_app, github_app_instance, outcome |
+| `githubsts_app_pool_exhausted_total` | Counter | Requêtes où toutes les instances du pool ont échoué, par github_app |
 
 L'étiquette `outcome` de `githubsts_app_pool_selection_total` vaut aujourd'hui `selected`, `skipped_unreachable`, ou `failover`. (`skipped_rate_limited` est réservée à la stratégie `rate_limit_aware` prévue, pas encore implémentée ; voir [Configuration]({{< relref "/reference/configuration#pools-dapps-rotation-multi-instances-pour-la-limite-de-débit" >}}).)
 
