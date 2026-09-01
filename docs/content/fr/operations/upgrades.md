@@ -138,6 +138,49 @@ githubsts_github_rate_limit_remaining_percent{github_app="checkout", github_app_
 4. Déployez.
 5. Vérifiez que les panneaux affichent le nombre de séries attendu et que les alertes se déclenchent toujours dans les conditions attendues.
 
+## Migration : `permissions` dans la réponse d'échange
+
+La mise à niveau vers une version prenant en charge la [restriction des permissions]({{< relref "/reference/api#requesting-less-privilege" >}}) change ce que décrit le champ `permissions` d'une réponse `/sts/exchange` réussie.
+
+**Avant :** l'ensemble de permissions de la politique de confiance, renvoyé tel quel depuis le fichier de politique.
+
+**Après :** l'attribution que GitHub a réellement associée au jeton, relue depuis la réponse de création de jeton de GitHub.
+
+Pour un appelant qui ne restreint rien, les deux coïncident sur chaque permission nommée par la politique, à une addition près : GitHub associe `metadata: read` à tout jeton d'installation, la réponse l'inclut donc désormais alors que ce n'était pas le cas auparavant. Les appelants qui vérifient une égalité stricte entre ce champ et leur politique de confiance verront une différence :
+
+```jsonc
+// politique : {"contents": "write"}
+// avant
+{ "permissions": {"contents": "write"} }
+// après
+{ "permissions": {"contents": "write", "metadata": "read"} }
+```
+
+**Migration pas à pas :**
+
+1. Recherchez dans les clients le code qui compare le champ `permissions` de la réponse à un ensemble attendu. Les vérifications sur des clés individuelles ne sont pas affectées ; celles portant sur l'ensemble de la table doivent tenir compte de `metadata`.
+2. Si un client utilisait ce champ pour découvrir ce qu'une identité a le *droit* de demander, faites-le pointer vers la politique de confiance. La réponse décrit un jeton émis, pas le plafond de la politique.
+3. Déployez.
+4. Vérifiez que `githubsts_github_token_permission_divergence_total` reste à zéro. Une valeur non nulle pour `direction="above_requested"` signifie que GitHub a émis un jeton plus large que demandé : investiguez avant de vous reposer sur la restriction.
+
+## Migration : étiquette `narrowed` sur `githubsts_github_tokens_issued_total`
+
+La même mise à niveau ajoute une étiquette `narrowed` (`"true"` / `"false"`) à `githubsts_github_tokens_issued_total`. Le changement est additif : une requête qui n'impose pas un ensemble d'étiquettes exact renvoie le même résultat qu'auparavant, et l'étiquette `permissions` existante continue de rapporter le plafond de la politique de confiance plutôt que l'ensemble effectif éventuellement restreint : sa cardinalité est donc inchangée.
+
+Seules les requêtes qui fixent un ensemble d'étiquettes exact, ou qui regroupent selon toutes les étiquettes, doivent être mises à jour. Pour conserver le sens précédent quelle que soit la restriction :
+
+```promql
+sum(rate(githubsts_github_tokens_issued_total[5m])) by (github_app, scope)
+```
+
+La même version rend également la valeur de l'étiquette `permissions` **déterministe**. Elle était auparavant construite en parcourant une map Go, dont l'ordre est aléatoire : un même ensemble de permissions pouvait donc s'afficher `contents:write,issues:write` lors d'un appel et `issues:write,contents:write` au suivant, fractionnant silencieusement une seule série logique en jusqu'à `n!` variantes. La valeur est désormais triée par nom de permission.
+
+Attendez-vous à un décalage ponctuel des séries lors de la mise à niveau : les anciennes variantes non triées cessent de recevoir des échantillons et une série triée unique prend le relais. Les compteurs étant cumulatifs par série, un `rate()` ou un `increase()` couvrant la mise à niveau peut accuser un creux. Agrégez l'étiquette si vous avez besoin de continuité de part et d'autre :
+
+```promql
+sum(rate(githubsts_github_tokens_issued_total[5m])) by (github_app, scope)
+```
+
 ## Migration : renommage des étiquettes de métriques pour éviter les collisions Kubernetes
 
 **Cette version renomme trois étiquettes sur toutes les métriques `githubsts_`. Chaque requête de tableau de bord et chaque règle d'alerte qui les sélectionne doit être mise à jour.**

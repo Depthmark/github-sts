@@ -22,7 +22,9 @@ For `app=my-app` and `identity=ci`, the path resolves to `.github/sts/my-app/ci.
 | `audience` | `string` | **Required.** Expected OIDC `aud` claim. A policy without it would accept tokens minted for any other relying party sharing the issuer (cross-RP token reuse) and is rejected at parse time. |
 | `github.sources` | `list[{owner_id, repository_id}]` | **Required for GitHub.com.** Exact immutable source repositories allowed to use the policy. |
 | `github.target` | `{owner_id, repository_id}` | **Required for GitHub.com.** Exact immutable target repository for the minted token. |
-| `permissions` | `map[string]string` | GitHub App permissions (`read` / `write` / `admin`) |
+| `permissions` | `map[string]string` | GitHub App permissions (`read` / `write` / `admin`). A **ceiling**, not a fixed grant: a caller may request a subset, or a lower level, and receive a token limited to that. |
+
+> **`permissions` is a ceiling.** It is the most a matching workload may ever obtain, not what every token carries. A caller that omits the field gets exactly this set; one that asks for less gets less. Requesting a permission the policy does not name, or a level above what it names, is rejected before any token is minted. Write policies for the widest legitimate use of an identity and let each caller narrow to what its job needs -- see [Requesting less privilege]({{< relref "/reference/api#requesting-less-privilege" >}}).
 
 > **`audience` is mandatory.** Every policy must declare the OIDC audience it trusts. The same value must be passed to `core.getIDToken(<audience>)` in the workflow that requests the token. A missing `audience:` is rejected at policy parse time; it would otherwise accept tokens minted for any other relying party that shares the issuer (cross-RP token reuse).
 

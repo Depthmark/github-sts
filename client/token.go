@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -206,7 +207,19 @@ type STSTokenProvider struct {
 	Scope       string
 	Audience    string
 	SATokenPath string
-	httpClient  *http.Client
+
+	// Permissions optionally narrows the token below what the trust policy
+	// allows, following the principle of least privilege: a job that only
+	// reads should not carry a token that can write. Leave nil to receive
+	// everything the policy grants, which is the default and what this
+	// provider did before narrowing existed.
+	//
+	// Every entry must be present in the trust policy at the same level or
+	// higher; asking for anything more is rejected with 400 rather than
+	// silently downgraded.
+	Permissions map[string]string
+
+	httpClient *http.Client
 }
 
 // Token reads the projected SA token and exchanges it via github-sts.
@@ -231,6 +244,11 @@ func (p *STSTokenProvider) Token(ctx context.Context) (string, error) {
 	params.Set("app", app)
 	if p.Audience != "" {
 		params.Set("audience", p.Audience)
+	}
+	// Sorted so the URL is stable across calls: unstable query strings
+	// defeat caching and make request logs harder to diff.
+	for _, name := range sortedKeys(p.Permissions) {
+		params.Add("permission", name+":"+p.Permissions[name])
 	}
 
 	reqURL := fmt.Sprintf("%s/sts/exchange?%s", p.STSURL, params.Encode())
@@ -262,4 +280,14 @@ func (p *STSTokenProvider) Token(ctx context.Context) (string, error) {
 // SetHTTPClient sets a custom HTTP client on the STSTokenProvider.
 func (p *STSTokenProvider) SetHTTPClient(c *http.Client) {
 	p.httpClient = c
+}
+
+// sortedKeys returns a map's keys in lexical order.
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }

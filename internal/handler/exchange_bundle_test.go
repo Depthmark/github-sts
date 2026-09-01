@@ -603,3 +603,88 @@ func examplePolicyManager(t *testing.T) bundle.Manager {
 	}
 	return bundle.NewMultiManager([]bundle.LifecycleManager{live}, bundle.EnforcementRequired)
 }
+
+// TestExchange_BundleInput_NarrowedRequestVsPolicyCeiling pins the contract
+// the enterprise Rego depends on. input.requested.permissions must carry the
+// set actually being minted, while input.yaml_policy.permissions keeps the
+// full trust-policy ceiling. Before narrowing existed the two were always
+// equal, so nothing would have caught them being wired to the same value;
+// baselines that gate on requested being *within* a ceiling (the
+// permissions_within rules in policies/example_enterprise_baseline.rego)
+// silently become no-ops if requested is fed the ceiling instead.
+func TestExchange_BundleInput_NarrowedRequestVsPolicyCeiling(t *testing.T) {
+	mgr := &spyManager{
+		enabled: true,
+		digest:  "sha256:test-digest",
+		decision: bundle.Decision{
+			Applicable: true, Evaluated: true, EvaluatedDigest: "sha256:test-digest", Allow: true,
+		},
+	}
+	h, _, provider := newBundleTestHandler(t, mgr)
+
+	// Widen the policy so there is something to narrow away from.
+	loader, ok := h.policyLoader.(*mockPolicyLoader)
+	if !ok {
+		t.Fatalf("policy loader = %T, want *mockPolicyLoader", h.policyLoader)
+	}
+	loader.pol.Permissions = map[string]string{"contents": "write", "issues": "write"}
+
+	req := httptest.NewRequest(http.MethodGet,
+		"/sts/exchange?scope=org/repo&identity=ci&app=test-app&permission=contents:read", nil)
+	req.Header.Set("Authorization", "Bearer fake-but-validator-accepts")
+
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	if mgr.calls.Load() != 1 {
+		t.Fatalf("bundle eval calls = %d, want 1", mgr.calls.Load())
+	}
+
+	got := mgr.last
+	if got.Requested == nil {
+		t.Fatal("bundle input carried no requested block")
+	}
+	if len(got.Requested.Permissions) != 1 || got.Requested.Permissions["contents"] != "read" {
+		t.Fatalf("input.requested.permissions = %v, want the narrowed {contents: read}", got.Requested.Permissions)
+	}
+	if got.YAMLPolicy.Permissions["contents"] != "write" || got.YAMLPolicy.Permissions["issues"] != "write" {
+		t.Fatalf("input.yaml_policy.permissions = %v, want the untouched policy ceiling", got.YAMLPolicy.Permissions)
+	}
+	if provider.lastPerms["contents"] != "read" || len(provider.lastPerms) != 1 {
+		t.Fatalf("minted permissions = %v, want the same narrowed set the bundle saw", provider.lastPerms)
+	}
+}
+
+// TestExchange_NarrowingRejectedBeforeBundleEval: a malformed or
+// over-reaching permission request is the caller's error, so it is rejected
+// without spending a bundle evaluation or a GitHub call on it.
+func TestExchange_NarrowingRejectedBeforeBundleEval(t *testing.T) {
+	mgr := &spyManager{
+		enabled: true,
+		digest:  "sha256:test-digest",
+		decision: bundle.Decision{
+			Applicable: true, Evaluated: true, EvaluatedDigest: "sha256:test-digest", Allow: true,
+		},
+	}
+	h, _, provider := newBundleTestHandler(t, mgr)
+
+	req := httptest.NewRequest(http.MethodGet,
+		"/sts/exchange?scope=org/repo&identity=ci&app=test-app&permission=packages:write", nil)
+	req.Header.Set("Authorization", "Bearer fake-but-validator-accepts")
+
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", w.Code, w.Body.String())
+	}
+	if mgr.calls.Load() != 0 {
+		t.Fatalf("bundle eval calls = %d, want 0", mgr.calls.Load())
+	}
+	if provider.mintCalls != 0 {
+		t.Fatalf("mint calls = %d, want 0", provider.mintCalls)
+	}
+}

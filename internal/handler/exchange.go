@@ -34,6 +34,13 @@ type ExchangeRequest struct {
 	Scope    string `json:"scope"`
 	Identity string `json:"identity"`
 	AppName  string `json:"app"`
+
+	// Permissions optionally narrows the token below what the trust policy
+	// allows. nil means "everything the policy grants", which is what every
+	// caller got before narrowing existed. A non-nil value must be a subset
+	// of the policy's permissions at levels at or below it; anything else is
+	// an escalation attempt and is rejected. See policy.NarrowPermissions.
+	Permissions map[string]string `json:"permissions,omitempty"`
 }
 
 // ExchangeResponse is returned on successful token exchange.
@@ -43,8 +50,15 @@ type ExchangeRequest struct {
 // of hardcoding GitHub's current one-hour default. It is measured from the
 // expiry GitHub returned, at the moment the broker writes the response, and
 // rounded down so it never over-promises. The field is omitted — never sent
-// as a guess — when GitHub gave no usable expiry (see github.IssuedToken);
+// as a guess — when GitHub gave no usable expiry (see github.MintedToken);
 // callers must handle its absence by falling back to their own heuristic.
+//
+// Permissions reports the grant GitHub actually attached to the token, read
+// back from the create-token response, not the trust policy's ceiling and
+// not the caller's request. It can legitimately differ from both: GitHub
+// adds metadata:read implicitly, and a narrowed request reports the narrowed
+// set. Callers wanting to know what they are allowed to ask for should read
+// the trust policy, not this field.
 type ExchangeResponse struct {
 	Token       string            `json:"token"`
 	ExpiresIn   int64             `json:"expires_in,omitempty"`
@@ -214,6 +228,18 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// The GET form already screened these in parsePermissionParams; a POST
+	// body reaches the map directly, so guard it here too.
+	for name, level := range req.Permissions {
+		if err := validateField("permission name", name, 64); err != nil {
+			writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error(), Code: CodeBadRequest, TraceID: traceID})
+			return
+		}
+		if err := validateField("permission level", level, 16); err != nil {
+			writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error(), Code: CodeBadRequest, TraceID: traceID})
+			return
+		}
+	}
 	targetScope, err := github.ParseRepositoryScope(req.Scope)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error(), Code: CodeBadRequest, TraceID: traceID})
@@ -232,6 +258,10 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		UserAgent:         audit.TruncateUserAgent(r.UserAgent(), 100),
 		RemoteIP:          remoteIP(r, h.trustForwardedHeaders),
 		BundleEnforcement: bundleEnforcement,
+		// Recorded here, not after narrowing succeeds: a request that is
+		// rejected for asking too much is exactly the one an investigator
+		// most wants to see the ask for.
+		RequestedPermissions: req.Permissions,
 	}
 
 	// Step 1: Extract and validate OIDC token.
@@ -512,7 +542,9 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Recorded as soon as the policy is known to be well-formed, so every
-	// denial from here on names the exact policy file that governed it.
+	// denial from here on shows the ceiling the request was judged against,
+	// and names the exact policy file that set it.
+	event.PolicyPermissions = pol.Permissions
 	provenance := pol.Provenance()
 	event.PolicyRepository = provenance.Repository
 	event.PolicyPath = provenance.Path
@@ -586,6 +618,34 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Narrow the policy's permissions to what the caller actually asked for.
+	// This runs after every authorization check, not before: narrowing is a
+	// reduction applied to an already-granted set, never part of deciding
+	// whether the exchange is allowed. A rejection here is the caller's
+	// request being malformed or over-reaching, so it is a 400, not a 403 —
+	// the identity was fine, the ask was not.
+	effectivePermissions, err := policy.NarrowPermissions(pol.Permissions, req.Permissions)
+	if err != nil {
+		event.Result = audit.ResultPolicyDenied
+		event.ErrorReason = fmt.Sprintf("permission narrowing rejected: %v", err)
+		event.DurationMS = msSince(start)
+		h.emitResult(event, req, start)
+		if h.slogger != nil {
+			h.slogger.Warn("permission narrowing rejected",
+				"trace_id", traceID,
+				"scope", req.Scope,
+				"identity", req.Identity,
+				"requested_permissions", req.Permissions,
+				"reason", err.Error(),
+			)
+		}
+		// Deliberately generic: the detail names permissions the policy does
+		// or does not grant, which would let a caller map out a policy it
+		// cannot read. Operators get the full reason from the audit log via
+		// trace_id, the same contract as every other denial here.
+		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "requested permissions are not permitted by the trust policy", Code: CodeBadRequest, TraceID: traceID})
+		return
+	}
 	// Repository scopes always mint for the one resolved immutable target.
 	repositories := []string{targetIdentity.Repository}
 	repositoryIDs := []string{targetIdentity.RepositoryID}
@@ -609,7 +669,12 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			SourceIdentity: bundleSourceIdentity(sourceIdentity, h.requireImmutableSubjectClaims),
 			TargetIdentity: bundleTargetIdentity(targetIdentity),
 			Requested: &bundle.InputRequested{
-				Permissions:      pol.Permissions,
+				// The narrowed set, not the policy ceiling. Enterprise Rego
+				// gates on input.requested.permissions being *within* its
+				// ceilings, so narrowing can only make a decision more
+				// permissive; input.yaml_policy.permissions still carries the
+				// full ceiling for rules that need it.
+				Permissions:      effectivePermissions,
 				Repositories:     repositories,
 				RepositoryIDs:    repositoryIDs,
 				OrganizationWide: false,
@@ -705,7 +770,10 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	issued, instance, err := provider.GetInstallationTokenForTarget(r.Context(), targetIdentity, pol.Permissions, traceID)
+	minted, instance, err := provider.GetInstallationTokenForTarget(r.Context(), targetIdentity, github.PermissionRequest{
+		Ceiling:   pol.Permissions,
+		Effective: effectivePermissions,
+	}, traceID)
 	if err != nil {
 		event.Result = audit.ResultGitHubError
 		event.ErrorReason = fmt.Sprintf("github token issuance failed: %v", err)
@@ -728,17 +796,19 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Success.
 	event.Instance = instance
+	event.GrantedPermissions = minted.Permissions
+	event.InstallationPermissions = minted.InstallationPermissions
 	event.Result = audit.ResultSuccess
 	event.DurationMS = msSince(start)
 	h.emitResult(event, req, start)
 
 	writeJSON(w, http.StatusOK, ExchangeResponse{
-		Token:       issued.Token,
-		ExpiresIn:   expiresIn(issued.ExpiresAt, time.Now()),
+		Token:       minted.Token,
+		ExpiresIn:   expiresIn(minted.ExpiresAt, time.Now()),
 		Scope:       req.Scope,
 		App:         appName,
 		Identity:    req.Identity,
-		Permissions: pol.Permissions,
+		Permissions: minted.Permissions,
 	})
 }
 
@@ -796,11 +866,51 @@ func parseExchangeRequest(r *http.Request) (ExchangeRequest, error) {
 	}
 
 	// GET — read from query string.
+	query := r.URL.Query()
+	permissions, err := parsePermissionParams(query["permission"])
+	if err != nil {
+		return ExchangeRequest{}, err
+	}
 	return ExchangeRequest{
-		Scope:    r.URL.Query().Get("scope"),
-		Identity: r.URL.Query().Get("identity"),
-		AppName:  r.URL.Query().Get("app"),
+		Scope:       query.Get("scope"),
+		Identity:    query.Get("identity"),
+		AppName:     query.Get("app"),
+		Permissions: permissions,
 	}, nil
+}
+
+// parsePermissionParams decodes repeated `permission=name:level` query
+// parameters into the same map shape the POST body carries. It exists so the
+// GET form stays usable by clients that only build URLs (client.STSTokenProvider
+// among them) rather than forcing every narrowing caller onto POST.
+//
+// Returns nil for no parameters, which is the "no narrowing" signal. Only
+// shape is checked here; whether the request is within the trust policy's
+// ceiling is policy.NarrowPermissions' job.
+func parsePermissionParams(values []string) (map[string]string, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]string, len(values))
+	for _, raw := range values {
+		name, level, ok := strings.Cut(raw, ":")
+		if !ok {
+			return nil, fmt.Errorf("permission must be formatted as name:level")
+		}
+		// Run both halves through the same guard as every other
+		// user-supplied field: these reach Prometheus labels downstream.
+		if err := validateField("permission name", name, 64); err != nil {
+			return nil, err
+		}
+		if err := validateField("permission level", level, 16); err != nil {
+			return nil, err
+		}
+		if existing, dup := out[name]; dup && existing != level {
+			return nil, fmt.Errorf("permission %q specified twice with different levels", name)
+		}
+		out[name] = level
+	}
+	return out, nil
 }
 
 // extractBearer extracts the bearer token from the Authorization header.
