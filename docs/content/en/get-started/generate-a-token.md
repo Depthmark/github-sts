@@ -77,6 +77,7 @@ curl -H "Authorization: Bearer $OIDC_TOKEN" \
 ```json
 {
   "token": "ghs_xxxxxxxxxxxxxxxxxxxx",
+  "expires_in": 3600,
   "scope": "myorg/myrepo",
   "app": "default",
   "identity": "ci",
@@ -88,7 +89,10 @@ curl -H "Authorization: Bearer $OIDC_TOKEN" \
 ```
 
 The `ghs_…` token is a standard GitHub App installation token, scoped to the resolved target
-repository ID and the permissions the policy declared. For a drop-in wrapper around this exchange in Actions, see
+repository ID and the permissions the policy declared. `expires_in` is how many seconds it has
+left, so a long-running job can refresh on time instead of assuming a lifetime. See
+[the API reference]({{< relref "/reference/api" >}}) for when the field is absent.
+For a drop-in wrapper around this exchange in Actions, see
 [the GitHub Action quickstart]({{< relref "/integrations/github-action/quickstart" >}}). The manual `curl` form above works
 from any CI system that can produce an OIDC token.
 

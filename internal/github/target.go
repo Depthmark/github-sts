@@ -50,14 +50,15 @@ type TargetIdentity struct {
 // ExchangeApp is the subset of a GitHub App provider used by token exchange.
 // The policy loader uses its separate TokenProvider interface.
 //
-// GetInstallationTokenForTarget returns which physical pool instance minted
-// the token (for audit/metrics attribution — see design doc §5.4.1), the
-// same way TokenProvider.GetInstallationToken does. *AppTokenProvider (a
-// pool of one) returns its own fixed instance; *AppPool applies the same
+// GetInstallationTokenForTarget returns the minted token with the expiry
+// GitHub reported for it (see IssuedToken), plus which physical pool instance
+// minted it (for audit/metrics attribution — see design doc §5.4.1), the same
+// way TokenProvider.GetInstallationToken does. *AppTokenProvider (a pool of
+// one) returns its own fixed instance; *AppPool applies the same
 // round-robin/failover selection used for GetInstallationToken.
 type ExchangeApp interface {
 	ResolveTarget(context.Context, RepositoryScope) (TargetIdentity, error)
-	GetInstallationTokenForTarget(ctx context.Context, target TargetIdentity, permissions map[string]string, caller string) (token, instance string, err error)
+	GetInstallationTokenForTarget(ctx context.Context, target TargetIdentity, permissions map[string]string, caller string) (token IssuedToken, instance string, err error)
 }
 
 type cachedTarget struct {
@@ -193,14 +194,14 @@ func (p *AppTokenProvider) fetchTarget(ctx context.Context, scope RepositoryScop
 // repository ID that was authorized by both the trust policy and Rego.
 // Returns this credential's own instance label (see ExchangeApp) — a pool
 // of one, same as GetInstallationToken.
-func (p *AppTokenProvider) GetInstallationTokenForTarget(ctx context.Context, target TargetIdentity, permissions map[string]string, caller string) (string, string, error) {
+func (p *AppTokenProvider) GetInstallationTokenForTarget(ctx context.Context, target TargetIdentity, permissions map[string]string, caller string) (IssuedToken, string, error) {
 	repositoryID, err := strconv.ParseInt(target.RepositoryID, 10, 64)
 	if err != nil || repositoryID <= 0 || target.Scope == "" {
-		return "", "", fmt.Errorf("invalid target repository identity")
+		return IssuedToken{}, "", fmt.Errorf("invalid target repository identity")
 	}
-	token, err := p.getInstallationToken(ctx, target.Scope, permissions, nil, []int64{repositoryID}, caller)
+	issued, err := p.getInstallationToken(ctx, target.Scope, permissions, nil, []int64{repositoryID}, caller)
 	if err != nil {
-		return "", "", err
+		return IssuedToken{}, "", err
 	}
-	return token, p.instance, nil
+	return issued, p.instance, nil
 }

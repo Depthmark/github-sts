@@ -257,6 +257,20 @@ func (p *AppTokenProvider) GetGrantedPermissions(scope string) map[string]string
 	return out
 }
 
+// IssuedToken is a freshly minted GitHub installation token together with
+// the absolute expiry GitHub reported for it. ExpiresAt is what lets the
+// broker tell callers how long the token is good for (RFC 8693 expires_in)
+// instead of making them assume GitHub's current one-hour default.
+//
+// ExpiresAt is the zero time when GitHub omitted expires_at or sent a value
+// we could not parse. The token is still usable, so that is not an error —
+// callers must treat a zero ExpiresAt as "lifetime unknown" and fall back to
+// their own refresh heuristic rather than reporting an expiry they invented.
+type IssuedToken struct {
+	Token     string
+	ExpiresAt time.Time
+}
+
 // GetInstallationToken creates a permission-scoped GitHub installation token.
 // GetInstallationToken creates a permission-scoped GitHub installation
 // token. Failures are wrapped in *TokenMintError (see the type doc):
@@ -273,24 +287,28 @@ func (p *AppTokenProvider) GetInstallationToken(ctx context.Context, scope strin
 		parts := strings.SplitN(scope, "/", 2)
 		repositories = []string{parts[1]}
 	}
-	return p.getInstallationToken(ctx, scope, permissions, repositories, nil, caller)
+	issued, err := p.getInstallationToken(ctx, scope, permissions, repositories, nil, caller)
+	if err != nil {
+		return "", err
+	}
+	return issued.Token, nil
 }
 
-func (p *AppTokenProvider) getInstallationToken(ctx context.Context, scope string, permissions map[string]string, repositories []string, repositoryIDs []int64, caller string) (string, error) {
+func (p *AppTokenProvider) getInstallationToken(ctx context.Context, scope string, permissions map[string]string, repositories []string, repositoryIDs []int64, caller string) (IssuedToken, error) {
 	if repositories != nil && repositoryIDs != nil {
-		return "", fmt.Errorf("repository names and IDs are mutually exclusive")
+		return IssuedToken{}, fmt.Errorf("repository names and IDs are mutually exclusive")
 	}
 	if repositoryIDs != nil && len(repositoryIDs) == 0 {
-		return "", fmt.Errorf("refusing to create an unrestricted installation token from an empty repository ID list")
+		return IssuedToken{}, fmt.Errorf("refusing to create an unrestricted installation token from an empty repository ID list")
 	}
 	installationID, err := p.GetInstallationID(ctx, scope)
 	if err != nil {
-		return "", err
+		return IssuedToken{}, err
 	}
 
 	appJWT, err := p.GenerateAppJWT()
 	if err != nil {
-		return "", &TokenMintError{Retryable: true, Err: fmt.Errorf("generating app JWT: %w", err)}
+		return IssuedToken{}, &TokenMintError{Retryable: true, Err: fmt.Errorf("generating app JWT: %w", err)}
 	}
 
 	// Build request body with permissions and optional repository restriction.
@@ -307,13 +325,13 @@ func (p *AppTokenProvider) getInstallationToken(ctx context.Context, scope strin
 
 	var reqBody bytes.Buffer
 	if err := json.NewEncoder(&reqBody).Encode(body); err != nil {
-		return "", &TokenMintError{Retryable: true, Err: err}
+		return IssuedToken{}, &TokenMintError{Retryable: true, Err: err}
 	}
 
 	url := fmt.Sprintf("%s/app/installations/%d/access_tokens", p.apiURL, installationID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, &reqBody)
 	if err != nil {
-		return "", &TokenMintError{Retryable: true, Err: err}
+		return IssuedToken{}, &TokenMintError{Retryable: true, Err: err}
 	}
 	req.Header.Set("Authorization", "Bearer "+appJWT)
 	req.Header.Set("Accept", "application/vnd.github+json")
@@ -322,7 +340,7 @@ func (p *AppTokenProvider) getInstallationToken(ctx context.Context, scope strin
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
 		metrics.GitHubAPICalls.WithLabelValues(p.appName, p.instance, "create_token", "error").Inc()
-		return "", &TokenMintError{Retryable: true, Err: fmt.Errorf("creating installation token: %w", err)}
+		return IssuedToken{}, &TokenMintError{Retryable: true, Err: fmt.Errorf("creating installation token: %w", err)}
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -352,7 +370,7 @@ func (p *AppTokenProvider) getInstallationToken(ctx context.Context, scope strin
 			"caller", caller,
 			"hint", permissionDiffHint(diff, granted),
 		)
-		return "", &TokenMintError{StatusCode: resp.StatusCode, Retryable: false, Err: fmt.Errorf(
+		return IssuedToken{}, &TokenMintError{StatusCode: resp.StatusCode, Retryable: false, Err: fmt.Errorf(
 			"github refused to create token for app %q instance %q scope %q — "+
 				"the requested permissions or repositories may exceed what the app is allowed (HTTP 422): %s",
 			p.appName, p.instance, scope, string(respBody))}
@@ -360,7 +378,7 @@ func (p *AppTokenProvider) getInstallationToken(ctx context.Context, scope strin
 	if resp.StatusCode != http.StatusCreated {
 		metrics.GitHubAPICalls.WithLabelValues(p.appName, p.instance, "create_token", "error").Inc()
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return "", &TokenMintError{
+		return IssuedToken{}, &TokenMintError{
 			StatusCode: resp.StatusCode,
 			Retryable:  isRetryableTokenMintStatus(resp),
 			Err: fmt.Errorf("creating installation token for app %q instance %q scope %q: GitHub API returned HTTP %d: %s",
@@ -369,10 +387,27 @@ func (p *AppTokenProvider) getInstallationToken(ctx context.Context, scope strin
 	}
 
 	var result struct {
-		Token string `json:"token"`
+		Token     string `json:"token"`
+		ExpiresAt string `json:"expires_at"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", &TokenMintError{StatusCode: resp.StatusCode, Retryable: false, Err: err}
+		return IssuedToken{}, &TokenMintError{StatusCode: resp.StatusCode, Retryable: false, Err: err}
+	}
+
+	// GitHub documents expires_at as RFC 3339 (currently one hour out), but a
+	// token we already hold is worth more than a lifetime hint: an absent or
+	// unparseable value degrades to "lifetime unknown" instead of discarding
+	// a valid credential. See IssuedToken.
+	issued := IssuedToken{Token: result.Token}
+	if result.ExpiresAt != "" {
+		expiresAt, parseErr := time.Parse(time.RFC3339, result.ExpiresAt)
+		if parseErr != nil {
+			slog.Warn("github returned an unparseable token expiry",
+				"app", p.appName, "instance", p.instance, "scope", scope,
+				"expires_at", result.ExpiresAt, "error", parseErr, "caller", caller)
+		} else {
+			issued.ExpiresAt = expiresAt
+		}
 	}
 
 	// Emit metrics — NEVER log the token value (BR-2A-17).
@@ -381,7 +416,7 @@ func (p *AppTokenProvider) getInstallationToken(ctx context.Context, scope strin
 	metrics.GitHubAPICalls.WithLabelValues(p.appName, p.instance, "create_token", "ok").Inc()
 	slog.Info("installation token issued", "app", p.appName, "instance", p.instance, "scope", scope, "permissions", permStr, "caller", caller)
 
-	return result.Token, nil
+	return issued, nil
 }
 
 // isRetryableTokenMintStatus reports whether a non-201, non-422
