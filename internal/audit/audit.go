@@ -58,30 +58,46 @@ type Event struct {
 	// pool-exhaustion failure naming one arbitrary tried instance out of
 	// several that all failed would misleadingly suggest it was uniquely
 	// implicated.
-	Instance                 string           `json:"instance,omitempty"`
-	Identity                 string           `json:"identity"`
-	Issuer                   string           `json:"issuer"`
-	Subject                  string           `json:"subject"`
-	SourceRepositoryOwner    string           `json:"source_repository_owner,omitempty"`
-	SourceRepositoryOwnerID  string           `json:"source_repository_owner_id,omitempty"`
-	SourceRepository         string           `json:"source_repository,omitempty"`
-	SourceRepositoryID       string           `json:"source_repository_id,omitempty"`
-	TargetRepositoryOwner    string           `json:"target_repository_owner,omitempty"`
-	TargetRepositoryOwnerID  string           `json:"target_repository_owner_id,omitempty"`
-	TargetRepository         string           `json:"target_repository,omitempty"`
-	TargetRepositoryID       string           `json:"target_repository_id,omitempty"`
-	ImmutableSubject         *bool            `json:"immutable_subject,omitempty"`
-	ImmutableSubjectRequired *bool            `json:"immutable_subject_required,omitempty"`
-	JTI                      string           `json:"jti,omitempty"`
-	Result                   ExchangeResult   `json:"result"`
-	ErrorReason              string           `json:"error_reason,omitempty"`
-	DurationMS               int64            `json:"duration_ms"`
-	UserAgent                string           `json:"user_agent,omitempty"`
-	RemoteIP                 string           `json:"remote_ip,omitempty"`
-	OrgDecision              *OrgDecision     `json:"org_decision,omitempty"`
-	BundleDigest             string           `json:"bundle_digest,omitempty"`
-	BundleEnforcement        string           `json:"bundle_enforcement"`
-	BundleDecisions          []BundleDecision `json:"bundle_decisions,omitempty"`
+	Instance                 string `json:"instance,omitempty"`
+	Identity                 string `json:"identity"`
+	Issuer                   string `json:"issuer"`
+	Subject                  string `json:"subject"`
+	SourceRepositoryOwner    string `json:"source_repository_owner,omitempty"`
+	SourceRepositoryOwnerID  string `json:"source_repository_owner_id,omitempty"`
+	SourceRepository         string `json:"source_repository,omitempty"`
+	SourceRepositoryID       string `json:"source_repository_id,omitempty"`
+	TargetRepositoryOwner    string `json:"target_repository_owner,omitempty"`
+	TargetRepositoryOwnerID  string `json:"target_repository_owner_id,omitempty"`
+	TargetRepository         string `json:"target_repository,omitempty"`
+	TargetRepositoryID       string `json:"target_repository_id,omitempty"`
+	ImmutableSubject         *bool  `json:"immutable_subject,omitempty"`
+	ImmutableSubjectRequired *bool  `json:"immutable_subject_required,omitempty"`
+	JTI                      string `json:"jti,omitempty"`
+	// Trust-policy provenance: which policy file governed this exchange,
+	// and which exact bytes of it. BundleDigest below does the same job for
+	// the org Rego bundle; both halves of the decision are now nameable.
+	//
+	// PolicySource ("centralized" or "repository") is not cosmetic. Under
+	// repo_first resolution a repo owner can override the centralized org
+	// policy, so which side won is an authorization fact, not a detail.
+	//
+	// PolicyBlobSHA is git's own object hash, so an auditor can verify the
+	// record against a clone with `git hash-object`, and reach the commits
+	// behind it with `git log --find-object`, without any API access.
+	PolicyRepository string `json:"policy_repository,omitempty"`
+	PolicyPath       string `json:"policy_path,omitempty"`
+	PolicyBlobSHA    string `json:"policy_blob_sha,omitempty"`
+	PolicySource     string `json:"policy_source,omitempty"`
+
+	Result            ExchangeResult   `json:"result"`
+	ErrorReason       string           `json:"error_reason,omitempty"`
+	DurationMS        int64            `json:"duration_ms"`
+	UserAgent         string           `json:"user_agent,omitempty"`
+	RemoteIP          string           `json:"remote_ip,omitempty"`
+	OrgDecision       *OrgDecision     `json:"org_decision,omitempty"`
+	BundleDigest      string           `json:"bundle_digest,omitempty"`
+	BundleEnforcement string           `json:"bundle_enforcement"`
+	BundleDecisions   []BundleDecision `json:"bundle_decisions,omitempty"`
 }
 
 // OrgDecision is the bundle's verdict captured in the audit trail. Allow
@@ -266,6 +282,16 @@ func (fl *FileLogger) writer() {
 					"target_repository", event.TargetRepository,
 					"target_repository_id", event.TargetRepositoryID,
 				)
+			}
+			if event.PolicyBlobSHA != "" {
+				attrs = append(attrs,
+					"policy_repository", event.PolicyRepository,
+					"policy_path", event.PolicyPath,
+					"policy_blob_sha", event.PolicyBlobSHA,
+				)
+			}
+			if event.PolicySource != "" {
+				attrs = append(attrs, "policy_source", event.PolicySource)
 			}
 			if event.ImmutableSubject != nil {
 				attrs = append(attrs, "immutable_subject", *event.ImmutableSubject)

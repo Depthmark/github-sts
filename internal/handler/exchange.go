@@ -511,6 +511,13 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusForbidden, ErrorResponse{Error: "forbidden", Code: CodeTrustPolicyInvalid, TraceID: traceID})
 		return
 	}
+	// Recorded as soon as the policy is known to be well-formed, so every
+	// denial from here on names the exact policy file that governed it.
+	provenance := pol.Provenance()
+	event.PolicyRepository = provenance.Repository
+	event.PolicyPath = provenance.Path
+	event.PolicyBlobSHA = provenance.BlobSHA
+	event.PolicySource = provenance.Source()
 
 	// Per-policy audience validation. Audience is mandatory in the policy
 	// schema (see policy.Validate), so an empty value here means a policy
