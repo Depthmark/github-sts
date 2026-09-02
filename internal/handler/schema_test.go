@@ -18,7 +18,7 @@ import (
 // schema content.
 var fixtureSchemaJSON = []byte(`{
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://schemas.depthmark.io/sts/v1/trust-policy.json",
+  "$id": "https://depthmark.github.io/github-sts/schemas/sts/v1/trust-policy.json",
   "title": "test trust policy schema",
   "type": "object"
 }`)
@@ -101,7 +101,7 @@ func TestSchema_RouteServesBundleFile(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &parsed); err != nil {
 		t.Fatalf("served bytes not valid JSON: %v", err)
 	}
-	if id, _ := parsed["$id"].(string); id != "https://schemas.depthmark.io/sts/v1/trust-policy.json" {
+	if id, _ := parsed["$id"].(string); id != "https://depthmark.github.io/github-sts/schemas/sts/v1/trust-policy.json" {
 		t.Errorf("served schema $id = %q, want canonical URL", id)
 	}
 }

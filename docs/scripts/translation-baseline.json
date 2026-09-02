@@ -19,8 +19,7 @@
       "headings"
     ],
     "concepts/trust-policies.md": [
-      "headings",
-      "ratio"
+      "headings"
     ],
     "oidc-issuers/github-actions.md": [
       "headings",
@@ -31,10 +30,6 @@
     ],
     "operations/upgrades.md": [
       "headings"
-    ],
-    "reference/api.md": [
-      "headings",
-      "ratio"
     ],
     "reference/configuration.md": [
       "headings",

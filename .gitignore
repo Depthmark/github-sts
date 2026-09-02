@@ -44,6 +44,11 @@ validation_local/
 docs/public/
 docs/.hugo_build.lock
 
+# Trust-policy schema staged into the site by `make docs-schema`. The source of
+# truth is internal/policy/yaml/schema_v1.json; a committed copy could drift
+# from it, so the published copy is generated and never checked in.
+docs/static/schemas/
+
 
 # Agents,  AIDLC
 .opencode

@@ -22,9 +22,11 @@ Pour `app=my-app` et `identity=ci`, le chemin se résout en `.github/sts/my-app/
 | `claim_pattern` | `map[string]regex` | Revendications JWT supplémentaires à faire correspondre |
 | `audience` | `string` | **Obligatoire.** Revendication OIDC `aud` attendue. Une politique sans elle accepterait des jetons émis pour toute autre relying party partageant l'émetteur (réutilisation de jeton inter-RP) et est rejetée à l'analyse. |
 | `repositories` | `list[string]` | Présent dans le schéma mais non appliqué dans le flux d'échange. La portée de dépôt fixe le jeton au dépôt demandé ; les politiques d'organisation centralisées le fixent au seul dépôt dérivé du sujet OIDC. |
-| `permissions` | `map[string]string` | Autorisations de la GitHub App (`read` / `write` / `admin`) |
+| `permissions` | `map[string]string` | Autorisations de la GitHub App. Le niveau dépend de la permission : la plupart acceptent `read` ou `write`, quatre acceptent aussi `admin`, et quelques-unes sont en lecture seule ou en écriture seule. |
 
 > **`audience` est obligatoire.** Chaque politique doit déclarer l'audience OIDC à laquelle elle fait confiance. La même valeur doit être transmise à `core.getIDToken(<audience>)` dans le workflow qui demande le jeton. Une `audience:` manquante est rejetée à l'analyse de la politique ; sinon, elle accepterait des jetons émis pour toute autre relying party partageant l'émetteur (réutilisation de jeton inter-RP).
+
+La même liste de champs est publiée sous forme de schéma JSON. En configurant votre éditeur pour l'utiliser, un fichier de politique est validé pendant sa rédaction, avant même que le broker ne le voie : consultez [Schéma des politiques de confiance]({{< relref "/reference/policy-schema" >}}).
 
 ## Correspondance du sujet
 
@@ -146,3 +148,4 @@ Si `org_policy_repo` n'est pas défini, seul le dépôt demandeur est consulté,
 - [Recettes de politiques]({{< relref "/concepts/policy-recipes" >}}): modèles à copier-coller pour les scénarios courants
 - [Émetteurs OIDC]({{< relref "/oidc-issuers" >}}): configuration par fournisseur
 - [Modèle de sécurité]({{< relref "/concepts/security-model" >}}): limites de confiance et modèle de menace
+- [Schéma des politiques de confiance]({{< relref "/reference/policy-schema" >}}): validation des fichiers de politique dans l'éditeur et en ligne de commande

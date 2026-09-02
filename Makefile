@@ -1,9 +1,14 @@
 .PHONY: build test test-race test-rego lint coverage vuln-check clean docker \
         ci act act-actions hooks validate-examples validate-repository-policies \
         docs-serve docs-build docs-check docs-links docs-style docs-translate \
-        docs-hugo-version docs-satellites
+        docs-hugo-version docs-satellites docs-schema check-github-permissions
 
 SCHEMA       ?= internal/policy/yaml/schema_v1.json
+# Where the published copy of the schema is staged for the documentation site.
+# The path under docs/static/ becomes the public URL, so it must match the
+# schema's own $id. Staged at build time and gitignored: one file in git means
+# the published schema cannot drift from the one CI validates against.
+SCHEMA_SITE_DIR ?= docs/static/schemas/sts/v1
 EXAMPLES_DIR ?= config/examples
 REGO_DIR     ?= policies
 REPOSITORY_POLICIES ?= $(wildcard .github/sts/*/*.sts.yaml)
@@ -128,6 +133,13 @@ validate-repository-policies:
 	@command -v check-jsonschema >/dev/null 2>&1 || { echo "install: pipx install check-jsonschema"; exit 1; }
 	check-jsonschema --schemafile $(SCHEMA) $(REPOSITORY_POLICIES)
 
+# Diff the permission table in internal/policy against GitHub's published
+# OpenAPI description. Excluded from `ci` on purpose: it reaches the network,
+# and GitHub adding a permission should open a pull request rather than turn an
+# unrelated build red. Run it on a schedule, or before a release.
+check-github-permissions:
+	go test -tags githubspec -count=1 -v ./internal/policy/ -run 'TestGitHubSpec|TestValidPermissionLevelsMatchGitHubSpec'
+
 # Run all checks (CI)
 ci: lint test-race test-rego vuln-check build bin/github-sts validate-examples
 
@@ -204,12 +216,20 @@ docs-hugo-version:
 	  echo "warning: local Hugo $$local, CI builds with $(HUGO_VERSION) (docs/.hugo-version)"; \
 	fi
 
+# Stage the trust-policy schema into the site's static tree so Hugo publishes
+# it at https://depthmark.github.io/github-sts/schemas/sts/v1/trust-policy.json.
+# Consumers point their editor's yaml-language-server at that URL, so the path
+# is a public contract: see the stability note in the schema's description.
+docs-schema:
+	@mkdir -p $(SCHEMA_SITE_DIR)
+	@cp $(SCHEMA) $(SCHEMA_SITE_DIR)/trust-policy.json
+
 # Serve the documentation site locally
-docs-serve: docs-hugo-version $(SATELLITE_GUARD)
+docs-serve: docs-hugo-version docs-schema $(SATELLITE_GUARD)
 	$(HUGO_REPLACE) $(HUGO) server --source $(HUGO_SOURCE) --buildDrafts
 
 # Build the documentation site for production
-docs-build: docs-hugo-version $(SATELLITE_GUARD)
+docs-build: docs-hugo-version docs-schema $(SATELLITE_GUARD)
 	$(HUGO_REPLACE) $(HUGO) --source $(HUGO_SOURCE) --gc --minify --panicOnWarning \
 		--baseURL https://depthmark.github.io/github-sts/
 

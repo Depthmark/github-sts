@@ -22,11 +22,13 @@ For `app=my-app` and `identity=ci`, the path resolves to `.github/sts/my-app/ci.
 | `audience` | `string` | **Required.** Expected OIDC `aud` claim. A policy without it would accept tokens minted for any other relying party sharing the issuer (cross-RP token reuse) and is rejected at parse time. |
 | `github.sources` | `list[{owner_id, repository_id}]` | **Required for GitHub.com.** Exact immutable source repositories allowed to use the policy. |
 | `github.target` | `{owner_id, repository_id}` | **Required for GitHub.com.** Exact immutable target repository for the minted token. |
-| `permissions` | `map[string]string` | GitHub App permissions (`read` / `write` / `admin`) |
+| `permissions` | `map[string]string` | GitHub App permissions. The level depends on the permission: most accept `read` or `write`, four also accept `admin`, and a few are read-only or write-only. |
 
 > **`audience` is mandatory.** Every policy must declare the OIDC audience it trusts. The same value must be passed to `core.getIDToken(<audience>)` in the workflow that requests the token. A missing `audience:` is rejected at policy parse time; it would otherwise accept tokens minted for any other relying party that shares the issuer (cross-RP token reuse).
 
 Every policy requires at least one workload selector: `subject`, `subject_pattern`, or a non-empty `claim_pattern`. Keep workload selectors focused on context such as `ref` or workflow path; immutable source and target identity belongs in `github` so repository renames retain the same authorization. `github.sources[]` and `github.target` entries are looked up by numeric `owner_id` / `repository_id`; see [OIDC Issuers → Getting the immutable owner and repository IDs]({{< relref "/oidc-issuers/github-actions#getting-the-immutable-owner-and-repository-ids" >}}) for how to find those values with the GitHub API before writing a policy.
+
+The same field list is published as a JSON Schema. Pointing an editor at it validates a policy file as you write it, before the broker ever sees it: see [Trust Policy Schema]({{< relref "/reference/policy-schema" >}}).
 
 ## Subject matching
 
@@ -201,3 +203,4 @@ If `org_policy_repo` is unset, only the requesting repo is consulted regardless 
 - [Policy Recipes]({{< relref "/concepts/policy-recipes" >}}): copy-and-paste patterns for common scenarios
 - [OIDC Issuers]({{< relref "/oidc-issuers" >}}): per-provider issuer setup
 - [Security Model]({{< relref "/concepts/security-model" >}}): trust boundaries and threat model
+- [Trust Policy Schema]({{< relref "/reference/policy-schema" >}}): editor and command-line validation for policy files

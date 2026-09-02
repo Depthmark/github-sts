@@ -101,7 +101,7 @@ The full site is at **[depthmark.github.io/github-sts](https://depthmark.github.
 | [Integrations](https://depthmark.github.io/github-sts/integrations/) | GitHub Action, Helm chart, end-to-end Kubernetes walkthrough, monitoring |
 | [OIDC Issuers](https://depthmark.github.io/github-sts/oidc-issuers/) | Per-provider JWKS/audience setup |
 | [Operations](https://depthmark.github.io/github-sts/operations/) | Kubernetes behavior, upgrades, troubleshooting |
-| [Reference](https://depthmark.github.io/github-sts/reference/) | API, configuration, environment variables, metrics |
+| [Reference](https://depthmark.github.io/github-sts/reference/) | API, configuration, environment variables, metrics, [trust policy JSON Schema](https://depthmark.github.io/github-sts/reference/policy-schema/) |
 | [Resources](https://depthmark.github.io/github-sts/resources/) | Changelog, contributing guidelines, [vulnerability reporting](https://depthmark.github.io/github-sts/resources/security/) |
 
 ## Development

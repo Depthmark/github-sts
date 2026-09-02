@@ -1,32 +1,65 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://schemas.depthmark.io/sts/v1/trust-policy.json",
+  "$id": "https://depthmark.github.io/github-sts/schemas/sts/v1/trust-policy.json",
   "title": "github-sts trust policy v1",
-  "description": "Trust policy for github-sts. Authored at .github/sts/{app}/{identity}.sts.yaml in a consuming repo (or in the org policy repo for centralised resolution). Controls which OIDC identity may exchange a token for which GitHub App installation token, with which permissions, scoped to which repositories.\n\nSchema source of truth: github.com/Depthmark/github-sts. Customise by forking that repo, not this URL.",
+  "description": "Trust policy for github-sts. Authored at .github/sts/{app}/{identity}.sts.yaml in a consuming repo (or in the org policy repo for centralised resolution). Controls which OIDC identity may exchange a token for which GitHub App installation token, with which permissions, scoped to which repositories.\n\nSchema source of truth: github.com/Depthmark/github-sts at internal/policy/yaml/schema_v1.json, published to this URL by the documentation site build. Customise by forking that repo, not this URL.\n\nStability: from first publication the v1 path accepts additive changes only. New optional properties and new permission names may appear; no property is removed, no entry is added to required, and no pattern is tightened. The single exception is a correction that tracks GitHub's own contract, such as a permission level GitHub stops accepting: that is published under v1 because a policy relying on the looser rule was already failing at the mint call. Any other breaking change publishes a v2 path and leaves v1 serving.",
   "type": "object",
-  "required": ["issuer", "audience", "permissions"],
+  "required": [
+    "issuer",
+    "audience",
+    "permissions"
+  ],
   "additionalProperties": false,
   "allOf": [
     {
       "anyOf": [
-        { "required": ["subject"] },
-        { "required": ["subject_pattern"] },
-        { "required": ["claim_pattern"] }
+        {
+          "required": [
+            "subject"
+          ]
+        },
+        {
+          "required": [
+            "subject_pattern"
+          ]
+        },
+        {
+          "required": [
+            "claim_pattern"
+          ]
+        }
       ]
     },
     {
       "if": {
         "properties": {
-          "issuer": { "const": "https://token.actions.githubusercontent.com" }
+          "issuer": {
+            "const": "https://token.actions.githubusercontent.com"
+          }
         },
-        "required": ["issuer"]
+        "required": [
+          "issuer"
+        ]
       },
-      "then": { "required": ["github"] },
-      "else": { "not": { "required": ["github"] } }
+      "then": {
+        "required": [
+          "github"
+        ]
+      },
+      "else": {
+        "not": {
+          "required": [
+            "github"
+          ]
+        }
+      }
     }
   ],
   "not": {
-    "required": ["subject", "subject_pattern"],
+    "required": [
+      "subject",
+      "subject_pattern"
+    ],
     "description": "subject and subject_pattern are mutually exclusive. The broker rejects policies that set both."
   },
   "properties": {
@@ -79,7 +112,7 @@
     "audience": {
       "type": "string",
       "minLength": 1,
-      "description": "Required. Exact-match audience (aud claim). Reject tokens minted for other relying parties that share the same issuer. Workflows must request a token with this audience (e.g., core.getIDToken('https://sts.example.com')). A policy without audience would accept tokens minted for any other RP — see security guidance B-2 in the broker's docs.",
+      "description": "Required. Exact-match audience (aud claim). Reject tokens minted for other relying parties that share the same issuer. Workflows must request a token with this audience (e.g., core.getIDToken('https://sts.example.com')). A policy without audience would accept tokens minted for any other RP \u2014 see security guidance B-2 in the broker's docs.",
       "examples": [
         "https://sts.example.com"
       ]
@@ -87,74 +120,181 @@
     "permissions": {
       "type": "object",
       "minProperties": 1,
-      "propertyNames": {
-        "enum": [
-          "actions",
-          "administration",
-          "artifact_metadata",
-          "attestations",
-          "checks",
-          "codespaces",
-          "contents",
-          "dependabot_secrets",
-          "deployments",
-          "discussions",
-          "environments",
-          "issues",
-          "merge_queues",
-          "metadata",
-          "packages",
-          "pages",
-          "pull_requests",
-          "repository_custom_properties",
-          "repository_hooks",
-          "repository_projects",
-          "secret_scanning_alerts",
-          "secrets",
-          "security_events",
-          "single_file",
-          "statuses",
-          "vulnerability_alerts",
-          "workflows",
-          "custom_properties_for_organizations",
-          "members",
-          "organization_administration",
-          "organization_announcement_banners",
-          "organization_copilot_agent_settings",
-          "organization_copilot_seat_management",
-          "organization_custom_org_roles",
-          "organization_custom_properties",
-          "organization_custom_roles",
-          "organization_events",
-          "organization_hooks",
-          "organization_packages",
-          "organization_personal_access_token_requests",
-          "organization_personal_access_tokens",
-          "organization_plan",
-          "organization_projects",
-          "organization_secrets",
-          "organization_self_hosted_runners",
-          "organization_user_blocking",
-          "email_addresses",
-          "followers",
-          "git_ssh_keys",
-          "gpg_keys",
-          "interaction_limits",
-          "profile",
-          "starring",
-          "enterprise_custom_properties_for_organizations"
-        ]
-      },
-      "additionalProperties": {
-        "$ref": "#/$defs/permissionLevel"
-      },
-      "description": "Required. At least one permission must be granted. Keys are GitHub App installation token permission names (matching the GitHub REST API for creating installation access tokens); values are 'read', 'write', or 'admin'. The broker rejects unknown keys and rejects values other than these three.",
+      "description": "Required. At least one permission must be granted. Keys are GitHub App installation token permission names and values are the level granted. The accepted levels differ per permission: most take read or write, four also take admin, and a few are read-only or write-only. The broker rejects unknown names and rejects a level GitHub does not accept for that specific permission, so a policy that validates here will not fail the mint call with a 422 over its permission block. GitHub's own OpenAPI description is the source: components.schemas.app-permissions in github/rest-api-description, which is the schema the create-installation-access-token request body declares.",
       "examples": [
         {
           "contents": "read",
           "pull_requests": "write"
         }
-      ]
+      ],
+      "properties": {
+        "actions": {
+          "$ref": "#/$defs/readWrite"
+        },
+        "administration": {
+          "$ref": "#/$defs/readWrite"
+        },
+        "artifact_metadata": {
+          "$ref": "#/$defs/readWrite"
+        },
+        "attestations": {
+          "$ref": "#/$defs/readWrite"
+        },
+        "checks": {
+          "$ref": "#/$defs/readWrite"
+        },
+        "code_quality": {
+          "$ref": "#/$defs/readWrite"
+        },
+        "codespaces": {
+          "$ref": "#/$defs/readWrite"
+        },
+        "contents": {
+          "$ref": "#/$defs/readWrite"
+        },
+        "custom_properties_for_organizations": {
+          "$ref": "#/$defs/readWrite"
+        },
+        "dependabot_secrets": {
+          "$ref": "#/$defs/readWrite"
+        },
+        "deployments": {
+          "$ref": "#/$defs/readWrite"
+        },
+        "discussions": {
+          "$ref": "#/$defs/readWrite"
+        },
+        "email_addresses": {
+          "$ref": "#/$defs/readWrite"
+        },
+        "enterprise_custom_properties_for_organizations": {
+          "$ref": "#/$defs/readWriteAdmin"
+        },
+        "environments": {
+          "$ref": "#/$defs/readWrite"
+        },
+        "followers": {
+          "$ref": "#/$defs/readWrite"
+        },
+        "git_ssh_keys": {
+          "$ref": "#/$defs/readWrite"
+        },
+        "gpg_keys": {
+          "$ref": "#/$defs/readWrite"
+        },
+        "interaction_limits": {
+          "$ref": "#/$defs/readWrite"
+        },
+        "issues": {
+          "$ref": "#/$defs/readWrite"
+        },
+        "members": {
+          "$ref": "#/$defs/readWrite"
+        },
+        "merge_queues": {
+          "$ref": "#/$defs/readWrite"
+        },
+        "metadata": {
+          "$ref": "#/$defs/readWrite"
+        },
+        "organization_administration": {
+          "$ref": "#/$defs/readWrite"
+        },
+        "organization_announcement_banners": {
+          "$ref": "#/$defs/readWrite"
+        },
+        "organization_copilot_agent_settings": {
+          "$ref": "#/$defs/readWrite"
+        },
+        "organization_copilot_seat_management": {
+          "$ref": "#/$defs/readWrite"
+        },
+        "organization_custom_org_roles": {
+          "$ref": "#/$defs/readWrite"
+        },
+        "organization_custom_properties": {
+          "$ref": "#/$defs/readWriteAdmin"
+        },
+        "organization_custom_roles": {
+          "$ref": "#/$defs/readWrite"
+        },
+        "organization_events": {
+          "$ref": "#/$defs/readOnly"
+        },
+        "organization_hooks": {
+          "$ref": "#/$defs/readWrite"
+        },
+        "organization_packages": {
+          "$ref": "#/$defs/readWrite"
+        },
+        "organization_personal_access_token_requests": {
+          "$ref": "#/$defs/readWrite"
+        },
+        "organization_personal_access_tokens": {
+          "$ref": "#/$defs/readWrite"
+        },
+        "organization_plan": {
+          "$ref": "#/$defs/readOnly"
+        },
+        "organization_projects": {
+          "$ref": "#/$defs/readWriteAdmin"
+        },
+        "organization_secrets": {
+          "$ref": "#/$defs/readWrite"
+        },
+        "organization_self_hosted_runners": {
+          "$ref": "#/$defs/readWrite"
+        },
+        "organization_user_blocking": {
+          "$ref": "#/$defs/readWrite"
+        },
+        "packages": {
+          "$ref": "#/$defs/readWrite"
+        },
+        "pages": {
+          "$ref": "#/$defs/readWrite"
+        },
+        "profile": {
+          "$ref": "#/$defs/writeOnly"
+        },
+        "pull_requests": {
+          "$ref": "#/$defs/readWrite"
+        },
+        "repository_custom_properties": {
+          "$ref": "#/$defs/readWrite"
+        },
+        "repository_hooks": {
+          "$ref": "#/$defs/readWrite"
+        },
+        "repository_projects": {
+          "$ref": "#/$defs/readWriteAdmin"
+        },
+        "secret_scanning_alerts": {
+          "$ref": "#/$defs/readWrite"
+        },
+        "secrets": {
+          "$ref": "#/$defs/readWrite"
+        },
+        "security_events": {
+          "$ref": "#/$defs/readWrite"
+        },
+        "single_file": {
+          "$ref": "#/$defs/readWrite"
+        },
+        "starring": {
+          "$ref": "#/$defs/readWrite"
+        },
+        "statuses": {
+          "$ref": "#/$defs/readWrite"
+        },
+        "vulnerability_alerts": {
+          "$ref": "#/$defs/readWrite"
+        },
+        "workflows": {
+          "$ref": "#/$defs/writeOnly"
+        }
+      },
+      "additionalProperties": false
     }
   },
   "$defs": {
@@ -165,23 +305,35 @@
     },
     "githubRepository": {
       "type": "object",
-      "required": ["owner_id", "repository_id"],
+      "required": [
+        "owner_id",
+        "repository_id"
+      ],
       "additionalProperties": false,
       "properties": {
-        "owner_id": { "$ref": "#/$defs/githubID" },
-        "repository_id": { "$ref": "#/$defs/githubID" }
+        "owner_id": {
+          "$ref": "#/$defs/githubID"
+        },
+        "repository_id": {
+          "$ref": "#/$defs/githubID"
+        }
       }
     },
     "githubPolicy": {
       "type": "object",
-      "required": ["sources", "target"],
+      "required": [
+        "sources",
+        "target"
+      ],
       "additionalProperties": false,
       "properties": {
         "sources": {
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,
-          "items": { "$ref": "#/$defs/githubRepository" },
+          "items": {
+            "$ref": "#/$defs/githubRepository"
+          },
           "description": "Exact immutable source repositories authorized by this policy."
         },
         "target": {
@@ -190,9 +342,32 @@
         }
       }
     },
-    "permissionLevel": {
-      "enum": ["read", "write", "admin"],
-      "description": "Permission level granted to the minted GitHub App installation token. Note: GitHub's API uses 'none' to omit a permission, but in this schema you simply omit the key — only granting levels are expressible."
+    "readWrite": {
+      "enum": [
+        "read",
+        "write"
+      ],
+      "description": "GitHub accepts read or write for this permission."
+    },
+    "readWriteAdmin": {
+      "enum": [
+        "read",
+        "write",
+        "admin"
+      ],
+      "description": "GitHub accepts read, write, or admin for this permission."
+    },
+    "readOnly": {
+      "enum": [
+        "read"
+      ],
+      "description": "GitHub accepts only read for this permission."
+    },
+    "writeOnly": {
+      "enum": [
+        "write"
+      ],
+      "description": "GitHub accepts only write for this permission. Requesting read is a 422."
     }
   },
   "examples": [
