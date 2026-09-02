@@ -187,7 +187,9 @@ Diagnostic severities are `error` or `warning`. Errors include YAML parse errors
 
 ### `GET /sts/v1/trust-policy.json`
 
-Return the JSON Schema file from the loaded bundle at `/data/sts/v1/trust-policy.json`. This is intended for editor schema association. The schema endpoint depends on an enabled bundle that ships the schema document and returns `503` if the bundle integration is disabled or the schema file is missing.
+Return the JSON Schema file from the loaded bundle at `/data/sts/v1/trust-policy.json`. The broker republishes those bytes without interpreting them, so this endpoint reflects whatever schema the operator's own Rego bundle ships. It depends on an enabled bundle that carries the schema document and returns `503` if the bundle integration is disabled or the schema file is missing.
+
+Most users do not need this endpoint. The project's own trust policy schema is published as a static file that needs no broker and no authentication: see [Trust Policy Schema]({{< relref "/reference/policy-schema" >}}). Use this endpoint when a deployment has customised the schema in its bundle and editors should follow that customised version.
 
 ## Token Revocation
 

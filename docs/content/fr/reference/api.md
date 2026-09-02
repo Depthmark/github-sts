@@ -123,6 +123,64 @@ Les réponses d'erreur partagent cette forme :
 | `500` | `internal_error` | Problème côté serveur (backend de cache, mauvaise configuration de l'App). Consultez les journaux serveur au `trace_id`. |
 | `502` | `upstream_error` | Échec de la récupération de politique ou de l'émission du jeton GitHub. Consultez les journaux serveur au `trace_id`. |
 
+## Validation des politiques de confiance
+
+### `POST /sts/v1/trust-policy/validate`
+
+Valider et analyser le contenu de `.github/sts/{app}/{identity}.sts.yaml` pour l'outillage d'éditeur tel que VS Code. Ce point de terminaison valide uniquement le contrat YAML de la politique de confiance. Il n'évalue pas les bundles Rego d'entreprise et ne renvoie jamais l'inventaire des exceptions.
+
+Envoyer du YAML brut :
+
+```bash
+curl -X POST http://localhost:8080/sts/v1/trust-policy/validate \
+  -H "Content-Type: application/x-yaml" \
+  --data-binary @.github/sts/default/ci.sts.yaml
+```
+
+Ou envoyer du JSON :
+
+```bash
+curl -X POST http://localhost:8080/sts/v1/trust-policy/validate \
+  -H "Content-Type: application/json" \
+  -d '{"content":"issuer: https://issuer.example.com\nsubject: workload-1\naudience: https://sts.example.com\npermissions:\n  contents: read\n"}'
+```
+
+Une validation réussie renvoie `200` avec `valid: true` et le YAML formaté de façon canonique :
+
+```json
+{
+  "valid": true,
+  "diagnostics": [],
+  "formatted": "issuer: https://issuer.example.com\nsubject: workload-1\naudience: https://sts.example.com\npermissions:\n    contents: read\n"
+}
+```
+
+Un contenu de politique invalide renvoie `422` avec des diagnostics :
+
+```json
+{
+  "valid": false,
+  "diagnostics": [
+    {
+      "severity": "error",
+      "code": "subject_conflict",
+      "message": "subject and subject_pattern are mutually exclusive",
+      "path": "$.subject_pattern",
+      "line": 3,
+      "column": 1
+    }
+  ]
+}
+```
+
+Les niveaux de diagnostic sont `error` ou `warning`. Les erreurs comprennent les erreurs d'analyse YAML, les champs inconnus, les conflits de sélecteurs, le champ `repositories` non pris en charge, les identifiants immuables invalides, ainsi que les mêmes erreurs de validation de politique appliquées par le chemin d'échange.
+
+### `GET /sts/v1/trust-policy.json`
+
+Renvoyer le fichier de schéma JSON contenu dans le bundle chargé, à l'emplacement `/data/sts/v1/trust-policy.json`. Le broker republie ces octets sans les interpréter : ce point de terminaison reflète donc le schéma fourni par le bundle Rego de l'opérateur. Il dépend d'un bundle activé qui embarque le document de schéma et renvoie `503` si l'intégration des bundles est désactivée ou si le fichier de schéma est absent.
+
+La plupart des utilisateurs n'ont pas besoin de ce point de terminaison. Le schéma de politique de confiance du projet est publié sous forme de fichier statique, sans broker ni authentification : consultez [Schéma des politiques de confiance]({{< relref "/reference/policy-schema" >}}). Utilisez ce point de terminaison lorsqu'un déploiement a personnalisé le schéma dans son bundle et que les éditeurs doivent suivre cette version personnalisée.
+
 ## Révocation de jeton
 
 Les jetons émis par github-sts sont des jetons d'installation GitHub App standard et peuvent être révoqués directement via l'API GitHub :

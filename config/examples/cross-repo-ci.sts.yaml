@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://depthmark.github.io/github-sts/schemas/sts/v1/trust-policy.json
 # Synthetic target-owned policy used by schema and Rego conformance tests.
 # It allows two example sources to request repository ID 456791 with
 # app=default, identity=cross-repo-ci, scope=example-org/backend.

@@ -297,11 +297,12 @@ func (p *TrustPolicy) Validate() error {
 	}
 
 	for perm, level := range p.Permissions {
-		if !ValidPermissions[perm] {
+		if !ValidPermission(perm) {
 			return validationErrorf("trust policy: invalid permission %q", perm)
 		}
-		if !ValidPermissionValues[level] {
-			return validationErrorf("trust policy: invalid permission level %q for %q", level, perm)
+		if !PermissionLevelAllowed(perm, level) {
+			return validationErrorf("trust policy: invalid permission level %q for %q (GitHub accepts %s)",
+				level, perm, strings.Join(ValidPermissionLevels[perm], ", "))
 		}
 	}
 
@@ -385,79 +386,113 @@ func compileFullMatch(pattern string) (*regexp.Regexp, error) {
 	return regexp.Compile("^(?:" + pattern + ")$")
 }
 
-// ValidPermissions is the set of valid GitHub App installation token
-// permission names, matching the GitHub REST API documentation for
-// creating installation access tokens.
-// See: https://docs.github.com/en/rest/apps/apps#create-an-installation-access-token-for-an-app
-var ValidPermissions = map[string]bool{
-	// Repository permissions
-	"actions":                      true,
-	"administration":               true,
-	"artifact_metadata":            true,
-	"attestations":                 true,
-	"checks":                       true,
-	"codespaces":                   true,
-	"contents":                     true,
-	"dependabot_secrets":           true,
-	"deployments":                  true,
-	"discussions":                  true,
-	"environments":                 true,
-	"issues":                       true,
-	"merge_queues":                 true,
-	"metadata":                     true,
-	"packages":                     true,
-	"pages":                        true,
-	"pull_requests":                true,
-	"repository_custom_properties": true,
-	"repository_hooks":             true,
-	"repository_projects":          true,
-	"secret_scanning_alerts":       true,
-	"secrets":                      true,
-	"security_events":              true,
-	"single_file":                  true,
-	"statuses":                     true,
-	"vulnerability_alerts":         true,
-	"workflows":                    true,
+// Permission levels GitHub accepts, grouped by which permissions accept them.
+// These are shared slices, so callers must not mutate what they receive.
+var (
+	levelsReadWrite      = []string{"read", "write"}
+	levelsReadWriteAdmin = []string{"read", "write", "admin"}
+	levelsRead           = []string{"read"}
+	levelsWrite          = []string{"write"}
+)
 
-	// Organization permissions
-	"custom_properties_for_organizations":         true,
-	"members":                                     true,
-	"organization_administration":                 true,
-	"organization_announcement_banners":           true,
-	"organization_copilot_agent_settings":         true,
-	"organization_copilot_seat_management":        true,
-	"organization_custom_org_roles":               true,
-	"organization_custom_properties":              true,
-	"organization_custom_roles":                   true,
-	"organization_events":                         true,
-	"organization_hooks":                          true,
-	"organization_packages":                       true,
-	"organization_personal_access_token_requests": true,
-	"organization_personal_access_tokens":         true,
-	"organization_plan":                           true,
-	"organization_projects":                       true,
-	"organization_secrets":                        true,
-	"organization_self_hosted_runners":            true,
-	"organization_user_blocking":                  true,
+// ValidPermissionLevels maps each GitHub App installation token permission to
+// the levels GitHub accepts for it. The levels are not uniform: of the 55
+// permissions, 47 take read or write, four also take admin, two are read-only,
+// and two are write-only.
+//
+// Source of truth is GitHub's own OpenAPI description, at
+// components.schemas.app-permissions in
+// github/rest-api-description. That is the same schema the mint endpoint
+// declares for its request body, so a level rejected here is a level GitHub
+// would reject with a 422:
+//
+//	paths["/app/installations/{installation_id}/access_tokens"].post
+//	  .requestBody.content["application/json"].schema.permissions
+//	  -> $ref: "#/components/schemas/app-permissions"
+//
+// Validating the pair here rather than the name and level independently is
+// what moves "contents: admin" from a mint-time 422 to a policy-load error.
+// Run `make check-github-permissions` to diff this table against upstream.
+var ValidPermissionLevels = map[string][]string{
+	// read or write
+	"actions":                              levelsReadWrite,
+	"administration":                       levelsReadWrite,
+	"artifact_metadata":                    levelsReadWrite,
+	"attestations":                         levelsReadWrite,
+	"checks":                               levelsReadWrite,
+	"code_quality":                         levelsReadWrite,
+	"codespaces":                           levelsReadWrite,
+	"contents":                             levelsReadWrite,
+	"custom_properties_for_organizations":  levelsReadWrite,
+	"dependabot_secrets":                   levelsReadWrite,
+	"deployments":                          levelsReadWrite,
+	"discussions":                          levelsReadWrite,
+	"email_addresses":                      levelsReadWrite,
+	"environments":                         levelsReadWrite,
+	"followers":                            levelsReadWrite,
+	"git_ssh_keys":                         levelsReadWrite,
+	"gpg_keys":                             levelsReadWrite,
+	"interaction_limits":                   levelsReadWrite,
+	"issues":                               levelsReadWrite,
+	"members":                              levelsReadWrite,
+	"merge_queues":                         levelsReadWrite,
+	"metadata":                             levelsReadWrite,
+	"organization_administration":          levelsReadWrite,
+	"organization_announcement_banners":    levelsReadWrite,
+	"organization_copilot_agent_settings":  levelsReadWrite,
+	"organization_copilot_seat_management": levelsReadWrite,
+	"organization_custom_org_roles":        levelsReadWrite,
+	"organization_custom_roles":            levelsReadWrite,
+	"organization_hooks":                   levelsReadWrite,
+	"organization_packages":                levelsReadWrite,
+	"organization_personal_access_token_requests": levelsReadWrite,
+	"organization_personal_access_tokens":         levelsReadWrite,
+	"organization_secrets":                        levelsReadWrite,
+	"organization_self_hosted_runners":            levelsReadWrite,
+	"organization_user_blocking":                  levelsReadWrite,
+	"packages":                                    levelsReadWrite,
+	"pages":                                       levelsReadWrite,
+	"pull_requests":                               levelsReadWrite,
+	"repository_custom_properties":                levelsReadWrite,
+	"repository_hooks":                            levelsReadWrite,
+	"secret_scanning_alerts":                      levelsReadWrite,
+	"secrets":                                     levelsReadWrite,
+	"security_events":                             levelsReadWrite,
+	"single_file":                                 levelsReadWrite,
+	"starring":                                    levelsReadWrite,
+	"statuses":                                    levelsReadWrite,
+	"vulnerability_alerts":                        levelsReadWrite,
 
-	// User permissions
-	"email_addresses":    true,
-	"followers":          true,
-	"git_ssh_keys":       true,
-	"gpg_keys":           true,
-	"interaction_limits": true,
-	"profile":            true,
-	"starring":           true,
+	// read, write, or admin
+	"enterprise_custom_properties_for_organizations": levelsReadWriteAdmin,
+	"organization_custom_properties":                 levelsReadWriteAdmin,
+	"organization_projects":                          levelsReadWriteAdmin,
+	"repository_projects":                            levelsReadWriteAdmin,
 
-	// Enterprise permissions
-	"enterprise_custom_properties_for_organizations": true,
+	// read only
+	"organization_events": levelsRead,
+	"organization_plan":   levelsRead,
+
+	// write only
+	"profile":   levelsWrite,
+	"workflows": levelsWrite}
+
+// PermissionLevelAllowed reports whether level is a level GitHub accepts for
+// permission. An unknown permission name is never allowed.
+func PermissionLevelAllowed(permission, level string) bool {
+	for _, allowed := range ValidPermissionLevels[permission] {
+		if allowed == level {
+			return true
+		}
+	}
+	return false
 }
 
-// ValidPermissionValues is the set of valid permission levels.
-var ValidPermissionValues = map[string]bool{
-	"read":  true,
-	"write": true,
-	"admin": true,
+// ValidPermission reports whether permission is a GitHub App installation
+// token permission name.
+func ValidPermission(permission string) bool {
+	_, ok := ValidPermissionLevels[permission]
+	return ok
 }
 
 // permissionRank orders GitHub App permission levels from least to most
@@ -512,11 +547,15 @@ func NarrowPermissions(ceiling, requested map[string]string) (map[string]string,
 	out := make(map[string]string, len(requested))
 	for _, perm := range names {
 		level := requested[perm]
-		if !ValidPermissions[perm] {
+		if !ValidPermission(perm) {
 			return nil, validationErrorf("requested permission %q is not a recognized GitHub App permission", perm)
 		}
-		if !ValidPermissionValues[level] {
-			return nil, validationErrorf("requested level %q for permission %q is not one of read, write, admin", level, perm)
+		// Check the pair, not the level alone: the levels GitHub accepts
+		// differ per permission, so a narrowing request for "contents: admin"
+		// is invalid even though "admin" is a level some permissions take.
+		if !PermissionLevelAllowed(perm, level) {
+			return nil, validationErrorf("requested level %q for permission %q is not one GitHub accepts (%s)",
+				level, perm, strings.Join(ValidPermissionLevels[perm], ", "))
 		}
 		allowed, ok := ceiling[perm]
 		if !ok {

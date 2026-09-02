@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://depthmark.github.io/github-sts/schemas/sts/v1/trust-policy.json
 # Synthetic trust policy used by schema and Rego conformance tests.
 # Example request: app=default, identity=deploy, scope=example-org/example-repo.
 issuer: https://token.actions.githubusercontent.com

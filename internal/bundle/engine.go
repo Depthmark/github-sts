@@ -322,7 +322,7 @@ func parseAdmissionContext(raw any) (admissionContext, error) {
 	permissions := make(map[string]string, len(rawPermissions))
 	for permission, rawLevel := range rawPermissions {
 		level, ok := rawLevel.(string)
-		if !ok || !policy.ValidPermissions[permission] || !policy.ValidPermissionValues[level] {
+		if !ok || !policy.PermissionLevelAllowed(permission, level) {
 			return admissionContext{}, fmt.Errorf("permissions contains invalid permission %q or level", permission)
 		}
 		permissions[permission] = level
@@ -619,7 +619,7 @@ func validateCrossOrgException(exception map[string]any, now time.Time) (string,
 	}
 	for permission, rawLevel := range ceiling {
 		level, ok := rawLevel.(string)
-		if !ok || !policy.ValidPermissions[permission] || !policy.ValidPermissionValues[level] {
+		if !ok || !policy.PermissionLevelAllowed(permission, level) {
 			return "", fmt.Errorf("permission_ceiling contains invalid permission %q or level", permission)
 		}
 	}

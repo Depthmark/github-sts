@@ -5,6 +5,12 @@ on:
     branches: ["main"]
     paths:
       - docs/**
+      # The trust-policy schema is published by this workflow, staged out of
+      # the Go tree by `make docs-schema`. Without these two paths a
+      # schema-only change would pass CI and never reach the public URL that
+      # consumers point their editors at.
+      - internal/policy/yaml/schema_v1.json
+      - Makefile
   workflow_dispatch:
 
 permissions: {}
@@ -55,6 +61,23 @@ jobs:
       - name: Setup Pages
         id: pages
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+
+      # ubuntu-slim carries a minimal toolset and does not ship
+      # build-essential, so make is not guaranteed to be present. Same step as
+      # docs-check.yml, for the same reason.
+      - name: Ensure make
+        run: |
+          if ! command -v make >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends make
+          fi
+
+      # Copy the schema into docs/static/ so Hugo publishes it. Only the
+      # staging is shared with the Makefile; the build below stays here
+      # because it needs the baseURL that configure-pages resolved, whereas
+      # `make docs-build` hardcodes the production one.
+      - name: Stage trust-policy schema
+        run: make docs-schema
 
       - name: Build site
         working-directory: docs

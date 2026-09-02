@@ -20,7 +20,6 @@
     "oidc-issuers/github-actions.md": ["headings", "ratio"],
     "operations/troubleshooting.md": ["headings"],
     "operations/upgrades.md": ["headings"],
-    "reference/api.md": ["headings"],
     "reference/configuration.md": ["headings", "ratio"],
     "reference/metrics.md": ["headings"]
   }

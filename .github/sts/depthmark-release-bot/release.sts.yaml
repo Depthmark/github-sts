@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://depthmark.github.io/github-sts//schemas/sts/v1/trust-policy.json
 issuer: https://token.actions.githubusercontent.com
 subject: "repo:Depthmark/github-sts:ref:refs/heads/main"
 

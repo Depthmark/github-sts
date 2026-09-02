@@ -11,4 +11,5 @@ translationStatus: pending-review
 {{< card link="configuration" title="Configuration" icon="cog" subtitle="Structure de configuration YAML et valeurs par défaut" >}}
 {{< card link="environment-variables" title="Variables d'environnement" icon="variable" subtitle="Toutes les variables d'environnement prises en charge, valeurs valides et valeurs par défaut" >}}
 {{< card link="metrics" title="Métriques" icon="chart-bar" subtitle="Noms, types, étiquettes des métriques Prometheus et requêtes d'alerte recommandées" >}}
+{{< card link="policy-schema" title="Schéma des politiques de confiance" icon="check-circle" subtitle="Schéma JSON publié pour les fichiers de politique de confiance, configuration de l'éditeur et validation en ligne de commande" >}}
 {{< /cards >}}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 )
 
@@ -165,4 +166,51 @@ func hasDiagnostic(resp PolicyValidationResponse, code string) bool {
 		}
 	}
 	return false
+}
+
+// The trust-policy field list is written down three times: the yaml tags on
+// policy.TrustPolicy, the published JSON Schema's top-level properties, and
+// the known map in lintPolicyShape. The first two are pinned to each other by
+// tests in internal/policy. This pins the third.
+//
+// The failure this prevents is quiet. A field added to the struct and the
+// schema but not to lintPolicyShape makes the validation endpoint report
+// "unknown trust policy field" for a field the exchange path accepts, so the
+// endpoint tells users their working policy is broken.
+func TestLintPolicyShapeKnownFieldsMatchSchema(t *testing.T) {
+	raw, err := os.ReadFile("../policy/yaml/schema_v1.json")
+	if err != nil {
+		t.Fatalf("read schema: %v", err)
+	}
+	var schema struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		t.Fatalf("parse schema: %v", err)
+	}
+	if len(schema.Properties) == 0 {
+		t.Fatal("schema has no top-level properties")
+	}
+
+	// lintPolicyShape owns the list; reach for it the same way the handler
+	// does rather than restating it here, or this test pins a copy.
+	known := knownPolicyFields()
+
+	for field := range schema.Properties {
+		if !known[field] {
+			t.Errorf("schema declares %q but lintPolicyShape rejects it as unknown", field)
+		}
+	}
+	for field := range known {
+		if _, ok := schema.Properties[field]; !ok {
+			// repositories is the deliberate exception: lintPolicyShape
+			// recognises it in order to emit a specific diagnostic saying it
+			// is unsupported, while the schema omits it so
+			// additionalProperties:false rejects it outright.
+			if field == "repositories" {
+				continue
+			}
+			t.Errorf("lintPolicyShape accepts %q but the schema omits it", field)
+		}
+	}
 }

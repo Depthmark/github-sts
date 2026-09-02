@@ -136,8 +136,13 @@ func documentMapping(root *yaml.Node) *yaml.Node {
 	return root
 }
 
-func lintPolicyShape(doc *yaml.Node) []PolicyDiagnostic {
-	known := map[string]bool{
+// knownPolicyFields is the set of top-level keys lintPolicyShape recognises.
+// It must stay in step with the published JSON Schema's top-level properties,
+// which a test in this package enforces. repositories is the one deliberate
+// difference: it is listed here so the linter can emit a specific diagnostic
+// explaining why it is unsupported, rather than the generic unknown-field one.
+func knownPolicyFields() map[string]bool {
+	return map[string]bool{
 		"issuer":          true,
 		"subject":         true,
 		"subject_pattern": true,
@@ -147,6 +152,10 @@ func lintPolicyShape(doc *yaml.Node) []PolicyDiagnostic {
 		"repositories":    true,
 		"permissions":     true,
 	}
+}
+
+func lintPolicyShape(doc *yaml.Node) []PolicyDiagnostic {
+	known := knownPolicyFields()
 	seen := make(map[string]*yaml.Node)
 	diagnostics := make([]PolicyDiagnostic, 0)
 	for i := 0; i+1 < len(doc.Content); i += 2 {
