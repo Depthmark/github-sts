@@ -151,6 +151,49 @@ githubsts_github_rate_limit_remaining_percent{github_app="checkout", github_app_
 4. Deploy.
 5. Confirm panels render the expected series count and alerts still fire on the expected condition.
 
+## Migration: `permissions` in the exchange response
+
+Upgrading to a version with [permission narrowing]({{< relref "/reference/api#requesting-less-privilege" >}}) changes what `permissions` in a successful `/sts/exchange` response describes.
+
+**Before:** the trust policy's permission set, echoed back from the policy file.
+
+**After:** the grant GitHub actually attached to the token, read back from GitHub's create-token response.
+
+For a caller that does not narrow, the two agree on every permission the policy names, with one addition: GitHub attaches `metadata: read` to every installation token, so the response now includes it where it previously did not. Callers that assert exact equality between this field and their trust policy will see a diff:
+
+```jsonc
+// policy: {"contents": "write"}
+// before
+{ "permissions": {"contents": "write"} }
+// after
+{ "permissions": {"contents": "write", "metadata": "read"} }
+```
+
+**Step-by-step migration:**
+
+1. Search clients for code that compares the response `permissions` against an expected set. Assertions on individual keys are unaffected; assertions on the whole map need `metadata` accounted for.
+2. If a client used this field to discover what an identity is *allowed* to request, point it at the trust policy instead. The response describes one issued token, not the policy ceiling.
+3. Deploy.
+4. Confirm `githubsts_github_token_permission_divergence_total` stays at zero. A non-zero `direction="above_requested"` means GitHub issued a broader token than was asked for and should be investigated before relying on narrowing.
+
+## Migration: `narrowed` label on `githubsts_github_tokens_issued_total`
+
+The same upgrade adds a `narrowed` label (`"true"` / `"false"`) to `githubsts_github_tokens_issued_total`. The change is additive: a query that does not assert an exact label set returns the same result as before, and the existing `permissions` label keeps reporting the trust policy's ceiling rather than the possibly-narrowed effective set, so its cardinality is unchanged.
+
+Only queries that pin an exact label set, or that group by every label, need updating. To keep the previous meaning regardless of narrowing:
+
+```promql
+sum(rate(githubsts_github_tokens_issued_total[5m])) by (github_app, scope)
+```
+
+The same release also makes the `permissions` label value **deterministic**. It was previously built by iterating a Go map, whose order is randomized, so one permission set could render as `contents:write,issues:write` on one call and `issues:write,contents:write` on the next -- silently splitting a single logical series across up to `n!` variants. The value is now sorted by permission name.
+
+Expect a one-time series shift on upgrade: the old unsorted variants stop receiving samples and a single sorted series takes over. Counters are cumulative per series, so a `rate()` or `increase()` over a window spanning the upgrade may dip. Aggregate away the label if you need continuity across the boundary:
+
+```promql
+sum(rate(githubsts_github_tokens_issued_total[5m])) by (github_app, scope)
+```
+
 ## Migration: metric labels renamed to avoid Kubernetes collisions
 
 **This release renames three metric labels on every `githubsts_` metric. Every dashboard query and alert rule that selects on them must be updated.**

@@ -16,6 +16,7 @@ Exchange an OIDC bearer token for a scoped GitHub installation token.
 | `scope` | Yes | Exact current canonical `org/repo` target. Organization-level scopes are rejected. |
 | `identity` | Yes | Policy selector, maps to `{base_path}/{app}/{identity}.sts.yaml` |
 | `app` | No | App name (defaults to single configured app) |
+| `permission` | No | Repeatable `name:level` pair narrowing the token below what the trust policy allows. Omit to receive everything the policy grants. |
 
 ```bash
 curl -H "Authorization: Bearer $OIDC_TOKEN" \
@@ -24,7 +25,7 @@ curl -H "Authorization: Bearer $OIDC_TOKEN" \
 
 ### `POST /sts/exchange`
 
-Same endpoint, JSON body variant.
+Same endpoint, JSON body variant. The `permissions` object is the body form of the `permission` query parameter.
 
 ```bash
 curl -X POST -H "Authorization: Bearer $OIDC_TOKEN" \
@@ -32,6 +33,38 @@ curl -X POST -H "Authorization: Bearer $OIDC_TOKEN" \
   -d '{"scope":"myorg/myrepo","app":"default","identity":"ci"}' \
   http://localhost:8080/sts/exchange
 ```
+
+### Requesting less privilege
+
+The trust policy is a ceiling, not a fixed grant. A caller may ask for a subset of the policy's permissions, or for a lower level than the policy allows, and receive a token limited to exactly that. This lets one policy serve a read-only job and a job that writes, instead of forcing either a second policy or an over-privileged token.
+
+```bash
+# policy grants contents:write and issues:write.
+# this job only reads, so it asks for only that.
+curl -X POST -H "Authorization: Bearer $OIDC_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"scope":"myorg/myrepo","app":"default","identity":"ci","permissions":{"contents":"read"}}' \
+  http://localhost:8080/sts/exchange
+
+# the same request over GET
+curl -H "Authorization: Bearer $OIDC_TOKEN" \
+  "http://localhost:8080/sts/exchange?scope=myorg/myrepo&app=default&identity=ci&permission=contents:read"
+```
+
+Narrowing can only ever reduce privilege, so it needs no opt-in in the trust policy. Every entry must already be granted by the policy at the same level or higher. Anything else is an escalation attempt and returns `400 bad_request` before any token is minted:
+
+| Policy grants | Request | Result |
+|---|---|---|
+| `contents: write` | `contents: read` | Token carries `contents: read` |
+| `contents: write` | `contents: write` | Token carries `contents: write` |
+| `contents: write`, `issues: write` | `contents: read` | Token carries `contents: read` only; `issues` is dropped |
+| `contents: write` | `packages: write` | `400` -- not granted by the policy |
+| `contents: write` | `contents: admin` | `400` -- above the policy ceiling |
+| `contents: write` | `{}` (empty object) | `400` -- omit the field instead |
+
+Omitting the field entirely keeps the previous behaviour: the token receives everything the policy grants.
+
+The error body is deliberately generic and names no permission, so a caller that cannot read the trust policy cannot map it out by probing. Operators get the full reason from the audit log via `trace_id`.
 
 ### Response
 
@@ -46,7 +79,8 @@ curl -X POST -H "Authorization: Bearer $OIDC_TOKEN" \
   "identity": "ci",
   "permissions": {
     "contents": "read",
-    "pull_requests": "write"
+    "pull_requests": "write",
+    "metadata": "read"
   }
 }
 ```
@@ -62,6 +96,8 @@ stops working when it does.
 The field is absent when GitHub returned no usable expiry. The token still works, so fall back to
 your own refresh interval rather than treating the absence as an error.
 
+`permissions` reports the grant GitHub actually attached to the token, read back from GitHub's create-token response. It is not the trust policy's ceiling and not the request. It can legitimately differ from both: GitHub adds `metadata: read` to every installation token, and a narrowed request reports the narrowed set. To learn what an identity is allowed to ask for, read its trust policy rather than this field.
+
 ### Error responses
 
 Error responses share this shape:
@@ -74,7 +110,7 @@ Error responses share this shape:
 
 | Status | `code` | What to fix |
 |---|---|---|
-| `400` | `bad_request` | Missing/invalid query params, malformed/non-canonical target scope, unsupported organization scope, or invalid JSON body. |
+| `400` | `bad_request` | Missing/invalid query params, malformed/non-canonical target scope, unsupported organization scope, invalid JSON body, or requested permissions the trust policy does not allow. |
 | `403` | `oidc_invalid` | OIDC token rejected (missing/expired, bad signature, unknown `iss`, missing `kid`, malformed). Refresh or re-mint the token; verify `allowed_issuers`. |
 | `403` | `github_identity_invalid` | GitHub.com source identity is missing immutable ID claims, has contradictory repository claims, or uses a legacy `sub` while immutable subjects are required. Check repository OIDC settings and the audit reason at `trace_id`. |
 | `403` | `audience_mismatch` | Token's `aud` does not match the policy's `audience:`. Pass the right value to `core.getIDToken(<audience>)` or update the policy. |

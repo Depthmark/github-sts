@@ -17,6 +17,7 @@ translationStatus: pending-review
 | `scope` | Oui | `org/repo` (niveau dépôt) ou `org` (niveau organisation) |
 | `identity` | Oui | Sélecteur de politique ; correspond à `{base_path}/{app}/{identity}.sts.yaml` |
 | `app` | Non | Nom de l'App (par défaut à l'App unique configurée) |
+| `permission` | Non | Paire `nom:niveau`, répétable, restreignant le jeton en deçà de ce que la politique de confiance autorise. Omettez-la pour recevoir tout ce que la politique accorde. |
 
 ```bash
 curl -H "Authorization: Bearer $OIDC_TOKEN" \
@@ -25,7 +26,7 @@ curl -H "Authorization: Bearer $OIDC_TOKEN" \
 
 ### `POST /sts/exchange`
 
-Même point de terminaison, variante avec corps JSON.
+Même point de terminaison, variante avec corps JSON. L'objet `permissions` est la forme « corps de requête » du paramètre `permission`.
 
 ```bash
 curl -X POST -H "Authorization: Bearer $OIDC_TOKEN" \
@@ -33,6 +34,38 @@ curl -X POST -H "Authorization: Bearer $OIDC_TOKEN" \
   -d '{"scope":"myorg/myrepo","app":"default","identity":"ci"}' \
   http://localhost:8080/sts/exchange
 ```
+
+### Demander moins de privilèges {#requesting-less-privilege}
+
+La politique de confiance est un plafond, pas une attribution figée. Un appelant peut demander un sous-ensemble des permissions de la politique, ou un niveau inférieur à celui qu'elle autorise, et recevoir un jeton limité à cela exactement. Une même politique peut ainsi servir une tâche en lecture seule et une tâche qui écrit, sans imposer ni une seconde politique ni un jeton surprivilégié.
+
+```bash
+# la politique accorde contents:write et issues:write.
+# cette tâche ne fait que lire : elle ne demande que cela.
+curl -X POST -H "Authorization: Bearer $OIDC_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"scope":"myorg/myrepo","app":"default","identity":"ci","permissions":{"contents":"read"}}' \
+  http://localhost:8080/sts/exchange
+
+# la même requête en GET
+curl -H "Authorization: Bearer $OIDC_TOKEN" \
+  "http://localhost:8080/sts/exchange?scope=myorg/myrepo&app=default&identity=ci&permission=contents:read"
+```
+
+Cette restriction ne peut que réduire les privilèges : elle ne nécessite donc aucune activation dans la politique de confiance. Chaque entrée doit déjà être accordée par la politique, au même niveau ou à un niveau supérieur. Toute autre demande constitue une tentative d'élévation et renvoie `400 bad_request` avant qu'aucun jeton ne soit émis :
+
+| La politique accorde | Requête | Résultat |
+|---|---|---|
+| `contents: write` | `contents: read` | Le jeton porte `contents: read` |
+| `contents: write` | `contents: write` | Le jeton porte `contents: write` |
+| `contents: write`, `issues: write` | `contents: read` | Le jeton porte uniquement `contents: read` ; `issues` est retiré |
+| `contents: write` | `packages: write` | `400` -- non accordé par la politique |
+| `contents: write` | `contents: admin` | `400` -- au-dessus du plafond de la politique |
+| `contents: write` | `{}` (objet vide) | `400` -- omettez plutôt le champ |
+
+Omettre entièrement le champ conserve le comportement précédent : le jeton reçoit tout ce que la politique accorde.
+
+Le corps d'erreur reste volontairement générique et ne nomme aucune permission : un appelant qui ne peut pas lire la politique de confiance ne peut donc pas la reconstituer en sondant le point de terminaison. Les opérateurs obtiennent la raison complète dans le journal d'audit via `trace_id`.
 
 ### Réponse
 
@@ -47,7 +80,8 @@ curl -X POST -H "Authorization: Bearer $OIDC_TOKEN" \
   "identity": "ci",
   "permissions": {
     "contents": "read",
-    "pull_requests": "write"
+    "pull_requests": "write",
+    "metadata": "read"
   }
 }
 ```
@@ -64,6 +98,8 @@ Le champ est absent lorsque GitHub n'a renvoyé aucune expiration exploitable. L
 valide : repliez-vous sur votre propre intervalle de renouvellement au lieu de traiter cette
 absence comme une erreur.
 
+`permissions` rapporte l'attribution que GitHub a réellement associée au jeton, relue depuis la réponse de création de jeton de GitHub. Ce n'est ni le plafond de la politique de confiance, ni la requête. Ce champ peut légitimement différer des deux : GitHub ajoute `metadata: read` à tout jeton d'installation, et une requête restreinte rapporte l'ensemble restreint. Pour savoir ce qu'une identité a le droit de demander, consultez sa politique de confiance plutôt que ce champ.
+
 ### Réponses d'erreur {#error-responses}
 
 Les réponses d'erreur partagent cette forme :
@@ -76,7 +112,7 @@ Les réponses d'erreur partagent cette forme :
 
 | Statut | `code` | Que corriger |
 |---|---|---|
-| `400` | `bad_request` | Paramètres de requête ou corps JSON manquants/invalides. |
+| `400` | `bad_request` | Paramètres de requête manquants/invalides, portée cible malformée ou non canonique, portée organisation non prise en charge, corps JSON invalide, ou permissions demandées que la politique de confiance n'autorise pas. |
 | `403` | `oidc_invalid` | Jeton OIDC rejeté (manquant/expiré, signature invalide, `iss` inconnu, `kid` manquant, malformé). Rafraîchissez ou réémettez le jeton ; vérifiez `allowed_issuers`. |
 | `403` | `audience_mismatch` | L'`aud` du jeton ne correspond pas à l'`audience:` de la politique. Transmettez la bonne valeur à `core.getIDToken(<audience>)` ou mettez à jour la politique. |
 | `403` | `app_unknown` | `?app=` ne correspond à aucune App configurée. Vérifiez l'orthographe ou omettez-le lorsqu'une seule App est configurée. |

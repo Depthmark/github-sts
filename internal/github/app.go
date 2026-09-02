@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/depthmark/github-sts/internal/metrics"
+	"github.com/depthmark/github-sts/internal/policy"
 	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/sync/singleflight"
 )
@@ -257,18 +258,157 @@ func (p *AppTokenProvider) GetGrantedPermissions(scope string) map[string]string
 	return out
 }
 
-// IssuedToken is a freshly minted GitHub installation token together with
-// the absolute expiry GitHub reported for it. ExpiresAt is what lets the
-// broker tell callers how long the token is good for (RFC 8693 expires_in)
-// instead of making them assume GitHub's current one-hour default.
-//
-// ExpiresAt is the zero time when GitHub omitted expires_at or sent a value
-// we could not parse. The token is still usable, so that is not an error —
-// callers must treat a zero ExpiresAt as "lifetime unknown" and fall back to
-// their own refresh heuristic rather than reporting an expiry they invented.
-type IssuedToken struct {
-	Token     string
+// MintedToken is one installation token plus the grant GitHub actually
+// attached to it. Permissions comes from the 201 response body, not from
+// what we requested: the two are expected to agree, but only the response
+// is authoritative, and callers that report a token's scope to a client
+// must report this rather than the ask. Never log Token (BR-2A-17).
+type MintedToken struct {
+	Token       string
+	Permissions map[string]string
+
+	// ExpiresAt is the absolute expiry GitHub reported, which is what lets
+	// the broker tell callers how long the token is good for (RFC 8693
+	// expires_in) instead of making them assume GitHub's one-hour default.
+	//
+	// It is the zero time when GitHub omitted expires_at or sent a value we
+	// could not parse. The token is still usable, so that is not an error —
+	// callers must treat a zero ExpiresAt as "lifetime unknown" and fall
+	// back to their own refresh heuristic rather than reporting an expiry
+	// they invented.
 	ExpiresAt time.Time
+
+	// InstallationPermissions is what the GitHub App installation itself
+	// holds on the target org: the absolute ceiling above the trust policy,
+	// and the blast radius of this credential if it were compromised. It
+	// comes from the instance that actually minted the token, so in a pool
+	// there is no ambiguity about whose installation it describes.
+	//
+	// This is the *installation's* grant, not the App's registered
+	// permissions. They differ whenever the App declares a permission the
+	// org admin has not yet accepted; the accepted set is the one that
+	// governs, and the unaccepted delta is a common cause of 422s (see
+	// permissionDiffHint).
+	//
+	// nil when the installation cache entry expired between the mint and
+	// this read, which is rare and non-fatal: callers log it as unknown
+	// rather than treating it as "no permissions".
+	InstallationPermissions map[string]string
+}
+
+// implicitPermissions are permissions GitHub attaches to an installation
+// token regardless of what was requested, so seeing them in a grant that
+// did not ask for them is normal and must not be reported as divergence.
+//
+// PROVISIONAL: confirm against real API output before trusting this list —
+// run tools/probe-token-permissions.sh and reconcile. metadata:read is
+// GitHub's documented always-on repository permission; if the probe shows
+// others, add them here rather than loosening the comparison.
+var implicitPermissions = map[string]bool{
+	"metadata": true,
+}
+
+// checkPermissionDivergence compares the grant GitHub returned against what
+// was requested and reports any mismatch.
+//
+// The two directions are not equally serious. An over-grant means the token
+// can do more than the caller asked for, which is a privilege-boundary
+// failure and the thing that makes narrowing meaningful at all: if GitHub
+// silently upgraded a requested read back to the installation's write, every
+// narrowed request would be a lie. An under-grant is surprising and worth
+// knowing about, but it fails safe. Both are counted; both warn.
+//
+// A nil requested set means "inherit everything the installation has", so
+// there is no ask to compare against and the check is skipped.
+func (p *AppTokenProvider) checkPermissionDivergence(granted, requested map[string]string, scope, caller string) {
+	if requested == nil || granted == nil {
+		return
+	}
+
+	var above, below []string
+	for _, perm := range sortedPermissionNames(granted) {
+		grantedLevel := granted[perm]
+		requestedLevel, asked := requested[perm]
+		if !asked {
+			if implicitPermissions[perm] {
+				continue
+			}
+			above = append(above, fmt.Sprintf("%s (granted %s, not requested)", perm, grantedLevel))
+			continue
+		}
+		if policy.PermissionRank(grantedLevel) > policy.PermissionRank(requestedLevel) {
+			above = append(above, fmt.Sprintf("%s (requested %s, granted %s)", perm, requestedLevel, grantedLevel))
+		}
+	}
+	for _, perm := range sortedPermissionNames(requested) {
+		requestedLevel := requested[perm]
+		grantedLevel, ok := granted[perm]
+		if !ok {
+			below = append(below, fmt.Sprintf("%s (requested %s, not granted)", perm, requestedLevel))
+			continue
+		}
+		if policy.PermissionRank(grantedLevel) < policy.PermissionRank(requestedLevel) {
+			below = append(below, fmt.Sprintf("%s (requested %s, granted %s)", perm, requestedLevel, grantedLevel))
+		}
+	}
+
+	for _, entry := range above {
+		metrics.GitHubTokenPermissionDivergence.WithLabelValues(p.appName, p.instance, permissionNameOf(entry), "above_requested").Inc()
+	}
+	for _, entry := range below {
+		metrics.GitHubTokenPermissionDivergence.WithLabelValues(p.appName, p.instance, permissionNameOf(entry), "below_requested").Inc()
+	}
+
+	if len(above) > 0 {
+		slog.Warn("github granted more permission than requested",
+			"app", p.appName, "instance", p.instance, "scope", scope, "caller", caller,
+			"requested_permissions", policy.FormatPermissions(requested),
+			"granted_permissions", policy.FormatPermissions(granted),
+			"divergence", strings.Join(above, "; "),
+			"hint", "the token exceeds what the caller asked for; narrowing is not being honored upstream",
+		)
+	}
+	if len(below) > 0 {
+		slog.Warn("github granted less permission than requested",
+			"app", p.appName, "instance", p.instance, "scope", scope, "caller", caller,
+			"requested_permissions", policy.FormatPermissions(requested),
+			"granted_permissions", policy.FormatPermissions(granted),
+			"divergence", strings.Join(below, "; "),
+			"hint", "fails safe, but callers may see unexpected 403s from the GitHub API",
+		)
+	}
+}
+
+// permissionNameOf recovers the bare permission name from a divergence
+// entry so it can be used as a metric label. The name is always the first
+// space-separated field, and it comes from GitHub's fixed permission set,
+// which keeps the label bounded.
+func permissionNameOf(entry string) string {
+	if idx := strings.IndexByte(entry, ' '); idx > 0 {
+		return entry[:idx]
+	}
+	return entry
+}
+
+func sortedPermissionNames(perms map[string]string) []string {
+	names := make([]string, 0, len(perms))
+	for name := range perms {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func equalPermissions(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if bv, ok := b[k]; !ok || bv != v {
+			return false
+		}
+	}
+	return true
 }
 
 // GetInstallationToken creates a permission-scoped GitHub installation token.
@@ -287,28 +427,30 @@ func (p *AppTokenProvider) GetInstallationToken(ctx context.Context, scope strin
 		parts := strings.SplitN(scope, "/", 2)
 		repositories = []string{parts[1]}
 	}
-	issued, err := p.getInstallationToken(ctx, scope, permissions, repositories, nil, caller)
+	// No ceiling: this path (policy-file reads, target resolution) has no
+	// caller-supplied narrowing, so the requested set is its own ceiling.
+	minted, err := p.getInstallationToken(ctx, scope, permissions, repositories, nil, nil, caller)
 	if err != nil {
 		return "", err
 	}
-	return issued.Token, nil
+	return minted.Token, nil
 }
 
-func (p *AppTokenProvider) getInstallationToken(ctx context.Context, scope string, permissions map[string]string, repositories []string, repositoryIDs []int64, caller string) (IssuedToken, error) {
+func (p *AppTokenProvider) getInstallationToken(ctx context.Context, scope string, permissions map[string]string, repositories []string, repositoryIDs []int64, ceiling map[string]string, caller string) (MintedToken, error) {
 	if repositories != nil && repositoryIDs != nil {
-		return IssuedToken{}, fmt.Errorf("repository names and IDs are mutually exclusive")
+		return MintedToken{}, fmt.Errorf("repository names and IDs are mutually exclusive")
 	}
 	if repositoryIDs != nil && len(repositoryIDs) == 0 {
-		return IssuedToken{}, fmt.Errorf("refusing to create an unrestricted installation token from an empty repository ID list")
+		return MintedToken{}, fmt.Errorf("refusing to create an unrestricted installation token from an empty repository ID list")
 	}
 	installationID, err := p.GetInstallationID(ctx, scope)
 	if err != nil {
-		return IssuedToken{}, err
+		return MintedToken{}, err
 	}
 
 	appJWT, err := p.GenerateAppJWT()
 	if err != nil {
-		return IssuedToken{}, &TokenMintError{Retryable: true, Err: fmt.Errorf("generating app JWT: %w", err)}
+		return MintedToken{}, &TokenMintError{Retryable: true, Err: fmt.Errorf("generating app JWT: %w", err)}
 	}
 
 	// Build request body with permissions and optional repository restriction.
@@ -325,13 +467,13 @@ func (p *AppTokenProvider) getInstallationToken(ctx context.Context, scope strin
 
 	var reqBody bytes.Buffer
 	if err := json.NewEncoder(&reqBody).Encode(body); err != nil {
-		return IssuedToken{}, &TokenMintError{Retryable: true, Err: err}
+		return MintedToken{}, &TokenMintError{Retryable: true, Err: err}
 	}
 
 	url := fmt.Sprintf("%s/app/installations/%d/access_tokens", p.apiURL, installationID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, &reqBody)
 	if err != nil {
-		return IssuedToken{}, &TokenMintError{Retryable: true, Err: err}
+		return MintedToken{}, &TokenMintError{Retryable: true, Err: err}
 	}
 	req.Header.Set("Authorization", "Bearer "+appJWT)
 	req.Header.Set("Accept", "application/vnd.github+json")
@@ -340,7 +482,7 @@ func (p *AppTokenProvider) getInstallationToken(ctx context.Context, scope strin
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
 		metrics.GitHubAPICalls.WithLabelValues(p.appName, p.instance, "create_token", "error").Inc()
-		return IssuedToken{}, &TokenMintError{Retryable: true, Err: fmt.Errorf("creating installation token: %w", err)}
+		return MintedToken{}, &TokenMintError{Retryable: true, Err: fmt.Errorf("creating installation token: %w", err)}
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -370,7 +512,7 @@ func (p *AppTokenProvider) getInstallationToken(ctx context.Context, scope strin
 			"caller", caller,
 			"hint", permissionDiffHint(diff, granted),
 		)
-		return IssuedToken{}, &TokenMintError{StatusCode: resp.StatusCode, Retryable: false, Err: fmt.Errorf(
+		return MintedToken{}, &TokenMintError{StatusCode: resp.StatusCode, Retryable: false, Err: fmt.Errorf(
 			"github refused to create token for app %q instance %q scope %q — "+
 				"the requested permissions or repositories may exceed what the app is allowed (HTTP 422): %s",
 			p.appName, p.instance, scope, string(respBody))}
@@ -378,7 +520,7 @@ func (p *AppTokenProvider) getInstallationToken(ctx context.Context, scope strin
 	if resp.StatusCode != http.StatusCreated {
 		metrics.GitHubAPICalls.WithLabelValues(p.appName, p.instance, "create_token", "error").Inc()
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return IssuedToken{}, &TokenMintError{
+		return MintedToken{}, &TokenMintError{
 			StatusCode: resp.StatusCode,
 			Retryable:  isRetryableTokenMintStatus(resp),
 			Err: fmt.Errorf("creating installation token for app %q instance %q scope %q: GitHub API returned HTTP %d: %s",
@@ -386,37 +528,70 @@ func (p *AppTokenProvider) getInstallationToken(ctx context.Context, scope strin
 		}
 	}
 
+	// GitHub echoes the token's *actual* grant back in the 201. That is the
+	// only authoritative statement of what this credential can do — what we
+	// asked for in `permissions` is just a request — so decode it and carry
+	// it up rather than assuming the ask was honored verbatim.
 	var result struct {
-		Token     string `json:"token"`
-		ExpiresAt string `json:"expires_at"`
+		Token       string            `json:"token"`
+		ExpiresAt   string            `json:"expires_at"`
+		Permissions map[string]string `json:"permissions"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return IssuedToken{}, &TokenMintError{StatusCode: resp.StatusCode, Retryable: false, Err: err}
+		return MintedToken{}, &TokenMintError{StatusCode: resp.StatusCode, Retryable: false, Err: err}
 	}
 
 	// GitHub documents expires_at as RFC 3339 (currently one hour out), but a
 	// token we already hold is worth more than a lifetime hint: an absent or
 	// unparseable value degrades to "lifetime unknown" instead of discarding
-	// a valid credential. See IssuedToken.
-	issued := IssuedToken{Token: result.Token}
+	// a valid credential. See MintedToken.
+	var expiresAt time.Time
 	if result.ExpiresAt != "" {
-		expiresAt, parseErr := time.Parse(time.RFC3339, result.ExpiresAt)
+		parsed, parseErr := time.Parse(time.RFC3339, result.ExpiresAt)
 		if parseErr != nil {
 			slog.Warn("github returned an unparseable token expiry",
 				"app", p.appName, "instance", p.instance, "scope", scope,
 				"expires_at", result.ExpiresAt, "error", parseErr, "caller", caller)
 		} else {
-			issued.ExpiresAt = expiresAt
+			expiresAt = parsed
 		}
 	}
 
-	// Emit metrics — NEVER log the token value (BR-2A-17).
-	permStr := formatPermissions(permissions)
-	metrics.GitHubTokenIssued.WithLabelValues(p.appName, p.instance, scope, permStr).Inc()
-	metrics.GitHubAPICalls.WithLabelValues(p.appName, p.instance, "create_token", "ok").Inc()
-	slog.Info("installation token issued", "app", p.appName, "instance", p.instance, "scope", scope, "permissions", permStr, "caller", caller)
+	p.checkPermissionDivergence(result.Permissions, permissions, scope, caller)
 
-	return issued, nil
+	// Label the issuance metric from the policy ceiling, never from the
+	// effective set. The ceiling is policy-derived and therefore bounded;
+	// the effective set is caller-controlled and would otherwise add one
+	// series per requestable subset (see internal/metrics/metrics.go).
+	labelPermissions := ceiling
+	if labelPermissions == nil {
+		labelPermissions = permissions
+	}
+
+	// Emit metrics — NEVER log the token value (BR-2A-17).
+	permStr := policy.FormatPermissions(labelPermissions)
+	narrowed := strconv.FormatBool(!equalPermissions(permissions, labelPermissions))
+	metrics.GitHubTokenIssued.WithLabelValues(p.appName, p.instance, scope, permStr, narrowed).Inc()
+	metrics.GitHubAPICalls.WithLabelValues(p.appName, p.instance, "create_token", "ok").Inc()
+	slog.Info("installation token issued",
+		"app", p.appName,
+		"instance", p.instance,
+		"scope", scope,
+		"permissions", permStr,
+		"requested_permissions", policy.FormatPermissions(permissions),
+		"granted_permissions", policy.FormatPermissions(result.Permissions),
+		"narrowed", narrowed,
+		"caller", caller,
+	)
+
+	return MintedToken{
+		Token:       result.Token,
+		Permissions: result.Permissions,
+		ExpiresAt:   expiresAt,
+		// Already resolved and cached by GetInstallationID above, so this
+		// is a map copy rather than another API call.
+		InstallationPermissions: p.GetGrantedPermissions(scope),
+	}, nil
 }
 
 // isRetryableTokenMintStatus reports whether a non-201, non-422
@@ -522,41 +697,6 @@ func extractOrg(scope string) string {
 	return scope
 }
 
-// formatPermissions renders a permission set as a compact
-// "name:level,name:level" string, sorted by permission name.
-//
-// The sort is not cosmetic. This string is used as a Prometheus label value
-// on githubsts_github_tokens_issued_total, and Go randomizes map iteration
-// order: an unsorted join produces a different string on different calls for
-// the *same* permission set, splitting one logical time series into as many
-// as n! of them and making log lines for identical grants fail to group.
-func formatPermissions(perms map[string]string) string {
-	if len(perms) == 0 {
-		return "all"
-	}
-	names := make([]string, 0, len(perms))
-	for name := range perms {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-
-	parts := make([]string, 0, len(names))
-	for _, name := range names {
-		parts = append(parts, name+":"+perms[name])
-	}
-	return strings.Join(parts, ",")
-}
-
-// permissionLevels orders GitHub App permission levels from least to most
-// privileged. Used to detect "insufficient" grants (e.g. requested write,
-// granted read).
-var permissionLevels = map[string]int{
-	"none":  0,
-	"read":  1,
-	"write": 2,
-	"admin": 3,
-}
-
 // PermissionDiffEntry describes how a single requested permission compares to
 // what the installation actually has.
 type PermissionDiffEntry struct {
@@ -600,7 +740,7 @@ func DiffPermissions(requested, granted map[string]string) []PermissionDiffEntry
 		switch {
 		case !ok:
 			entry.Status = "missing"
-		case permissionLevels[got] >= permissionLevels[req]:
+		case policy.PermissionRank(got) >= policy.PermissionRank(req):
 			entry.Status = "ok"
 		default:
 			entry.Status = "insufficient"

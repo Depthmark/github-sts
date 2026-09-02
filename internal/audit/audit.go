@@ -10,6 +10,7 @@ import (
 
 	"github.com/depthmark/github-sts/internal/bundle"
 	"github.com/depthmark/github-sts/internal/metrics"
+	"github.com/depthmark/github-sts/internal/policy"
 )
 
 // auditLogLevel returns the appropriate slog level for a given exchange result.
@@ -89,15 +90,35 @@ type Event struct {
 	PolicyBlobSHA    string `json:"policy_blob_sha,omitempty"`
 	PolicySource     string `json:"policy_source,omitempty"`
 
-	Result            ExchangeResult   `json:"result"`
-	ErrorReason       string           `json:"error_reason,omitempty"`
-	DurationMS        int64            `json:"duration_ms"`
-	UserAgent         string           `json:"user_agent,omitempty"`
-	RemoteIP          string           `json:"remote_ip,omitempty"`
-	OrgDecision       *OrgDecision     `json:"org_decision,omitempty"`
-	BundleDigest      string           `json:"bundle_digest,omitempty"`
-	BundleEnforcement string           `json:"bundle_enforcement"`
-	BundleDecisions   []BundleDecision `json:"bundle_decisions,omitempty"`
+	// Four permission sets, recorded separately because they can
+	// legitimately differ and a reviewer needs to tell which stage narrowed
+	// what. They form a descending chain, each bounded by the one above:
+	//
+	//   InstallationPermissions  what the GitHub App installation holds on
+	//                            the org — the absolute ceiling, and the
+	//                            blast radius if this credential leaked
+	//   PolicyPermissions        what the trust policy allows this identity
+	//   RequestedPermissions     what the caller asked for (absent when the
+	//                            caller did not narrow)
+	//   GrantedPermissions       what GitHub attached to the token — the
+	//                            only one describing what it can really do
+	//
+	// Recording the installation level is what lets an auditor answer a
+	// question the other three cannot: not "was this exchange correct" but
+	// "how much power does this broker hold that nothing here needed".
+	InstallationPermissions map[string]string `json:"installation_permissions,omitempty"`
+	PolicyPermissions       map[string]string `json:"policy_permissions,omitempty"`
+	RequestedPermissions    map[string]string `json:"requested_permissions,omitempty"`
+	GrantedPermissions      map[string]string `json:"granted_permissions,omitempty"`
+	Result                  ExchangeResult    `json:"result"`
+	ErrorReason             string            `json:"error_reason,omitempty"`
+	DurationMS              int64             `json:"duration_ms"`
+	UserAgent               string            `json:"user_agent,omitempty"`
+	RemoteIP                string            `json:"remote_ip,omitempty"`
+	OrgDecision             *OrgDecision      `json:"org_decision,omitempty"`
+	BundleDigest            string            `json:"bundle_digest,omitempty"`
+	BundleEnforcement       string            `json:"bundle_enforcement"`
+	BundleDecisions         []BundleDecision  `json:"bundle_decisions,omitempty"`
 }
 
 // OrgDecision is the bundle's verdict captured in the audit trail. Allow
@@ -292,6 +313,26 @@ func (fl *FileLogger) writer() {
 			}
 			if event.PolicySource != "" {
 				attrs = append(attrs, "policy_source", event.PolicySource)
+			}
+			// Permission sets, rendered as sorted "name:level,…" strings
+			// rather than maps: this stream is grepped and shipped to log
+			// aggregators, where a stable scalar groups and filters and a
+			// map does not. The JSON audit file keeps the structured maps.
+			//
+			// All three are emitted whenever the exchange got far enough to
+			// have them, including on failures, so a denied or errored
+			// request still shows what was asked for.
+			if len(event.InstallationPermissions) > 0 {
+				attrs = append(attrs, "installation_permissions", policy.FormatPermissions(event.InstallationPermissions))
+			}
+			if len(event.PolicyPermissions) > 0 {
+				attrs = append(attrs, "policy_permissions", policy.FormatPermissions(event.PolicyPermissions))
+			}
+			if len(event.RequestedPermissions) > 0 {
+				attrs = append(attrs, "requested_permissions", policy.FormatPermissions(event.RequestedPermissions))
+			}
+			if len(event.GrantedPermissions) > 0 {
+				attrs = append(attrs, "granted_permissions", policy.FormatPermissions(event.GrantedPermissions))
 			}
 			if event.ImmutableSubject != nil {
 				attrs = append(attrs, "immutable_subject", *event.ImmutableSubject)

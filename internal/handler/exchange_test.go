@@ -73,6 +73,9 @@ type mockExchangeApp struct {
 	lastScope    github.RepositoryScope
 	lastTarget   github.TargetIdentity
 	lastPerms    map[string]string
+	lastCeiling  map[string]string
+	grantedPerms map[string]string
+	installPerms map[string]string
 }
 
 func (m *mockExchangeApp) ResolveTarget(_ context.Context, scope github.RepositoryScope) (github.TargetIdentity, error) {
@@ -90,12 +93,13 @@ func (m *mockExchangeApp) ResolveTarget(_ context.Context, scope github.Reposito
 	return m.target, nil
 }
 
-func (m *mockExchangeApp) GetInstallationTokenForTarget(_ context.Context, target github.TargetIdentity, permissions map[string]string, _ string) (github.IssuedToken, string, error) {
+func (m *mockExchangeApp) GetInstallationTokenForTarget(_ context.Context, target github.TargetIdentity, permissions github.PermissionRequest, _ string) (github.MintedToken, string, error) {
 	m.mintCalls++
 	m.lastTarget = target
-	m.lastPerms = permissions
+	m.lastPerms = permissions.Effective
+	m.lastCeiling = permissions.Ceiling
 	if m.mintErr != nil {
-		return github.IssuedToken{}, "", m.mintErr
+		return github.MintedToken{}, "", m.mintErr
 	}
 	token := m.token
 	if token == "" {
@@ -108,7 +112,18 @@ func (m *mockExchangeApp) GetInstallationTokenForTarget(_ context.Context, targe
 	if m.noExpiry {
 		expiresAt = time.Time{}
 	}
-	return github.IssuedToken{Token: token, ExpiresAt: expiresAt}, m.instance, nil
+	// Default to echoing the ask, the way GitHub is expected to behave.
+	// A test that needs a divergent grant sets grantedPerms explicitly.
+	granted := m.grantedPerms
+	if granted == nil {
+		granted = permissions.Effective
+	}
+	return github.MintedToken{
+		Token:                   token,
+		Permissions:             granted,
+		ExpiresAt:               expiresAt,
+		InstallationPermissions: m.installPerms,
+	}, m.instance, nil
 }
 
 // recordingAuditLogger captures audit events for assertion.

@@ -86,7 +86,8 @@ When the setting is empty, the endpoint remains unauthenticated. HTTPS protects 
 | Metric | Type | Description |
 |---|---|---|
 | `githubsts_github_api_calls_total` | Counter | GitHub API calls by github_app, github_app_instance, api_endpoint, result |
-| `githubsts_github_tokens_issued_total` | Counter | Tokens issued by github_app, github_app_instance, scope, permissions |
+| `githubsts_github_tokens_issued_total` | Counter | Tokens issued by github_app, github_app_instance, scope, permissions, narrowed |
+| `githubsts_github_token_permission_divergence_total` | Counter | Permissions where GitHub's actual grant differed from the request, by github_app, github_app_instance, permission, direction |
 | `githubsts_github_rate_limit_remaining` | Gauge | Remaining rate limit by github_app, github_app_instance, resource |
 | `githubsts_github_rate_limit_limit` | Gauge | Maximum requests allowed in current window, by github_app, github_app_instance, resource |
 | `githubsts_github_rate_limit_used` | Gauge | Requests used in current window, by github_app, github_app_instance, resource |
@@ -218,4 +219,28 @@ githubsts_bundle_policy_exception_seconds_until_expiration < 604800
 
 # Expired exceptions remain in the loaded bundle
 githubsts_bundle_policy_exceptions_total{status="expired"} > 0
+```
+
+## Permission narrowing
+
+`githubsts_github_tokens_issued_total` labels `permissions` with the **trust policy's ceiling**, not with the permission set the token was actually minted with. Callers may narrow a request to any subset of that ceiling at any level below it, so labelling by the effective set would create one series per requestable combination, under the control of anyone holding a valid identity. The bounded `narrowed` label records whether a request asked for less than the policy allows:
+
+```promql
+# share of exchanges that requested less than their policy grants
+sum(rate(githubsts_github_tokens_issued_total{narrowed="true"}[1h]))
+  / sum(rate(githubsts_github_tokens_issued_total[1h]))
+```
+
+The exact permission sets are recorded per exchange in the audit log (`policy_permissions`, `requested_permissions`, `granted_permissions`), which has no cardinality budget to protect.
+
+`githubsts_github_token_permission_divergence_total` fires when the grant GitHub returned in its create-token response differs from what was requested. The two directions are not equally serious:
+
+- `direction="above_requested"` means the token can do more than the caller asked for. This is a privilege-boundary failure and should be alerted on: it means narrowing is not being honoured upstream, and every narrowed token is broader than it claims.
+- `direction="below_requested"` means the token can do less. It fails safe, but callers will see unexpected `403`s from the GitHub API.
+
+Permissions GitHub attaches implicitly (currently `metadata`) are excluded, so a healthy broker sits at zero on both.
+
+```promql
+# any over-grant at all is worth paging on
+sum(increase(githubsts_github_token_permission_divergence_total{direction="above_requested"}[15m])) > 0
 ```

@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -492,6 +493,109 @@ func PermissionLevelAllowed(permission, level string) bool {
 func ValidPermission(permission string) bool {
 	_, ok := ValidPermissionLevels[permission]
 	return ok
+}
+
+// permissionRank orders GitHub App permission levels from least to most
+// privileged. "none" is not a level a trust policy may declare; it is the
+// rank of an absent permission, which makes ceiling comparisons total.
+var permissionRank = map[string]int{
+	"none":  0,
+	"read":  1,
+	"write": 2,
+	"admin": 3,
+}
+
+// PermissionRank returns the privilege ordering of a GitHub App permission
+// level. An unrecognized level ranks 0 ("none") so a malformed value can
+// never compare as more privileged than a known one.
+func PermissionRank(level string) int { return permissionRank[level] }
+
+// NarrowPermissions resolves the effective permission set for one exchange.
+//
+// ceiling is the trust policy's permission map: the most this identity may
+// ever obtain. requested is the caller's optional narrowing ask. A nil
+// requested means "everything the policy allows" and returns a copy of the
+// ceiling, which is the behavior every caller had before narrowing existed.
+//
+// Narrowing may only ever reduce privilege. Asking for a permission the
+// policy does not grant, or for a level above what it grants, is an
+// escalation attempt and returns a *ValidationError. An explicitly empty
+// (non-nil) request is also rejected rather than silently treated as "all":
+// a caller that builds the map programmatically and ends up with zero
+// entries must fail loudly, not receive a full-privilege token.
+func NarrowPermissions(ceiling, requested map[string]string) (map[string]string, error) {
+	if requested == nil {
+		out := make(map[string]string, len(ceiling))
+		for perm, level := range ceiling {
+			out[perm] = level
+		}
+		return out, nil
+	}
+	if len(requested) == 0 {
+		return nil, validationErrorf("requested permissions is empty: omit the field to request everything the trust policy allows")
+	}
+
+	// Iterate in sorted order so a request with several problems always
+	// reports the same one, keeping errors reproducible for callers and
+	// tests.
+	names := make([]string, 0, len(requested))
+	for perm := range requested {
+		names = append(names, perm)
+	}
+	sort.Strings(names)
+
+	out := make(map[string]string, len(requested))
+	for _, perm := range names {
+		level := requested[perm]
+		if !ValidPermission(perm) {
+			return nil, validationErrorf("requested permission %q is not a recognized GitHub App permission", perm)
+		}
+		// Check the pair, not the level alone: the levels GitHub accepts
+		// differ per permission, so a narrowing request for "contents: admin"
+		// is invalid even though "admin" is a level some permissions take.
+		if !PermissionLevelAllowed(perm, level) {
+			return nil, validationErrorf("requested level %q for permission %q is not one GitHub accepts (%s)",
+				level, perm, strings.Join(ValidPermissionLevels[perm], ", "))
+		}
+		allowed, ok := ceiling[perm]
+		if !ok {
+			return nil, validationErrorf("requested permission %q is not granted by the trust policy", perm)
+		}
+		if PermissionRank(level) > PermissionRank(allowed) {
+			return nil, validationErrorf("requested level %q for permission %q exceeds the trust policy ceiling %q", level, perm, allowed)
+		}
+		out[perm] = level
+	}
+	return out, nil
+}
+
+// FormatPermissions renders a permission set as a compact, deterministic
+// "name:level,name:level" string, sorted by permission name.
+//
+// The sort is not cosmetic. This string is used as a Prometheus label value
+// and as a log field, and Go randomizes map iteration order: an unsorted
+// join produces a different string on different calls for the *same* set,
+// which splits one logical time series into as many as n! of them and makes
+// log lines for identical grants fail to group.
+//
+// An empty set renders as "all", matching the GitHub API's semantics: a
+// create-token request that omits `permissions` inherits everything the
+// installation was granted.
+func FormatPermissions(perms map[string]string) string {
+	if len(perms) == 0 {
+		return "all"
+	}
+	names := make([]string, 0, len(perms))
+	for name := range perms {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	parts := make([]string, 0, len(names))
+	for _, name := range names {
+		parts = append(parts, name+":"+perms[name])
+	}
+	return strings.Join(parts, ",")
 }
 
 // GitBlobSHA returns git's object hash for the given file content: the same
