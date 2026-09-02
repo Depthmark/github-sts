@@ -18,6 +18,10 @@ github-sts ne stocke jamais de jetons OIDC, de PAT GitHub ni de crédentiels à 
 
 Chaque échange de jeton est médié par une **politique de confiance** qui déclare exactement les autorisations que reçoit la charge de travail demandeuse. Il n'y a pas de repli par défaut qui accorderait un accès étendu ; si aucune politique ne correspond, l'échange est rejeté.
 
+La politique est un plafond plutôt qu'une attribution figée. Un appelant peut en demander un sous-ensemble, ou un niveau inférieur, et recevoir un jeton limité à cela exactement ([Demander moins de privilèges]({{< relref "/reference/api#requesting-less-privilege" >}})). Comme cette restriction ne peut que réduire les privilèges, elle ne nécessite aucune activation : une requête nommant une permission que la politique n'accorde pas, ou un niveau supérieur à celui qu'elle accorde, est rejetée avec un `400` avant qu'aucun jeton ne soit émis. Une même politique peut ainsi servir une tâche en lecture seule et une tâche qui écrit, sans imposer de choix entre une seconde politique et un jeton surprivilégié.
+
+Cette restriction est appliquée par GitHub, et pas seulement demandée. Le broker lit l'objet `permissions` que GitHub renvoie lors de la création du jeton et le compare à ce qui a été demandé. Une attribution plus large que la requête incrémente `githubsts_github_token_permission_divergence_total{direction="above_requested"}` et journalise un avertissement : un jeton qui dépasse silencieusement sa requête devient visible au lieu d'être supposé impossible.
+
 ### 3. Liaison d'audience
 
 Chaque politique de confiance doit déclarer une `audience`, et chaque jeton OIDC doit porter cette audience. Cela empêche la réutilisation de jeton inter-RP : un jeton émis pour un autre service ne peut pas être échangé auprès de github-sts.
@@ -109,6 +113,10 @@ Chaque échange de jeton produit une entrée de journal d'audit structurée cont
 - `policy_repository`, `policy_path`: le fichier qui a régi cet échange
 - `policy_blob_sha`: le hachage d'objet git des octets de politique exactement évalués
 - `policy_source`: `centralized` (dépôt de politiques de l'organisation) ou `repository` (dépôt demandeur)
+- `installation_permissions`: ce que détient l'installation de la GitHub App sur l'organisation
+- `policy_permissions`: le plafond de la politique de confiance, enregistré dès que la politique est reconnue bien formée
+- `requested_permissions`: la demande de restriction de l'appelant, absente si l'appelant n'a rien restreint
+- `granted_permissions`: ce que GitHub a réellement associé au jeton, absent si aucun jeton n'a été émis
 
 ### Provenance de la politique
 
@@ -134,5 +142,32 @@ git log --find-object=58970eea7611182acab5675ba8f56451ca607cda
 L'adressage par contenu est délibéré. Un hachage de blob survit aux force-push et aux rebases, et deux commits portant des octets de politique identiques constituent la même politique du point de vue de l'audit. Le commit reste atteignable, à la demande, via `--find-object`. Le hachage est en SHA-1 parce que git est en SHA-1 : l'objectif est de correspondre à l'identité git, et la valeur est un enregistrement de ce qui a été évalué, jamais une entrée d'une décision d'autorisation.
 
 `policy_source` indique quel côté a remporté la résolution. Ce n'est pas cosmétique : en [résolution `repo_first`]({{< relref "/concepts/trust-policies#policy-resolution" >}}), le propriétaire d'un dépôt peut supplanter la politique centralisée de l'organisation, et le journal d'audit est le seul endroit où cette différence reste visible a posteriori.
+
+### La chaîne de privilèges
+
+Ces quatre champs forment une chaîne décroissante, chacun borné par celui du dessus :
+
+```text
+level=INFO msg=audit trace_id=… scope=myorg/myrepo app=default identity=ci result=success
+  installation_permissions=administration:write,contents:write,issues:write,metadata:read
+  policy_permissions=contents:write,issues:write
+  requested_permissions=contents:read
+  granted_permissions=contents:read,metadata:read
+```
+
+Chaque niveau répond à une question que les autres ne couvrent pas :
+
+| Champ | Question à laquelle il répond | Qui l'a restreint |
+|---|---|---|
+| `installation_permissions` | Que peut faire ce broker sur cette organisation, au maximum ? | L'administrateur de l'organisation, à l'installation de l'App |
+| `policy_permissions` | Que cette identité a-t-elle le droit d'obtenir ? | L'auteur de la politique de confiance |
+| `requested_permissions` | Qu'est-ce que cet appelant comptait utiliser ? | La charge de travail, à chaque requête |
+| `granted_permissions` | Que peut réellement faire ce jeton ? | GitHub, au moment de l'émission |
+
+Lus ensemble, ils distinguent deux constats très différents. Un écart entre `requested` et `granted` signifie que la restriction n'est pas honorée en amont : c'est un défaut. Un écart entre `installation_permissions` et `policy_permissions` signifie que l'App est provisionnée au-delà de ce qu'aucune politique n'utilise : ce n'est pas un défaut de l'échange, mais un privilège permanent qu'une compromission de la clé privée du broker offrirait à un attaquant. L'exemple ci-dessus montre une App détenant `administration: write` qu'aucune politique ne demande.
+
+`installation_permissions` est l'attribution acceptée de l'installation, et non les permissions déclarées de l'App. Les deux diffèrent dès que l'App déclare une permission que l'administrateur de l'organisation n'a pas encore acceptée ; c'est l'ensemble accepté qui fait foi. Le champ est absent, et non vide, lorsque le cache d'installation a expiré entre l'émission et la journalisation : « plafond inconnu » et « aucun plafond » sont des conclusions opposées.
+
+Dans le fichier d'audit JSON, ce sont des objets ; dans le flux slog, ce sont des chaînes triées de la forme `nom:niveau,…`, sur lesquelles un agrégateur de journaux peut regrouper et filtrer.
 
 Le `trace_id` est renvoyé dans la réponse d'erreur JSON afin que les clients puissent corréler leur rejet au journal côté serveur. Les champs `error` et `code` de la réponse sont délibérément génériques ; la raison complète n'apparaît que dans les journaux.

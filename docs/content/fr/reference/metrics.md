@@ -86,7 +86,8 @@ Lorsque le paramètre est vide, le point de terminaison reste sans authentificat
 | Métrique | Type | Description |
 |---|---|---|
 | `githubsts_github_api_calls_total` | Counter | Appels à l'API GitHub par github_app, github_app_instance, api_endpoint, result |
-| `githubsts_github_tokens_issued_total` | Counter | Jetons émis par github_app, github_app_instance, scope, permissions |
+| `githubsts_github_tokens_issued_total` | Counter | Jetons émis par github_app, github_app_instance, scope, permissions, narrowed |
+| `githubsts_github_token_permission_divergence_total` | Counter | Permissions où l'attribution réelle de GitHub diffère de la requête, par github_app, github_app_instance, permission, direction |
 | `githubsts_github_rate_limit_remaining` | Gauge | Limite de débit restante par github_app, github_app_instance, resource |
 | `githubsts_github_rate_limit_limit` | Gauge | Requêtes maximales autorisées dans la fenêtre courante, par github_app, github_app_instance, resource |
 | `githubsts_github_rate_limit_used` | Gauge | Requêtes utilisées dans la fenêtre courante, par github_app, github_app_instance, resource |
@@ -161,4 +162,28 @@ githubsts_github_secondary_rate_limit_total > 0
 
 # App pool exhausted: every instance failed a request
 rate(githubsts_app_pool_exhausted_total[5m]) > 0
+```
+
+## Restriction des permissions
+
+`githubsts_github_tokens_issued_total` étiquette `permissions` avec le **plafond de la politique de confiance**, et non avec l'ensemble de permissions réellement utilisé pour émettre le jeton. Les appelants peuvent restreindre une requête à n'importe quel sous-ensemble de ce plafond, à n'importe quel niveau inférieur : étiqueter selon l'ensemble effectif créerait une série par combinaison demandable, sous le contrôle de quiconque détient une identité valide. L'étiquette bornée `narrowed` indique si une requête a demandé moins que ce que la politique accorde :
+
+```promql
+# part des échanges ayant demandé moins que ce que leur politique accorde
+sum(rate(githubsts_github_tokens_issued_total{narrowed="true"}[1h]))
+  / sum(rate(githubsts_github_tokens_issued_total[1h]))
+```
+
+Les ensembles de permissions exacts sont enregistrés pour chaque échange dans le journal d'audit (`policy_permissions`, `requested_permissions`, `granted_permissions`), qui n'a pas de budget de cardinalité à protéger.
+
+`githubsts_github_token_permission_divergence_total` se déclenche lorsque l'attribution renvoyée par GitHub dans sa réponse de création de jeton diffère de la requête. Les deux directions n'ont pas la même gravité :
+
+- `direction="above_requested"` signifie que le jeton peut faire plus que ce que l'appelant a demandé. C'est une défaillance de la frontière de privilèges et cela mérite une alerte : la restriction n'est pas honorée en amont, et tout jeton restreint est plus large qu'il ne le prétend.
+- `direction="below_requested"` signifie que le jeton peut faire moins. Le comportement est sûr, mais les appelants verront des `403` inattendus de l'API GitHub.
+
+Les permissions que GitHub ajoute implicitement (actuellement `metadata`) sont exclues : un broker sain reste donc à zéro dans les deux directions.
+
+```promql
+# toute sur-attribution mérite une alerte
+sum(increase(githubsts_github_token_permission_divergence_total{direction="above_requested"}[15m])) > 0
 ```

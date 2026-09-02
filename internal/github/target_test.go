@@ -129,14 +129,14 @@ func TestAppTokenProvider_GetInstallationTokenForTarget_UsesRepositoryID(t *test
 	defer srv.Close()
 	p := NewAppTokenProvider("test-app", "test-app", 12345, generateTestKey(t), srv.URL, nil)
 
-	token, _, err := p.GetInstallationTokenForTarget(context.Background(), TargetIdentity{
+	minted, _, err := p.GetInstallationTokenForTarget(context.Background(), TargetIdentity{
 		Scope: "Depthmark/github-sts", RepositoryID: "1198676434",
-	}, map[string]string{"contents": "read"}, "test")
+	}, UnnarrowedPermissions(map[string]string{"contents": "read"}), "test")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if token.Token != "ghs_test" {
-		t.Fatalf("token = %q", token.Token)
+	if minted.Token != "ghs_test" {
+		t.Fatalf("token = %q", minted.Token)
 	}
 	if len(repositoryIDs) != 1 || repositoryIDs[0] != float64(1198676434) {
 		t.Fatalf("repository_ids = %v", repositoryIDs)
@@ -180,7 +180,7 @@ func TestAppTokenProvider_GetInstallationTokenForTarget_ParsesExpiry(t *testing.
 
 	token, _, err := p.GetInstallationTokenForTarget(context.Background(), TargetIdentity{
 		Scope: "Depthmark/github-sts", RepositoryID: "1198676434",
-	}, map[string]string{"contents": "read"}, "test")
+	}, UnnarrowedPermissions(map[string]string{"contents": "read"}), "test")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -203,7 +203,7 @@ func TestAppTokenProvider_GetInstallationTokenForTarget_UnusableExpiry(t *testin
 
 			token, _, err := p.GetInstallationTokenForTarget(context.Background(), TargetIdentity{
 				Scope: "Depthmark/github-sts", RepositoryID: "1198676434",
-			}, map[string]string{"contents": "read"}, "test")
+			}, UnnarrowedPermissions(map[string]string{"contents": "read"}), "test")
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}

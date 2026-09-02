@@ -126,10 +126,33 @@ var (
 		Help: "Total GitHub API calls.",
 	}, []string{"github_app", "github_app_instance", "api_endpoint", "result"})
 
+	// GitHubTokenIssued counts minted installation tokens.
+	//
+	// The `permissions` label is deliberately sourced from the trust
+	// policy's ceiling, not from the permission set actually sent to
+	// GitHub. Callers may narrow a request to any subset of the ceiling at
+	// any level below it, so labeling by the effective set would create one
+	// series per requestable combination (3^n for an n-permission policy)
+	// under the control of anyone holding a valid identity. That is exactly
+	// the cardinality abuse safeFieldPattern guards against elsewhere. The
+	// bounded `narrowed` label records *that* a request was narrowed; the
+	// full effective and granted sets go to the audit log, which has no
+	// cardinality budget.
 	GitHubTokenIssued = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "githubsts_github_tokens_issued_total",
-		Help: "GitHub installation tokens issued.",
-	}, []string{"github_app", "github_app_instance", "scope", "permissions"})
+		Help: "GitHub installation tokens issued. `permissions` is the trust policy ceiling; `narrowed` reports whether the caller requested less than that.",
+	}, []string{"github_app", "github_app_instance", "scope", "permissions", "narrowed"})
+
+	// GitHubTokenPermissionDivergence counts permissions where the grant
+	// GitHub returned in the 201 differs from what was requested.
+	// direction=above_requested is a privilege-boundary failure: the token
+	// can do more than the caller asked for. direction=below_requested
+	// fails safe but breaks callers. Both labels are bounded: permission
+	// names come from GitHub's fixed set.
+	GitHubTokenPermissionDivergence = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "githubsts_github_token_permission_divergence_total",
+		Help: "Permissions where GitHub's actual token grant differed from what was requested.",
+	}, []string{"github_app", "github_app_instance", "permission", "direction"})
 )
 
 // GitHub API rate limit metrics.
@@ -343,7 +366,7 @@ func Register() {
 	// Policy
 	prometheus.MustRegister(PolicyLoadsTotal, PolicyCacheHits, PolicyCacheMisses)
 	// GitHub
-	prometheus.MustRegister(GitHubAPICalls, GitHubTokenIssued)
+	prometheus.MustRegister(GitHubAPICalls, GitHubTokenIssued, GitHubTokenPermissionDivergence)
 	// Rate limit
 	prometheus.MustRegister(GitHubRateLimitLimit, GitHubRateLimitRemaining, GitHubRateLimitUsed,
 		GitHubRateLimitResetTimestamp, GitHubRateLimitRemainingPercent,

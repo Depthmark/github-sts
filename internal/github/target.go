@@ -58,7 +58,27 @@ type TargetIdentity struct {
 // round-robin/failover selection used for GetInstallationToken.
 type ExchangeApp interface {
 	ResolveTarget(context.Context, RepositoryScope) (TargetIdentity, error)
-	GetInstallationTokenForTarget(ctx context.Context, target TargetIdentity, permissions map[string]string, caller string) (token IssuedToken, instance string, err error)
+	GetInstallationTokenForTarget(ctx context.Context, target TargetIdentity, permissions PermissionRequest, caller string) (token MintedToken, instance string, err error)
+}
+
+// PermissionRequest carries both halves of a possibly-narrowed permission
+// ask so a call site cannot confuse them. Keeping them together matters:
+// Effective is what the token is actually minted with and is caller-
+// controlled, while Ceiling is policy-derived and is the only one of the
+// two safe to use as a metric label.
+type PermissionRequest struct {
+	// Ceiling is the trust policy's full permission set: the most this
+	// identity may ever obtain.
+	Ceiling map[string]string
+	// Effective is the set sent to GitHub. Equal to Ceiling when the caller
+	// did not narrow.
+	Effective map[string]string
+}
+
+// UnnarrowedPermissions builds a PermissionRequest for a caller that did not
+// ask for anything less than the policy allows.
+func UnnarrowedPermissions(ceiling map[string]string) PermissionRequest {
+	return PermissionRequest{Ceiling: ceiling, Effective: ceiling}
 }
 
 type cachedTarget struct {
@@ -194,14 +214,14 @@ func (p *AppTokenProvider) fetchTarget(ctx context.Context, scope RepositoryScop
 // repository ID that was authorized by both the trust policy and Rego.
 // Returns this credential's own instance label (see ExchangeApp) — a pool
 // of one, same as GetInstallationToken.
-func (p *AppTokenProvider) GetInstallationTokenForTarget(ctx context.Context, target TargetIdentity, permissions map[string]string, caller string) (IssuedToken, string, error) {
+func (p *AppTokenProvider) GetInstallationTokenForTarget(ctx context.Context, target TargetIdentity, permissions PermissionRequest, caller string) (MintedToken, string, error) {
 	repositoryID, err := strconv.ParseInt(target.RepositoryID, 10, 64)
 	if err != nil || repositoryID <= 0 || target.Scope == "" {
-		return IssuedToken{}, "", fmt.Errorf("invalid target repository identity")
+		return MintedToken{}, "", fmt.Errorf("invalid target repository identity")
 	}
-	issued, err := p.getInstallationToken(ctx, target.Scope, permissions, nil, []int64{repositoryID}, caller)
+	minted, err := p.getInstallationToken(ctx, target.Scope, permissions.Effective, nil, []int64{repositoryID}, permissions.Ceiling, caller)
 	if err != nil {
-		return IssuedToken{}, "", err
+		return MintedToken{}, "", err
 	}
-	return issued, p.instance, nil
+	return minted, p.instance, nil
 }
