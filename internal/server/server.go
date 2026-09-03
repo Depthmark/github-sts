@@ -30,6 +30,7 @@ import (
 	"github.com/depthmark/github-sts/internal/oidc"
 	"github.com/depthmark/github-sts/internal/policy"
 	"github.com/depthmark/github-sts/internal/ratelimit"
+	"github.com/depthmark/github-sts/internal/tracing"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -50,6 +51,7 @@ type Server struct {
 	bundleManager      bundle.LifecycleManager // nil when bundle integration is disabled
 	slogger            *slog.Logger
 	certReloader       *certReloader
+	tracingShutdown    tracing.ShutdownFunc // nil when tracing was never initialized
 }
 
 // New creates a new Server with all services initialized.
@@ -58,6 +60,26 @@ func New(cfg *config.Settings, slogger *slog.Logger) (*Server, error) {
 		cfg:     cfg,
 		slogger: slogger,
 	}
+
+	// Initialize tracing before anything else that might emit a span, and
+	// before the middleware chain is built. Init is safe to call with tracing
+	// disabled: it installs a noop provider plus the W3C propagators, so every
+	// instrumentation call downstream is a cheap no-op rather than a nil check.
+	shutdownTracing, err := tracing.Init(context.Background(), tracing.Config{
+		Enabled:     cfg.Tracing.Enabled,
+		Endpoint:    cfg.Tracing.Endpoint,
+		Protocol:    cfg.Tracing.Protocol,
+		Insecure:    cfg.Tracing.Insecure,
+		SampleRatio: cfg.Tracing.SampleRatio,
+		Timeout:     cfg.Tracing.Timeout,
+		ServiceName: cfg.Tracing.ServiceName,
+		Environment: cfg.Tracing.Environment,
+		Headers:     cfg.Tracing.Headers,
+	}, slogger)
+	if err != nil {
+		return nil, fmt.Errorf("initializing tracing: %w", err)
+	}
+	s.tracingShutdown = shutdownTracing
 
 	// Install per-issuer JWKS host overrides for providers that publish their
 	// JWKS on a different host than the issuer (e.g., Google). Default
@@ -595,6 +617,17 @@ func (s *Server) Shutdown() error {
 		}
 	}
 
+	// Flush buffered spans last, so anything the shutdown path itself emitted
+	// is exported rather than dropped. Bounded by its own timeout: a collector
+	// that is down must not hold the process open.
+	if s.tracingShutdown != nil {
+		flushCtx, flushCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer flushCancel()
+		if err := s.tracingShutdown(flushCtx); err != nil {
+			s.slogger.Error("tracing shutdown error", "error", err)
+		}
+	}
+
 	s.slogger.Info("server shutdown complete")
 	return nil
 }
@@ -673,10 +706,22 @@ func securityHeadersMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// traceIDMiddleware generates a unique trace ID for each request.
+// traceIDMiddleware puts a trace ID on the request context and the response.
+//
+// It prefers the W3C trace ID of the active span, which is what makes trace_id
+// in the audit log, the server logs and the error response the *same*
+// identifier as the trace in the tracing backend -- and, when the caller sent a
+// traceparent, the same identifier as the caller's own trace. Without that the
+// field correlates with nothing, which is the whole reason the format widened.
+//
+// Falls back to a locally generated ID when there is no span: tracing
+// disabled, or a path excluded from tracing such as the health endpoints.
 func traceIDMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		id := generateTraceID()
+		id := tracing.TraceIDFromContext(r.Context())
+		if id == "" {
+			id = generateTraceID()
+		}
 		ctx := context.WithValue(r.Context(), traceIDKey, id)
 		w.Header().Set("X-Trace-ID", id)
 		next.ServeHTTP(w, r.WithContext(ctx))
@@ -790,9 +835,17 @@ func (sw *statusWriter) Write(b []byte) (int, error) {
 	return sw.ResponseWriter.Write(b)
 }
 
-// generateTraceID generates a 16-character hex string.
+// generateTraceID generates a W3C-shaped trace ID: 16 random bytes rendered as
+// 32 lowercase hex characters.
+//
+// The width is deliberate and is not tied to whether tracing is enabled. This
+// value ends up in the X-Trace-ID header, in ErrorResponse.TraceID (public
+// API), in every audit event and in every log line, and an identifier whose
+// format changes with a runtime toggle would be worse than either format
+// alone. When tracing is on, traceIDMiddleware prefers the real trace ID from
+// the span context, and this is the fallback for the paths that have none.
 func generateTraceID() string {
-	b := make([]byte, 8)
+	b := make([]byte, 16)
 	rand.Read(b)
 	return fmt.Sprintf("%x", b)
 }

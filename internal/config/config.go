@@ -42,6 +42,7 @@ type Settings struct {
 	Audit             AuditConfig          `yaml:"audit"`
 	Health            HealthConfig         `yaml:"health"`
 	Metrics           MetricsConfig        `yaml:"metrics"`
+	Tracing           TracingConfig        `yaml:"tracing"`
 	RateLimit         RateLimitConfig      `yaml:"rate_limit"`
 }
 
@@ -233,6 +234,42 @@ type MetricsConfig struct {
 	ReachabilityProbeInterval time.Duration `yaml:"reachability_probe_interval"`
 }
 
+// TracingConfig holds OpenTelemetry trace export settings.
+//
+// Disabled by default. Traces are sampled diagnostics, not an audit trail --
+// the audit log remains the system of record for authorization decisions, and
+// nothing here should be relied on for compliance.
+//
+// SampleRatio defaults to 1.0 and should stay there. The exchange result is
+// not known when a head sampler runs, so sampling below 1.0 discards denials
+// and pool failovers at random -- exactly the traces worth keeping. Select on
+// the result in the Collector's tail sampler instead.
+type TracingConfig struct {
+	Enabled bool `yaml:"enabled"`
+
+	// Endpoint is the OTLP collector address ("host:port" for grpc, or a URL
+	// for http). Empty falls back to the standard OTEL_EXPORTER_OTLP_ENDPOINT
+	// handling in the OpenTelemetry SDK.
+	Endpoint string `yaml:"endpoint"`
+
+	// Protocol is "grpc" (default) or "http".
+	Protocol string `yaml:"protocol"`
+
+	// Insecure disables transport security. Intended for a collector reached
+	// over loopback or a trusted pod network, not for an internet endpoint.
+	Insecure bool `yaml:"insecure"`
+
+	SampleRatio float64       `yaml:"sample_ratio"`
+	Timeout     time.Duration `yaml:"timeout"`
+	ServiceName string        `yaml:"service_name"`
+	Environment string        `yaml:"environment"`
+
+	// Headers are sent with every OTLP export, for a collector requiring
+	// authentication. Values are credentials: keep them in the environment
+	// rather than a committed config file.
+	Headers map[string]string `yaml:"headers"`
+}
+
 // BundleConfig holds one OPA bundle setting for the org-rego guardrail layer.
 // The broker loads every configured bundle, discovers every package exposing a
 // decision document, and consults them on each token exchange between the YAML
@@ -338,6 +375,13 @@ func defaults() *Settings {
 			RateLimitPollInterval:     60 * time.Second,
 			ReachabilityProbeEnabled:  true,
 			ReachabilityProbeInterval: 30 * time.Second,
+		},
+		Tracing: TracingConfig{
+			Enabled:     false,
+			Protocol:    "grpc",
+			SampleRatio: 1.0,
+			Timeout:     10 * time.Second,
+			ServiceName: "github-sts",
 		},
 		RateLimit: RateLimitConfig{
 			Enabled: false,
@@ -535,6 +579,28 @@ func (s *Settings) Validate() error {
 			if _, _, err := net.ParseCIDR(cidr); err != nil {
 				return fmt.Errorf("rate_limit.exempt_cidrs: invalid CIDR %q: %w", cidr, err)
 			}
+		}
+	}
+
+	if s.Tracing.Enabled {
+		switch strings.ToLower(s.Tracing.Protocol) {
+		case "", "grpc", "http", "http/protobuf":
+			// valid
+		default:
+			return fmt.Errorf("tracing.protocol must be grpc or http (got %q)", s.Tracing.Protocol)
+		}
+
+		r := s.Tracing.SampleRatio
+		if math.IsNaN(r) || math.IsInf(r, 0) || r < 0 || r > 1 {
+			return fmt.Errorf("tracing.sample_ratio must be between 0 and 1 (got %v)", r)
+		}
+
+		if s.Tracing.Timeout <= 0 {
+			return fmt.Errorf("tracing.timeout must be positive when tracing is enabled")
+		}
+
+		if s.Tracing.ServiceName == "" {
+			return fmt.Errorf("tracing.service_name must not be empty when tracing is enabled")
 		}
 	}
 
@@ -1096,6 +1162,32 @@ func applyEnvOverrides(cfg *Settings) error {
 	}
 	if err := envDuration("GITHUBSTS_METRICS_REACHABILITY_PROBE_INTERVAL", &cfg.Metrics.ReachabilityProbeInterval); err != nil {
 		return err
+	}
+
+	// Tracing
+	if err := envBool("GITHUBSTS_TRACING_ENABLED", &cfg.Tracing.Enabled); err != nil {
+		return err
+	}
+	if v := os.Getenv("GITHUBSTS_TRACING_ENDPOINT"); v != "" {
+		cfg.Tracing.Endpoint = v
+	}
+	if v := os.Getenv("GITHUBSTS_TRACING_PROTOCOL"); v != "" {
+		cfg.Tracing.Protocol = v
+	}
+	if err := envBool("GITHUBSTS_TRACING_INSECURE", &cfg.Tracing.Insecure); err != nil {
+		return err
+	}
+	if err := envFloat64("GITHUBSTS_TRACING_SAMPLE_RATIO", &cfg.Tracing.SampleRatio); err != nil {
+		return err
+	}
+	if err := envDuration("GITHUBSTS_TRACING_TIMEOUT", &cfg.Tracing.Timeout); err != nil {
+		return err
+	}
+	if v := os.Getenv("GITHUBSTS_TRACING_SERVICE_NAME"); v != "" {
+		cfg.Tracing.ServiceName = v
+	}
+	if v := os.Getenv("GITHUBSTS_TRACING_ENVIRONMENT"); v != "" {
+		cfg.Tracing.Environment = v
 	}
 
 	// Rate limit
