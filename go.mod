@@ -22,7 +22,7 @@ require github.com/go-openapi/swag/pools v0.27.3 // indirect
 
 require (
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.44.0 // indirect
-	go.opentelemetry.io/proto/otlp v1.10.0 // indirect
+	go.opentelemetry.io/proto/otlp v1.11.0 // indirect
 )
 
 require (
