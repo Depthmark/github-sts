@@ -9,6 +9,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"io"
@@ -49,8 +50,8 @@ func TestTraceIDMiddleware_SetsHeaderAndContext(t *testing.T) {
 	if headerID != capturedTraceID {
 		t.Errorf("header %q != context %q", headerID, capturedTraceID)
 	}
-	if len(headerID) != 16 {
-		t.Errorf("trace ID length = %d, want 16", len(headerID))
+	if len(headerID) != 32 {
+		t.Errorf("trace ID length = %d, want 32 (W3C trace ID width)", len(headerID))
 	}
 }
 
@@ -217,8 +218,11 @@ func TestStatusWriter_DoubleWriteHeader(t *testing.T) {
 
 func TestGenerateTraceID(t *testing.T) {
 	id := generateTraceID()
-	if len(id) != 16 {
-		t.Errorf("trace ID length = %d, want 16", len(id))
+	if len(id) != 32 {
+		t.Errorf("trace ID length = %d, want 32 (W3C trace ID width)", len(id))
+	}
+	if _, err := hex.DecodeString(id); err != nil {
+		t.Errorf("trace ID %q is not lowercase hex: %v", id, err)
 	}
 
 	// Should be unique.
