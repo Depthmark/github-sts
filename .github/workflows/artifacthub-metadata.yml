@@ -1,0 +1,78 @@
+---
+# Publishes the Artifact Hub repository metadata file to GHCR.
+#
+# Artifact Hub does not read artifacthub-repo.yml from git for container image
+# repositories. It pulls it from the OCI registry under the reserved tag
+# `artifacthub.io`, looking for the
+# application/vnd.cncf.artifacthub.repository-metadata.layer.v1.yaml layer.
+# https://artifacthub.io/docs/topics/repositories/container-images/
+#
+# This is repository-level metadata, not per-version, so it is decoupled from
+# the release workflow and republished whenever the file changes.
+name: Artifact Hub Metadata
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'artifacthub-repo.yml'
+      - '.github/workflows/artifacthub-metadata.yml'
+  workflow_dispatch: {}
+
+concurrency:
+  group: artifacthub-metadata
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  publish:
+    name: Publish repository metadata
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # Checkout artifacthub-repo.yml
+      packages: write # Push the artifacthub.io artifact to GHCR
+    env:
+      REGISTRY: ghcr.io
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up ORAS
+        uses: oras-project/setup-oras@1d808f7d7f6995cc68b7bf507bfe5c5446e1dc9d # v2.0.1
+
+      - name: Compute image name
+        run: echo "IMAGE_NAME=${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+
+      - name: Log in to registry
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$GITHUB_TOKEN" | oras login \
+            --username "$GITHUB_ACTOR" --password-stdin "$REGISTRY"
+
+      - name: Push repository metadata
+        run: |
+          oras push "${REGISTRY}/${IMAGE_NAME}:artifacthub.io" \
+            --config /dev/null:application/vnd.cncf.artifacthub.config.v1+yaml \
+            artifacthub-repo.yml:application/vnd.cncf.artifacthub.repository-metadata.layer.v1.yaml
+
+      - name: Create success summary
+        run: |
+          {
+            echo "## Artifact Hub repository metadata published"
+            echo ""
+            echo "**Artifact:** \`${REGISTRY}/${IMAGE_NAME}:artifacthub.io\`"
+            echo ""
+            echo "Verify with:"
+            echo '```bash'
+            echo "oras manifest fetch ${REGISTRY}/${IMAGE_NAME}:artifacthub.io"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
