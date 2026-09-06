@@ -1,0 +1,20 @@
+---
+# Artifact Hub repository metadata for the github-sts container image.
+#
+# This file is NOT read from the git repository. Artifact Hub reads it from the
+# OCI registry, pushed as an artifact under the special tag `artifacthub.io`:
+#
+#   ghcr.io/depthmark/github-sts:artifacthub.io
+#
+# The .github/workflows/artifacthub-metadata.yml workflow publishes it whenever
+# this file changes on main, and on manual dispatch. Docs:
+# https://artifacthub.io/docs/topics/repositories/container-images/
+
+# Artifact Hub repository ID. Enables the verified publisher badge.
+repositoryID: 660cb847-037d-4315-ae2e-d6a56794cca8
+
+# Used only to claim repository ownership. Each email must match a verified
+# Artifact Hub account, otherwise the claim is a no-op.
+owners:
+  - name: Alexandre Delisle
+    email: oss@adelisle.com
