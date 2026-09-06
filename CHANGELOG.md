@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.1.0](https://github.com/Depthmark/github-sts/compare/v0.0.4...v0.1.0) (2026-09-06)
+
+
+### ⚠ BREAKING CHANGES
+
+* add otel endpoint streaming support ([#77](https://github.com/Depthmark/github-sts/issues/77))
+
+### Features
+
+* add artifacthub.io link with metadata ([#80](https://github.com/Depthmark/github-sts/issues/80)) ([92eb04c](https://github.com/Depthmark/github-sts/commit/92eb04c21dac6d0e344fe08a12ca61c9bf3e5da0))
+* add auth on the health endpoint ([#59](https://github.com/Depthmark/github-sts/issues/59)) ([6b6c898](https://github.com/Depthmark/github-sts/commit/6b6c8983e6fbf4d0fb3105f01bfde36700017853))
+* add auth on the prometheus endpoint ([#56](https://github.com/Depthmark/github-sts/issues/56)) ([d698ce1](https://github.com/Depthmark/github-sts/commit/d698ce1714d36293b7dded817f4685ebb11a23e4))
+* add expires_in in response payload during the token generation ([#68](https://github.com/Depthmark/github-sts/issues/68)) ([2f68f6d](https://github.com/Depthmark/github-sts/commit/2f68f6d236e40f74abf2b69f85e1b363583f58c5))
+* add otel endpoint streaming support ([#77](https://github.com/Depthmark/github-sts/issues/77)) ([400a422](https://github.com/Depthmark/github-sts/commit/400a4225ced7ce2646d35d2f51978d5ad6db4ddd))
+* add schema validation endpoint for the created identities ([#73](https://github.com/Depthmark/github-sts/issues/73)) ([549a745](https://github.com/Depthmark/github-sts/commit/549a745f672c71a391f09c91fc451d19959d08a1))
+* add the capability to request less permissive token ([#72](https://github.com/Depthmark/github-sts/issues/72)) ([3292e4c](https://github.com/Depthmark/github-sts/commit/3292e4c30e82b64e3b573c70ef5ddac454261386))
+* record trust policy provenance in audit events ([#71](https://github.com/Depthmark/github-sts/issues/71)) ([91cec90](https://github.com/Depthmark/github-sts/commit/91cec9012649d32827c6baea923afb0a776d3eb0))
+* support multiple instances of an app ([#52](https://github.com/Depthmark/github-sts/issues/52)) ([b450f00](https://github.com/Depthmark/github-sts/commit/b450f000c533f111e439401b74f0e57cf7d26bdd))
+* use latest cosign version v3+ for bundle validation ([#65](https://github.com/Depthmark/github-sts/issues/65)) ([a938c5c](https://github.com/Depthmark/github-sts/commit/a938c5c009d93c0eb32a75fa40b7242f0339cb50))
+
+
+### Bug Fixes
+
+* otlp version ([#79](https://github.com/Depthmark/github-sts/issues/79)) ([b77fed3](https://github.com/Depthmark/github-sts/commit/b77fed31e5f85ee6e553d125be40920d2dde6072))
+* release please manifest and changelog ([#64](https://github.com/Depthmark/github-sts/issues/64)) ([20ecc96](https://github.com/Depthmark/github-sts/commit/20ecc96fefd549e1f7dc81f751e95dab12b80e32))
+* remove labels collissions between application and kubernetes sta… ([#70](https://github.com/Depthmark/github-sts/issues/70)) ([d6a89f4](https://github.com/Depthmark/github-sts/commit/d6a89f47d18389313a8c84ffe768d4429095d0ad))
+
 ## [0.0.4](https://github.com/Depthmark/github-sts/compare/v0.0.3...v0.0.4) (2026-08-21)
 
 

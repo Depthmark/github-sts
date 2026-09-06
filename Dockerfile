@@ -69,8 +69,8 @@ LABEL io.artifacthub.package.contains-security-updates="false"
 # line inside this block, so the readme URL stays pinned to the tag being
 # built. readme-url must resolve to raw markdown, not rendered HTML.
 # x-release-please-start-version
-LABEL org.opencontainers.image.version="0.0.4"
-LABEL io.artifacthub.package.readme-url="https://raw.githubusercontent.com/Depthmark/github-sts/v0.0.4/README.md"
+LABEL org.opencontainers.image.version="0.1.0"
+LABEL io.artifacthub.package.readme-url="https://raw.githubusercontent.com/Depthmark/github-sts/v0.1.0/README.md"
 # x-release-please-end
 
 COPY --from=builder /github-sts /github-sts
