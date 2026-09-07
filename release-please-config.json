@@ -15,13 +15,11 @@
       "extra-files": [
         "Dockerfile"
       ],
-      "include-paths": [
-        "*.go",
-        "cmd",
-        "client",
-        "internal",
-        "go.mod",
-        "go.sum"
+      "changelog-sections": [
+        { "type": "feat", "section": "✨ Features" },
+        { "type": "feature", "section": "✨ Features" },
+        { "type": "fix", "section": "🐛 Bug Fixes" },
+        { "type": "build", "section": "📦 Dependencies" }
       ]
     }
   }
