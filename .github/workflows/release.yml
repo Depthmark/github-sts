@@ -2,36 +2,126 @@
 name: Release
 
 on:
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       tag_name:
-        description: 'Release tag (e.g. v1.0.0)'
+        description: 'Release tag (e.g. v1.0.0). Use to retry a failed release.'
         required: true
         type: string
 
 permissions: {}
 
+concurrency:
+  group: release-${{ inputs.tag_name || github.event.release.tag_name }}
+  cancel-in-progress: false
+
 jobs:
+  # ───────────────────────────────────────────────────────────────────────────
+  # Resolve and validate the release target before any build runs. Guarantees
+  # the workflow ref is the release tag itself, so the downstream jobs cannot
+  # be pointed at a tag other than the one they were dispatched for.
+  # ───────────────────────────────────────────────────────────────────────────
+  preflight:
+    name: Resolve release tag
+    runs-on: ubuntu-slim
+    timeout-minutes: 2
+    permissions:
+      contents: read
+    outputs:
+      publish_docker: ${{ steps.release.outputs.publish_docker }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - name: Validate release target
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          TAG_NAME: ${{ inputs.tag_name || github.event.release.tag_name }}
+        shell: bash
+        run: |
+          if [[ ! "$TAG_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc|dev)\.[0-9]+)?(\+[a-zA-Z0-9.]+)?$ ]]; then
+            echo "Invalid release tag: $TAG_NAME" >&2
+            exit 1
+          fi
+
+          expected_ref="refs/tags/$TAG_NAME"
+          if [[ "$GITHUB_REF" != "$expected_ref" ]]; then
+            echo "Workflow ref $GITHUB_REF must match release ref $expected_ref" >&2
+            echo "Dispatch this workflow from the exact release tag." >&2
+            exit 1
+          fi
+
+          release_tag="$(gh release view "$TAG_NAME" --repo "$REPOSITORY" --json tagName --jq .tagName)"
+          if [[ "$release_tag" != "$TAG_NAME" ]]; then
+            echo "GitHub Release tag $release_tag does not match $TAG_NAME" >&2
+            exit 1
+          fi
+
+          # Only the newest stable release moves the :latest image tag.
+          latest_stable_tag="$(gh release view --repo "$REPOSITORY" --json tagName --jq .tagName 2>/dev/null || true)"
+          publish_docker=false
+          if [[ -n "$latest_stable_tag" && "$TAG_NAME" == "$latest_stable_tag" ]]; then
+            publish_docker=true
+          fi
+
+          {
+            echo "publish_docker=$publish_docker"
+            echo "tag_name=$TAG_NAME"
+          } >> "$GITHUB_OUTPUT"
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Gate: run full CI before releasing anything.
+  # ───────────────────────────────────────────────────────────────────────────
   ci-go:
     name: CI Gate (Go)
+    needs: [preflight]
     uses: ./.github/workflows/ci-go.yml
     permissions:
       contents: read
 
   ci-schema:
     name: CI Gate (Schema)
+    needs: [preflight]
     uses: ./.github/workflows/ci-schema.yml
     permissions:
       contents: read
 
+  # ───────────────────────────────────────────────────────────────────────────
+  # Build the github-sts archives with GoReleaser, sign the checksum file with
+  # cosign, and attach SLSA provenance covering every artifact listed in that
+  # checksum file.
+  # ───────────────────────────────────────────────────────────────────────────
+  go:
+    name: Go
+    needs: [preflight, ci-go, ci-schema]
+    uses: Depthmark/reusable-workflows/.github/workflows/go-release.yml@17176e51cb55f5d707734c62e47cacc5978bd6e9 # v1.1.0
+    with:
+      tag_name: ${{ needs.preflight.outputs.tag_name }}
+      install-cosign: true
+      attest: true
+    permissions:
+      contents: write # Upload archives to the existing GitHub release.
+      id-token: write # Obtain short-lived Sigstore signing certificates.
+      attestations: write # Persist provenance for the release archives.
+      artifact-metadata: write # Link attestations to the org artifact inventory.
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Build, push, sign, and attest the container image.
+  # ───────────────────────────────────────────────────────────────────────────
   docker:
     name: Docker
-    needs: [ci-go, ci-schema]
-    uses: Depthmark/reusable-workflows/.github/workflows/docker-build-push.yml@b75184a59af82875f02abd547e57645ffcdcd91a # v1.0.1
+    needs: [preflight, ci-go, ci-schema]
+    if: needs.preflight.outputs.publish_docker == 'true'
+    uses: Depthmark/reusable-workflows/.github/workflows/docker-build-push.yml@17176e51cb55f5d707734c62e47cacc5978bd6e9 # v1.1.0
     with:
-      tag_name: ${{ inputs.tag_name }}
+      tag_name: ${{ needs.preflight.outputs.tag_name }}
+      sign: true
+      attest: true
     permissions:
       contents: read
-      packages: write
-      id-token: write
-      attestations: write
+      packages: write # Publish the release image to GHCR.
+      id-token: write # Obtain a short-lived identity for image signing.
+      attestations: write # Persist SLSA build provenance for the image.
+      artifact-metadata: write # Record the published OCI artifact.

@@ -35,6 +35,11 @@ go.work.sum
 bin/
 validation_local/
 
+# GoReleaser output. Must stay ignored: the Go toolchain stamps the binary
+# version from VCS state, and an untracked dist/ would mark the worktree
+# dirty and append "+dirty" to every released version string.
+dist/
+
 # Local development files. Anchored to the repository root: a bare
 # "scripts/" also matches docs/scripts/, which holds the documentation
 # validation tooling that documentation-contract.md requires.
