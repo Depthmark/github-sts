@@ -1,0 +1,88 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# GoReleaser v2 configuration.
+#
+# Run by .github/workflows/release.yml through the shared
+# Depthmark/reusable-workflows go-release.yml workflow, which checks out the
+# release tag, installs cosign, runs `goreleaser release`, and then attaches
+# SLSA provenance covering every artifact listed in dist/checksums.txt.
+#
+# release-please owns the tag, the CHANGELOG, and the GitHub release body.
+# `release.mode: keep-existing` keeps that body intact and only uploads assets.
+#
+# Local check:   make goreleaser-check
+# Local build:   make goreleaser-snapshot
+# ─────────────────────────────────────────────────────────────────────────────
+---
+version: 2
+
+project_name: github-sts
+
+before:
+  hooks:
+    - go mod verify
+
+# Build flags mirror the Dockerfile and the bin/ targets in the Makefile so a
+# released binary is byte-comparable with a locally built one. CGO stays off so
+# the archives run on any glibc/musl host.
+#
+# The version reported by the binary (OTel service.version, see
+# internal/tracing/tracing.go) comes from the Go toolchain's VCS stamping, not
+# from an -X ldflag. That requires a clean worktree, which is why dist/ is in
+# .gitignore -- an untracked dist/ would stamp the version as "<tag>+dirty".
+builds:
+  - id: github-sts
+    main: ./cmd/github-sts
+    binary: github-sts
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+
+# Only the server ships as a release artifact, matching the Dockerfile, which
+# builds ./cmd/github-sts alone. cmd/github-sts-bundle is consumed with
+# `go run github.com/depthmark/github-sts/cmd/github-sts-bundle@<tag>`, which is
+# pinned by tag and verified through the Go checksum database, so it needs no
+# archive here. See docs/content/en/reference/configuration.md.
+archives:
+  - id: github-sts
+    ids:
+      - github-sts
+    formats: [tar.gz]
+    name_template: >-
+      github-sts_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else }}{{ .Arch }}{{ end }}
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+# Keyless cosign signature over the checksum file. Signing the checksums rather
+# than each archive means one Sigstore bundle covers every artifact, and the
+# same file is the attestation subject list below.
+signs:
+  - cmd: cosign
+    signature: "${artifact}.sigstore.json"
+    args:
+      - sign-blob
+      - "--bundle=${signature}"
+      - "${artifact}"
+      - --yes
+    artifacts: checksum
+    output: true
+
+release:
+  mode: keep-existing
+  replace_existing_artifacts: true
+
+changelog:
+  use: github-native

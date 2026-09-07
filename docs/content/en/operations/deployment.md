@@ -44,6 +44,90 @@ optional/YAML-only warning and posture signals. Production deployments should
 mount a config with `bundle_enforcement: required` and a pinned, verified
 global baseline. See [Enterprise Rego bundles]({{< relref "/reference/configuration#enterprise-rego-bundles" >}}).
 
+## Prebuilt binaries {#prebuilt-binaries}
+
+Each release also publishes `tar.gz` archives of the server for Linux and macOS
+on `amd64` and `arm64`, attached to the
+[GitHub release](https://github.com/Depthmark/github-sts/releases).
+
+Docker remains the recommended way to run the server. Use a binary when a
+container runtime is unavailable, or when you want to run the server directly on
+a host.
+
+The archives contain the server only, matching the container image. The
+`github-sts-bundle` revision gate is a build-time tool rather than a deployed
+one, so it is run straight from the module at a pinned tag, under
+"Revision promotion checks" in
+[Configuration]({{< relref "/reference/configuration" >}}).
+
+```bash
+curl -sSLO "https://github.com/Depthmark/github-sts/releases/latest/download/github-sts_Linux_x86_64.tar.gz"
+tar xzf github-sts_Linux_x86_64.tar.gz github-sts
+```
+
+To pin a release rather than track the newest one, replace `latest/download`
+with `download/v<version>`. Older releases carry the container image only.
+
+The server takes no command-line flags. It reads its configuration from
+`GITHUBSTS_CONFIG_PATH` and the `GITHUBSTS_*` environment variables, exactly as
+the Docker examples above do, and exits with a validation error when a required
+setting is missing. See
+[Configuration]({{< relref "/reference/configuration" >}}).
+
+### Verifying a downloaded archive {#verifying-a-downloaded-archive}
+
+Every release carries two independent supply-chain claims, and neither one is
+checked for you. Verify both before running a binary from a release.
+
+You need [cosign](https://github.com/sigstore/cosign) v3 or later and the GitHub
+CLI, authenticated with `gh auth login`. On macOS use `shasum -a 256` in place of
+`sha256sum`; it has no `--ignore-missing` equivalent, so check one archive by
+name instead of the whole list.
+
+The first claim is a cosign signature over `checksums.txt`. The release runs
+inside a shared reusable workflow, so the signing identity is that workflow in
+`Depthmark/reusable-workflows`, not this repository. Verify the checksum list,
+then verify the archive against it:
+
+```bash
+BASE="https://github.com/Depthmark/github-sts/releases/latest/download"
+curl -sSLO "${BASE}/checksums.txt"
+curl -sSLO "${BASE}/checksums.txt.sigstore.json"
+
+cosign verify-blob \
+  --bundle checksums.txt.sigstore.json \
+  --certificate-identity-regexp '^https://github.com/Depthmark/reusable-workflows/' \
+  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+  checksums.txt
+
+sha256sum --ignore-missing --check checksums.txt
+```
+
+`cosign verify-blob` prints `Verified OK` and exits zero on success. Both
+certificate flags are mandatory for keyless verification, so there is no silent
+pass to guard against: cosign refuses to run without an identity constraint.
+Widening the pattern is the real risk, because it accepts signatures from other
+workflows.
+
+The second claim is a SLSA provenance attestation covering every artifact listed
+in that checksum file. It records which workflow, at which commit, produced the
+archive:
+
+```bash
+gh attestation verify github-sts_Linux_x86_64.tar.gz \
+  --repo Depthmark/github-sts \
+  --signer-workflow Depthmark/reusable-workflows/.github/workflows/go-release.yml
+```
+
+`--repo` is mandatory. `--signer-workflow` is what pins the attestation to the
+release workflow: without it the check still passes for any workflow in
+`Depthmark/github-sts`, which is a weaker claim than the one you want. The
+command exits non-zero when no attestation matches.
+
+The container image carries its own signature and provenance, produced by a
+different reusable workflow, so it verifies against a different signer identity.
+The release run prints the image commands in its job summary.
+
 ## TLS and mTLS
 
 github-sts supports native HTTPS and mTLS, but does not manage certificates. TLS is enabled implicitly when both a certificate and a key are supplied; add a client CA bundle to require client certificates.

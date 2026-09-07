@@ -1,4 +1,5 @@
 .PHONY: build test test-race test-rego lint coverage vuln-check clean docker \
+        goreleaser-check goreleaser-snapshot \
         ci act act-actions hooks validate-examples validate-repository-policies \
         docs-serve docs-build docs-check docs-links docs-style docs-translate \
         docs-hugo-version docs-satellites docs-schema check-github-permissions
@@ -117,9 +118,21 @@ bin/github-sts-bundle:
 docker:
 	docker build -t github-sts:local .
 
+# Validate .goreleaser.yaml. The release workflow runs the same check before
+# building, so config drift fails here rather than mid-release.
+goreleaser-check:
+	@command -v goreleaser >/dev/null 2>&1 || { echo "install goreleaser: https://goreleaser.com/install/"; exit 1; }
+	goreleaser check
+
+# Build the release archives locally without publishing anything. Produces the
+# same tar.gz layout and checksums.txt the release workflow uploads.
+goreleaser-snapshot:
+	@command -v goreleaser >/dev/null 2>&1 || { echo "install goreleaser: https://goreleaser.com/install/"; exit 1; }
+	goreleaser release --snapshot --clean --skip=sign
+
 # Clean build artifacts
 clean:
-	rm -rf bin/ coverage.out coverage.html docs/public/
+	rm -rf bin/ dist/ coverage.out coverage.html docs/public/
 
 # Validate trust-policy examples against the v1 JSON Schema. Catches drift
 # between the TrustPolicy struct and the schema, and rejects new examples

@@ -35,7 +35,7 @@ permissions: {}
 jobs:
   go:
     name: Go
-    uses: Depthmark/reusable-workflows/.github/workflows/ci-go.yml@b75184a59af82875f02abd547e57645ffcdcd91a # v1.0.1
+    uses: Depthmark/reusable-workflows/.github/workflows/ci-go.yml@17176e51cb55f5d707734c62e47cacc5978bd6e9 # v1.1.0
     permissions:
       contents: read
     with:

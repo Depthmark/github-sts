@@ -40,6 +40,19 @@ curl -s http://localhost:8080/health   # includes liveness, security posture, an
 Pin a specific release with `ghcr.io/depthmark/github-sts:0.0.3` instead of `:latest`. Building
 from source instead: `docker build -t github-sts:local .`, then swap the image name above.
 
+Every release also attaches `tar.gz` archives of the server for Linux and macOS on `amd64` and
+`arm64`. Cosign signs the `checksums.txt` covering those archives, and each one is covered by a
+SLSA provenance attestation:
+
+```bash
+gh attestation verify github-sts_Linux_x86_64.tar.gz \
+  --repo Depthmark/github-sts \
+  --signer-workflow Depthmark/reusable-workflows/.github/workflows/go-release.yml
+```
+
+Full download and verification steps, including the cosign path, are in
+[Deployment](https://depthmark.github.io/github-sts/operations/deployment/#prebuilt-binaries).
+
 For the full walkthrough, including installing the App, writing a trust policy, and exchanging a
 real token, start at [Get Started](https://depthmark.github.io/github-sts/get-started/).
 
