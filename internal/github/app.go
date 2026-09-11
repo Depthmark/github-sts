@@ -19,7 +19,9 @@ import (
 
 	"github.com/depthmark/github-sts/internal/metrics"
 	"github.com/depthmark/github-sts/internal/policy"
+	ststracing "github.com/depthmark/github-sts/internal/tracing"
 	"github.com/golang-jwt/jwt/v5"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -100,13 +102,20 @@ func (e *TokenMintError) Unwrap() error { return e.Err }
 // GenerateAppJWT returns a short-lived JWT for authenticating as the GitHub
 // App. The signed token is cached for 9 minutes (valid for 10) to avoid
 // redundant RSA signing operations under load.
-func (p *AppTokenProvider) GenerateAppJWT() (string, error) {
+func (p *AppTokenProvider) GenerateAppJWT(ctx context.Context) (token string, err error) {
+	ctx, span := ststracing.Tracer().Start(ctx, "github.app_jwt.get",
+		trace.WithAttributes(ststracing.CacheAttributes(p.appName, p.instance, "app_jwt", "")...),
+	)
+	defer func() { endGitHubSpan(span, err) }()
+
 	p.jwtMu.Lock()
 	defer p.jwtMu.Unlock()
 
 	if p.jwtCache.token != "" && time.Now().Before(p.jwtCache.expiresAt) {
+		span.SetAttributes(ststracing.AttrCacheResult.String("hit"))
 		return p.jwtCache.token, nil
 	}
+	span.SetAttributes(ststracing.AttrCacheResult.String("miss"))
 
 	now := time.Now()
 	claims := jwt.MapClaims{
@@ -115,10 +124,17 @@ func (p *AppTokenProvider) GenerateAppJWT() (string, error) {
 		"iss": fmt.Sprintf("%d", p.appID),
 	}
 	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	_, signSpan := ststracing.Tracer().Start(ctx, "github.app_jwt.sign",
+		trace.WithAttributes(ststracing.GitHubOperationAttributes(p.appName, p.instance, "sign_app_jwt", "")...),
+	)
 	signed, err := tok.SignedString(p.privateKey)
 	if err != nil {
+		ststracing.MarkError(signSpan, "github_app_jwt_sign_failed")
+		signSpan.End()
 		return "", err
 	}
+	signSpan.SetAttributes(ststracing.StageResult("success"))
+	signSpan.End()
 
 	p.jwtCache = cachedJWT{
 		token:     signed,
@@ -130,19 +146,26 @@ func (p *AppTokenProvider) GenerateAppJWT() (string, error) {
 // GetInstallationID resolves the GitHub App installation ID for the given scope.
 // Only org-level resolution is supported (no repo-level fallback).
 // Concurrent requests for the same org are deduplicated via singleflight.
-func (p *AppTokenProvider) GetInstallationID(ctx context.Context, scope string) (int64, error) {
+func (p *AppTokenProvider) GetInstallationID(ctx context.Context, scope string) (id int64, err error) {
+	ctx, span := ststracing.Tracer().Start(ctx, "github.installation.resolve",
+		trace.WithAttributes(ststracing.GitHubOperationAttributes(p.appName, p.instance, "get_installation", "")...),
+	)
+	defer func() { endGitHubSpan(span, err) }()
+
 	org := extractOrg(scope)
 
 	// Check cache (with TTL).
 	p.mu.RLock()
 	if entry, ok := p.installationCache[org]; ok && time.Since(entry.fetchedAt) < installationCacheTTL {
 		p.mu.RUnlock()
+		span.SetAttributes(ststracing.AttrCacheName.String("github_installation"), ststracing.AttrCacheResult.String("hit"))
 		return entry.id, nil
 	}
 	p.mu.RUnlock()
+	span.SetAttributes(ststracing.AttrCacheName.String("github_installation"), ststracing.AttrCacheResult.String("miss"))
 
 	// Singleflight: deduplicate concurrent fetches for the same org.
-	v, err, _ := p.installSF.Do(org, func() (any, error) {
+	v, err, shared := p.installSF.Do(org, func() (any, error) {
 		// Double-check cache after winning the singleflight race.
 		p.mu.RLock()
 		if entry, ok := p.installationCache[org]; ok && time.Since(entry.fetchedAt) < installationCacheTTL {
@@ -153,6 +176,9 @@ func (p *AppTokenProvider) GetInstallationID(ctx context.Context, scope string) 
 
 		return p.fetchInstallationID(ctx, org)
 	})
+	if shared {
+		span.SetAttributes(ststracing.AttrCacheResult.String("shared"))
+	}
 	if err != nil {
 		return 0, err
 	}
@@ -168,7 +194,7 @@ func (p *AppTokenProvider) GetInstallationID(ctx context.Context, scope string) 
 // failover). This is unlike GetInstallationToken's 422, which reflects a
 // requested-permissions problem no amount of retrying can fix.
 func (p *AppTokenProvider) fetchInstallationID(ctx context.Context, org string) (int64, error) {
-	appJWT, err := p.GenerateAppJWT()
+	appJWT, err := p.GenerateAppJWT(ctx)
 	if err != nil {
 		return 0, &TokenMintError{Retryable: true, Err: fmt.Errorf("generating app JWT: %w", err)}
 	}
@@ -429,14 +455,19 @@ func (p *AppTokenProvider) GetInstallationToken(ctx context.Context, scope strin
 	}
 	// No ceiling: this path (policy-file reads, target resolution) has no
 	// caller-supplied narrowing, so the requested set is its own ceiling.
-	minted, err := p.getInstallationToken(ctx, scope, permissions, repositories, nil, nil, caller)
+	minted, err := p.getInstallationToken(ctx, scope, permissions, repositories, nil, nil, caller, tokenPurpose(caller))
 	if err != nil {
 		return "", err
 	}
 	return minted.Token, nil
 }
 
-func (p *AppTokenProvider) getInstallationToken(ctx context.Context, scope string, permissions map[string]string, repositories []string, repositoryIDs []int64, ceiling map[string]string, caller string) (MintedToken, error) {
+func (p *AppTokenProvider) getInstallationToken(ctx context.Context, scope string, permissions map[string]string, repositories []string, repositoryIDs []int64, ceiling map[string]string, caller, purpose string) (minted MintedToken, err error) {
+	ctx, span := ststracing.Tracer().Start(ctx, "github.token.mint",
+		trace.WithAttributes(ststracing.GitHubOperationAttributes(p.appName, p.instance, "create_token", purpose)...),
+	)
+	defer func() { endGitHubSpan(span, err) }()
+
 	if repositories != nil && repositoryIDs != nil {
 		return MintedToken{}, fmt.Errorf("repository names and IDs are mutually exclusive")
 	}
@@ -448,7 +479,7 @@ func (p *AppTokenProvider) getInstallationToken(ctx context.Context, scope strin
 		return MintedToken{}, err
 	}
 
-	appJWT, err := p.GenerateAppJWT()
+	appJWT, err := p.GenerateAppJWT(ctx)
 	if err != nil {
 		return MintedToken{}, &TokenMintError{Retryable: true, Err: fmt.Errorf("generating app JWT: %w", err)}
 	}

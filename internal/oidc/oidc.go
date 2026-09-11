@@ -22,6 +22,7 @@ import (
 
 	"github.com/depthmark/github-sts/internal/metrics"
 	"github.com/golang-jwt/jwt/v5"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -46,7 +47,8 @@ const (
 // doc from redirecting signature verification to an attacker-controlled host
 // or chaining SSRF through redirects.
 var oidcHTTPClient = &http.Client{
-	Timeout: 15 * time.Second,
+	Timeout:   15 * time.Second,
+	Transport: otelhttp.NewTransport(http.DefaultTransport),
 	CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 		return http.ErrUseLastResponse
 	},
