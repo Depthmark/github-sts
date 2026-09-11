@@ -15,7 +15,7 @@
       }
     ]
   },
-  "description": "Application, access, and audit logs for github-sts. Filter by app and Trace ID for end-to-end transaction reconstruction. Patterns row surfaces failure shape and anomaly signals for human + AI-agent triage.",
+  "description": "Request-level investigation across audit logs, application logs, and Tempo traces. Select one environment and one trace for transaction evidence.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -28,8 +28,8 @@
       "keepTime": true,
       "tags": [],
       "targetBlank": false,
-      "title": "Fleet Overview",
-      "tooltip": "Fleet health and HTTP traffic",
+      "title": "Service Health",
+      "tooltip": "Caller-facing reliability and fleet health",
       "type": "link",
       "url": "/d/github-sts-fleet"
     },
@@ -40,10 +40,58 @@
       "keepTime": true,
       "tags": [],
       "targetBlank": false,
-      "title": "Governance & Security",
-      "tooltip": "Per-app token exchanges and security events",
+      "title": "App Capacity",
+      "tooltip": "GitHub App pool capacity and quota",
+      "type": "link",
+      "url": "/d/github-sts-multi-app"
+    },
+    {
+      "asDropdown": false,
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": false,
+      "title": "Governance & Change",
+      "tooltip": "Policy, access, and control evidence",
       "type": "link",
       "url": "/d/github-sts-governance"
+    },
+    {
+      "asDropdown": false,
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": false,
+      "title": "Stack & Dependencies",
+      "tooltip": "Runtime and dependency behavior",
+      "type": "link",
+      "url": "/d/github-sts-stack"
+    },
+    {
+      "asDropdown": false,
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": false,
+      "title": "Consumer Usage",
+      "tooltip": "Repository and identity usage patterns",
+      "type": "link",
+      "url": "/d/github-sts-consumers"
+    },
+    {
+      "asDropdown": false,
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": false,
+      "title": "Telemetry Health",
+      "tooltip": "Coverage, loss, and schema compatibility",
+      "type": "link",
+      "url": "/d/github-sts-telemetry"
     }
   ],
   "liveNow": false,
@@ -134,14 +182,15 @@
             "uid": "$loki_datasource"
           },
           "editorMode": "code",
-          "expr": "sum by (level) (rate({namespace=~\"$namespace\", job=~\"$job\", app=~\"$app\"} | json | __error__=\"\" [$__interval]))",
+          "expr": "sum by (level) (rate({app=\"github-sts\", namespace=~\"$namespace\", pod=~\"$pod\"} |= \"$search\" [$window]))",
           "legendFormat": "{{level}}",
           "range": true,
           "refId": "A"
         }
       ],
       "title": "Log Rate by Level",
-      "type": "timeseries"
+      "type": "timeseries",
+      "description": "Log rate by severity, resolved from the Loki index rather than by parsing. Lines with an empty level are the plain-text startup and config failures that slog never formatted - see Startup & Crash Output."
     },
     {
       "collapsed": false,
@@ -152,7 +201,7 @@
         "y": 7
       },
       "id": 150,
-      "title": "Transaction Trace (set the Trace ID variable above)",
+      "title": "Selected Transaction (set Trace ID)",
       "type": "row"
     },
     {
@@ -176,9 +225,27 @@
               }
             ]
           },
-          "mappings": []
+          "mappings": [],
+          "noValue": "SELECT TRACE ID"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "C"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 4,
@@ -208,8 +275,8 @@
             "uid": "$loki_datasource"
           },
           "editorMode": "code",
-          "expr": "sum(count_over_time({namespace=~\"$namespace\", job=~\"$job\", app=~\"$app\"} | json | __error__=\"\" | trace_id=\"$trace_id\" [$__range]))",
-          "legendFormat": "log lines",
+          "expr": "sum(count_over_time({app=\"github-sts\", namespace=~\"$namespace\", pod=~\"$pod\"} |= \"$search\" | json | __error__=\"\" | trace_id!=\"\" | trace_id=\"$trace_id\" [$__range]))",
+          "legendFormat": "Log lines",
           "refId": "A",
           "range": false,
           "instant": true
@@ -220,8 +287,8 @@
             "uid": "$loki_datasource"
           },
           "editorMode": "code",
-          "expr": "sum by (result) (count_over_time({namespace=~\"$namespace\", job=~\"$job\", app=~\"$app\"} | json | __error__=\"\" | log_channel=\"audit\" | trace_id=\"$trace_id\" [$__range]))",
-          "legendFormat": "audit/{{result}}",
+          "expr": "sum by (result) (count_over_time({app=\"github-sts\", namespace=~\"$namespace\", pod=~\"$pod\", log_channel=\"audit\"} |= \"$search\" | json | __error__=\"\" | app_extracted=~\"$app\" | result=~\"$result\" | identity=~\"$identity\" | label_format event_category=`{{ if eq .result \"success\" }}success{{ else if or (eq .result \"policy_denied\") (eq .result \"org_policy_denied\") (eq .result \"trust_policy_invalid\") (eq .result \"policy_not_found\") }}policy{{ else if or (eq .result \"oidc_invalid\") (eq .result \"jti_replay\") }}auth{{ else if or (eq .result \"github_error\") (eq .result \"bundle_stale\") (eq .result \"bundle_unavailable\") }}upstream{{ else }}infra{{ end }}` | event_category=~\"$event_category\" | trace_id!=\"\" | trace_id=\"$trace_id\" [$__range]))",
+          "legendFormat": "{{result}}",
           "refId": "B",
           "range": false,
           "instant": true
@@ -232,16 +299,64 @@
             "uid": "$loki_datasource"
           },
           "editorMode": "code",
-          "expr": "max(max_over_time({namespace=~\"$namespace\", job=~\"$job\", app=~\"$app\"} | json | __error__=\"\" | log_channel=\"audit\" | trace_id=\"$trace_id\" | unwrap duration_ms [$__range]))",
-          "legendFormat": "duration_ms",
+          "expr": "max(max_over_time({app=\"github-sts\", namespace=~\"$namespace\", pod=~\"$pod\", log_channel=\"audit\"} |= \"$search\" | json | __error__=\"\" | app_extracted=~\"$app\" | result=~\"$result\" | identity=~\"$identity\" | label_format event_category=`{{ if eq .result \"success\" }}success{{ else if or (eq .result \"policy_denied\") (eq .result \"org_policy_denied\") (eq .result \"trust_policy_invalid\") (eq .result \"policy_not_found\") }}policy{{ else if or (eq .result \"oidc_invalid\") (eq .result \"jti_replay\") }}auth{{ else if or (eq .result \"github_error\") (eq .result \"bundle_stale\") (eq .result \"bundle_unavailable\") }}upstream{{ else }}infra{{ end }}` | event_category=~\"$event_category\" | trace_id!=\"\" | trace_id=\"$trace_id\" | unwrap duration_ms [$__range]))",
+          "legendFormat": "Duration",
           "refId": "C",
           "range": false,
           "instant": true
         }
       ],
-      "title": "Trace Summary",
+      "title": "Selected Trace Summary",
       "type": "stat",
-      "description": "Counts and end-to-end duration for the selected Trace ID. Pick a single trace_id (not the .* default)."
+      "description": "Exact trace ID only. With no ID, this panel intentionally shows SELECT TRACE ID rather than aggregating the whole dashboard range."
+    },
+    {
+      "id": 515,
+      "type": "row",
+      "title": "Trace Waterfall (expand after setting a Trace ID)",
+      "collapsed": true,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 12
+      },
+      "panels": [
+        {
+          "id": 510,
+          "type": "traces",
+          "title": "Trace View - $trace_id",
+          "datasource": {
+            "type": "tempo",
+            "uid": "${tempo_datasource}"
+          },
+          "gridPos": {
+            "h": 14,
+            "w": 24,
+            "x": 0,
+            "y": 13
+          },
+          "description": "One exact trace waterfall. The same ID appears in response headers and audit/log events. The reviewed application currently emits one server span per exchange; stage child spans are future telemetry work.",
+          "targets": [
+            {
+              "datasource": {
+                "type": "tempo",
+                "uid": "${tempo_datasource}"
+              },
+              "refId": "A",
+              "queryType": "traceql",
+              "query": "$trace_id",
+              "limit": 20
+            }
+          ],
+          "options": {},
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": []
+          }
+        }
+      ],
+      "description": "Collapsed by default on purpose: the Tempo traces panel requires a single trace ID and renders a query error when the Trace ID variable is empty. A collapsed row does not run its queries until expanded, so the default view stays clean. Paste an ID above, then expand."
     },
     {
       "datasource": {
@@ -252,7 +367,7 @@
         "h": 16,
         "w": 24,
         "x": 0,
-        "y": 12
+        "y": 13
       },
       "id": 152,
       "options": {
@@ -272,13 +387,13 @@
             "uid": "$loki_datasource"
           },
           "editorMode": "code",
-          "expr": "{namespace=~\"$namespace\", job=~\"$job\", app=~\"$app\"} | json | __error__=\"\" | trace_id=\"$trace_id\"",
+          "expr": "{app=\"github-sts\", namespace=~\"$namespace\", pod=~\"$pod\"} |= \"$search\" | json | __error__=\"\" | trace_id!=\"\" | trace_id=\"$trace_id\"",
           "refId": "A"
         }
       ],
       "title": "Transaction Timeline (chronological, all channels)",
       "type": "logs",
-      "description": "All log lines for the selected Trace ID, oldest first. Reconstructs the end-to-end transaction across access \u2192 handler \u2192 OIDC \u2192 policy \u2192 GitHub API \u2192 audit."
+      "description": "Every log line for the exact selected Trace ID, oldest first. With no ID, no transaction logs are queried. Tempo is configured for this dashboard."
     },
     {
       "collapsed": false,
@@ -286,7 +401,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 28
+        "y": 29
       },
       "id": 200,
       "title": "Application Logs",
@@ -301,7 +416,7 @@
         "h": 14,
         "w": 24,
         "x": 0,
-        "y": 29
+        "y": 30
       },
       "id": 201,
       "options": {
@@ -321,12 +436,13 @@
             "uid": "$loki_datasource"
           },
           "editorMode": "code",
-          "expr": "{namespace=~\"$namespace\", job=~\"$job\", app=~\"$app\"} | json | __error__=\"\" | log_channel!=\"audit\" | level=~\"$level\" | trace_id=~\"$trace_id\"",
+          "expr": "{app=\"github-sts\", namespace=~\"$namespace\", pod=~\"$pod\", log_channel!=\"audit\", level=~\"$level\"} |= \"$search\" | json | __error__=\"\" | msg!=\"access\" | trace_id=~\".*$trace_id.*\"",
           "refId": "A"
         }
       ],
       "title": "Application Logs",
-      "type": "logs"
+      "type": "logs",
+      "description": "Non-audit, non-access lines: bundle reloads, TUF refresh, startup and background work."
     },
     {
       "collapsed": false,
@@ -334,7 +450,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 43
+        "y": 44
       },
       "id": 300,
       "title": "Access & Audit Logs",
@@ -349,7 +465,7 @@
         "h": 12,
         "w": 12,
         "x": 0,
-        "y": 44
+        "y": 45
       },
       "id": 301,
       "options": {
@@ -369,12 +485,13 @@
             "uid": "$loki_datasource"
           },
           "editorMode": "code",
-          "expr": "{namespace=~\"$namespace\", job=~\"$job\", app=~\"$app\"} | json | __error__=\"\" | msg=\"access\" | level=~\"$level\" | trace_id=~\"$trace_id\"",
+          "expr": "{app=\"github-sts\", namespace=~\"$namespace\", pod=~\"$pod\", log_channel!=\"audit\", level=~\"$level\"} |= \"$search\" | json | __error__=\"\" | msg=\"access\" | trace_id=~\".*$trace_id.*\"",
           "refId": "A"
         }
       ],
-      "title": "Access Logs",
-      "type": "logs"
+      "title": "Access Logs (HTTP)",
+      "type": "logs",
+      "description": "HTTP request log lines (msg=\"access\"). These carry no log_channel label, so they are selected by message, not by channel."
     },
     {
       "datasource": {
@@ -385,7 +502,7 @@
         "h": 12,
         "w": 12,
         "x": 12,
-        "y": 44
+        "y": 45
       },
       "id": 302,
       "options": {
@@ -405,12 +522,13 @@
             "uid": "$loki_datasource"
           },
           "editorMode": "code",
-          "expr": "{namespace=~\"$namespace\", job=~\"$job\", app=~\"$app\"} | json | __error__=\"\" | log_channel=\"audit\" | level=~\"$level\" | trace_id=~\"$trace_id\"",
+          "expr": "{app=\"github-sts\", namespace=~\"$namespace\", pod=~\"$pod\", log_channel=\"audit\", level=~\"$level\"} |= \"$search\" | json | __error__=\"\" | app_extracted=~\"$app\" | result=~\"$result\" | identity=~\"$identity\" | label_format event_category=`{{ if eq .result \"success\" }}success{{ else if or (eq .result \"policy_denied\") (eq .result \"org_policy_denied\") (eq .result \"trust_policy_invalid\") (eq .result \"policy_not_found\") }}policy{{ else if or (eq .result \"oidc_invalid\") (eq .result \"jti_replay\") }}auth{{ else if or (eq .result \"github_error\") (eq .result \"bundle_stale\") (eq .result \"bundle_unavailable\") }}upstream{{ else }}infra{{ end }}` | event_category=~\"$event_category\" | trace_id=~\".*$trace_id.*\"",
           "refId": "A"
         }
       ],
       "title": "Audit Logs",
-      "type": "logs"
+      "type": "logs",
+      "description": "Token-exchange audit trail. app_extracted is the GitHub App parsed from the JSON body; Loki renames it because \"app\" is already a stream label (the Kubernetes workload)."
     },
     {
       "collapsed": false,
@@ -418,7 +536,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 56
+        "y": 57
       },
       "id": 400,
       "title": "Error Triage",
@@ -433,7 +551,7 @@
         "h": 12,
         "w": 24,
         "x": 0,
-        "y": 57
+        "y": 58
       },
       "id": 401,
       "options": {
@@ -453,12 +571,130 @@
             "uid": "$loki_datasource"
           },
           "editorMode": "code",
-          "expr": "{namespace=~\"$namespace\", job=~\"$job\", app=~\"$app\"} | json | __error__=\"\" | level=~\"ERROR|WARNING\" | trace_id=~\"$trace_id\"",
+          "expr": "{app=\"github-sts\", namespace=~\"$namespace\", pod=~\"$pod\", level=~\"(ERROR|WARN|)\"} |= \"$search\" | json | trace_id=~\".*$trace_id.*\"",
           "refId": "A"
         }
       ],
       "title": "Errors & Warnings (all channels)",
-      "type": "logs"
+      "type": "logs",
+      "description": "Errors and warnings across every channel. The empty alternative in level=~\"(ERROR|WARN|)\" admits the plain-text startup failures that carry no level label, and __error__=\"\" is deliberately absent so a line that is not JSON is still shown. github-sts emits only uppercase levels, so no lowercase alternatives are needed."
+    },
+    {
+      "id": 507,
+      "type": "row",
+      "title": "Startup & Crash Output (unparsed)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 70
+      },
+      "panels": [],
+      "description": "Everything the JSON pipeline cannot see. Config validation and startup failures are written by Go's default log package before slog is configured, so they are plain text on stderr with no level label and no trace_id."
+    },
+    {
+      "id": 508,
+      "type": "stat",
+      "title": "Unparsed Lines",
+      "datasource": {
+        "type": "loki",
+        "uid": "$loki_datasource"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 5,
+        "x": 0,
+        "y": 71
+      },
+      "description": "Plain-text lines with no level label over the dashboard range. Any non-zero value means a pod is failing before it can configure structured logging - almost always a crashloop.",
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "$loki_datasource"
+          },
+          "editorMode": "code",
+          "queryType": "instant",
+          "expr": "sum(count_over_time({app=\"github-sts\", namespace=~\"$namespace\", pod=~\"$pod\", level=\"\"} [$__range]))",
+          "refId": "A",
+          "legendFormat": "unparsed"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "auto",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 509,
+      "type": "logs",
+      "title": "Startup / Config Failures (plain text, stderr)",
+      "datasource": {
+        "type": "loki",
+        "uid": "$loki_datasource"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 19,
+        "x": 5,
+        "y": 71
+      },
+      "description": "Raw, unparsed output. No | json and no level filter, because these lines have neither. This is where a CrashLoopBackOff shows its actual cause - one line per restart.",
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "$loki_datasource"
+          },
+          "editorMode": "code",
+          "expr": "{app=\"github-sts\", namespace=~\"$namespace\", pod=~\"$pod\", level=\"\"} |= \"$search\"",
+          "refId": "A",
+          "queryType": "range"
+        }
+      ],
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "prettifyLogMessage": false,
+        "showCommonLabels": false,
+        "showLabels": true,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": true
+      }
     },
     {
       "collapsed": false,
@@ -466,7 +702,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 69
+        "y": 81
       },
       "id": 500,
       "title": "Patterns & Anomaly Detection",
@@ -502,7 +738,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 70
+        "y": 82
       },
       "id": 501,
       "options": {
@@ -527,7 +763,7 @@
             "uid": "$loki_datasource"
           },
           "editorMode": "code",
-          "expr": "topk(10, sum by (error_reason) (rate({namespace=~\"$namespace\", job=~\"$job\", app=~\"$app\"} | json | __error__=\"\" | log_channel=\"audit\" | error_reason!=\"\" [$__interval])))",
+          "expr": "topk(10, sum by (error_reason) (rate({app=\"github-sts\", namespace=~\"$namespace\", pod=~\"$pod\", log_channel=\"audit\"} |= \"$search\" | json | __error__=\"\" | app_extracted=~\"$app\" | result=~\"$result\" | identity=~\"$identity\" | label_format event_category=`{{ if eq .result \"success\" }}success{{ else if or (eq .result \"policy_denied\") (eq .result \"org_policy_denied\") (eq .result \"trust_policy_invalid\") (eq .result \"policy_not_found\") }}policy{{ else if or (eq .result \"oidc_invalid\") (eq .result \"jti_replay\") }}auth{{ else if or (eq .result \"github_error\") (eq .result \"bundle_stale\") (eq .result \"bundle_unavailable\") }}upstream{{ else }}infra{{ end }}` | event_category=~\"$event_category\" | error_reason!=\"\" [$window])))",
           "legendFormat": "{{error_reason}}",
           "range": true,
           "refId": "A"
@@ -587,7 +823,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 70
+        "y": 82
       },
       "id": 502,
       "options": {
@@ -612,16 +848,16 @@
             "uid": "$datasource"
           },
           "editorMode": "code",
-          "expr": "100 * sum by (app) (rate(githubsts_token_exchanges_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$instance\",app=~\"$app\",result!=\"success\"}[5m])) / clamp_min(sum by (app) (rate(githubsts_token_exchanges_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$instance\",app=~\"$app\"}[5m])), 0.0001)",
-          "legendFormat": "{{app}}",
+          "expr": "100 * (sum by (github_app) (rate(githubsts_token_exchanges_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$replica\",github_app=~\"$app\",result=~\"cache_error|github_error|bundle_stale|bundle_unavailable|bundle_evaluation_failed|unknown_error\"}[$window])) or on(github_app) 0 * sum by (github_app) (rate(githubsts_token_exchanges_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$replica\",github_app=~\"$app\"}[$window]))) / sum by (github_app) (rate(githubsts_token_exchanges_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$replica\",github_app=~\"$app\"}[$window]))",
+          "legendFormat": "{{github_app}}",
           "range": true,
           "refId": "A",
           "instant": false
         }
       ],
-      "title": "Token Exchange Failure Rate by App (%)",
+      "title": "System Fault Rate by App (%)",
       "type": "timeseries",
-      "description": "Per-app failure ratio over a 5m window. Sustained > 5% = degradation; spike + flat success = systemic problem."
+      "description": "Broker/dependency fault outcomes divided by all attributed exchange attempts. Policy/authentication rejections are excluded."
     },
     {
       "datasource": {
@@ -653,7 +889,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 78
+        "y": 90
       },
       "id": 503,
       "options": {
@@ -678,15 +914,15 @@
             "uid": "$loki_datasource"
           },
           "editorMode": "code",
-          "expr": "topk(10, sum by (remote_ip) (rate({namespace=~\"$namespace\", job=~\"$job\", app=~\"$app\"} | json | __error__=\"\" | log_channel=\"audit\" | result!=\"success\" | remote_ip!=\"\" [$__interval])))",
-          "legendFormat": "{{remote_ip}}",
+          "expr": "topk(10, sum by (identity, result) (rate({app=\"github-sts\", namespace=~\"$namespace\", pod=~\"$pod\", log_channel=\"audit\"} |= \"$search\" | json | __error__=\"\" | app_extracted=~\"$app\" | result=~\"$result\" | identity=~\"$identity\" | label_format event_category=`{{ if eq .result \"success\" }}success{{ else if or (eq .result \"policy_denied\") (eq .result \"org_policy_denied\") (eq .result \"trust_policy_invalid\") (eq .result \"policy_not_found\") }}policy{{ else if or (eq .result \"oidc_invalid\") (eq .result \"jti_replay\") }}auth{{ else if or (eq .result \"github_error\") (eq .result \"bundle_stale\") (eq .result \"bundle_unavailable\") }}upstream{{ else }}infra{{ end }}` | event_category=~\"$event_category\" | result!=\"success\" [$window])))",
+          "legendFormat": "{{identity}} / {{result}}",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Top remote_ip on Failed Token Exchanges",
+      "title": "Top Identities on Non-Success Outcomes",
       "type": "timeseries",
-      "description": "Source IPs driving most token-exchange failures. Useful for spotting probing or a single misconfigured caller."
+      "description": "Grouped by identity: the audit slog emitter does not write remote_ip to stdout (only to the audit FILE sink), so a remote_ip breakdown is not derivable from container logs."
     },
     {
       "datasource": {
@@ -738,7 +974,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 78
+        "y": 90
       },
       "id": 504,
       "options": {
@@ -763,7 +999,7 @@
             "uid": "$datasource"
           },
           "editorMode": "code",
-          "expr": "(sum(rate(githubsts_jti_replay_attempts_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$instance\"}[5m])) - avg_over_time(sum(rate(githubsts_jti_replay_attempts_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$instance\"}[5m]))[6h:1m])) / clamp_min(stddev_over_time(sum(rate(githubsts_jti_replay_attempts_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$instance\"}[5m]))[6h:1m]), 0.001)",
+          "expr": "(sum(rate(githubsts_jti_replay_attempts_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$replica\"}[$window])) - avg_over_time(sum(rate(githubsts_jti_replay_attempts_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$replica\"}[$window]))[6h:1m])) / clamp_min(stddev_over_time(sum(rate(githubsts_jti_replay_attempts_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$replica\"}[$window]))[6h:1m]), 0.001)",
           "legendFormat": "jti_replay z",
           "range": true,
           "refId": "A",
@@ -775,7 +1011,7 @@
             "uid": "$datasource"
           },
           "editorMode": "code",
-          "expr": "(sum(rate(githubsts_oidc_validation_errors_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$instance\"}[5m])) - avg_over_time(sum(rate(githubsts_oidc_validation_errors_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$instance\"}[5m]))[6h:1m])) / clamp_min(stddev_over_time(sum(rate(githubsts_oidc_validation_errors_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$instance\"}[5m]))[6h:1m]), 0.001)",
+          "expr": "(sum(rate(githubsts_oidc_validation_errors_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$replica\"}[$window])) - avg_over_time(sum(rate(githubsts_oidc_validation_errors_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$replica\"}[$window]))[6h:1m])) / clamp_min(stddev_over_time(sum(rate(githubsts_oidc_validation_errors_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$replica\"}[$window]))[6h:1m]), 0.001)",
           "legendFormat": "oidc_errors z",
           "range": true,
           "refId": "B",
@@ -787,7 +1023,7 @@
             "uid": "$datasource"
           },
           "editorMode": "code",
-          "expr": "(sum(rate(githubsts_rate_limit_rejections_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$instance\"}[5m])) - avg_over_time(sum(rate(githubsts_rate_limit_rejections_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$instance\"}[5m]))[6h:1m])) / clamp_min(stddev_over_time(sum(rate(githubsts_rate_limit_rejections_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$instance\"}[5m]))[6h:1m]), 0.001)",
+          "expr": "(sum(rate(githubsts_rate_limit_rejections_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$replica\"}[$window])) - avg_over_time(sum(rate(githubsts_rate_limit_rejections_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$replica\"}[$window]))[6h:1m])) / clamp_min(stddev_over_time(sum(rate(githubsts_rate_limit_rejections_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$replica\"}[$window]))[6h:1m]), 0.001)",
           "legendFormat": "rate_limit_rejections z",
           "range": true,
           "refId": "C",
@@ -799,7 +1035,7 @@
             "uid": "$datasource"
           },
           "editorMode": "code",
-          "expr": "(sum(rate(githubsts_audit_events_dropped_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$instance\"}[5m])) - avg_over_time(sum(rate(githubsts_audit_events_dropped_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$instance\"}[5m]))[6h:1m])) / clamp_min(stddev_over_time(sum(rate(githubsts_audit_events_dropped_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$instance\"}[5m]))[6h:1m]), 0.001)",
+          "expr": "(sum(rate(githubsts_audit_events_dropped_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$replica\"}[$window])) - avg_over_time(sum(rate(githubsts_audit_events_dropped_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$replica\"}[$window]))[6h:1m])) / clamp_min(stddev_over_time(sum(rate(githubsts_audit_events_dropped_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$replica\"}[$window]))[6h:1m]), 0.001)",
           "legendFormat": "audit_dropped z",
           "range": true,
           "refId": "D",
@@ -847,7 +1083,7 @@
         "h": 6,
         "w": 12,
         "x": 0,
-        "y": 86
+        "y": 98
       },
       "id": 505,
       "options": {
@@ -871,7 +1107,7 @@
             "uid": "$datasource"
           },
           "editorMode": "code",
-          "expr": "sum(rate(githubsts_audit_events_dropped_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$instance\"}[5m]))",
+          "expr": "sum(rate(githubsts_audit_events_dropped_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$replica\"}[$window]))",
           "legendFormat": "events dropped/s",
           "range": true,
           "refId": "A",
@@ -883,7 +1119,7 @@
             "uid": "$datasource"
           },
           "editorMode": "code",
-          "expr": "sum(rate(githubsts_audit_log_errors_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$instance\"}[5m]))",
+          "expr": "sum(rate(githubsts_audit_log_errors_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$replica\"}[$window]))",
           "legendFormat": "log errors/s",
           "range": true,
           "refId": "B",
@@ -895,16 +1131,16 @@
             "uid": "$datasource"
           },
           "editorMode": "code",
-          "expr": "sum(rate(githubsts_audit_events_logged_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$instance\"}[5m]))",
+          "expr": "sum(rate(githubsts_audit_events_logged_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$replica\"}[$window]))",
           "legendFormat": "events logged/s",
           "range": true,
           "refId": "C",
           "instant": false
         }
       ],
-      "title": "Audit Pipeline Health",
+      "title": "Audit Writer Activity",
       "type": "stat",
-      "description": "Audit pipeline must not drop or error: those would silently lose security-relevant events."
+      "description": "Application writer activity and errors. events logged means processed by the writer; it does not prove file persistence or Loki ingestion."
     },
     {
       "datasource": {
@@ -936,7 +1172,7 @@
         "h": 6,
         "w": 12,
         "x": 12,
-        "y": 86
+        "y": 98
       },
       "id": 506,
       "options": {
@@ -961,8 +1197,8 @@
             "uid": "$datasource"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.50, sum by (le, app) (rate(githubsts_token_exchange_duration_seconds_bucket{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$instance\",app=~\"$app\"}[5m])))",
-          "legendFormat": "{{app}} p50",
+          "expr": "histogram_quantile(0.50, sum by (le, github_app) (rate(githubsts_token_exchange_duration_seconds_bucket{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$replica\",github_app_instance=~\"$app_instance\",github_app=~\"$app\"}[$window])))",
+          "legendFormat": "{{github_app}} p50",
           "range": true,
           "refId": "A",
           "instant": false
@@ -973,8 +1209,8 @@
             "uid": "$datasource"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le, app) (rate(githubsts_token_exchange_duration_seconds_bucket{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$instance\",app=~\"$app\"}[5m])))",
-          "legendFormat": "{{app}} p95",
+          "expr": "histogram_quantile(0.95, sum by (le, github_app) (rate(githubsts_token_exchange_duration_seconds_bucket{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$replica\",github_app_instance=~\"$app_instance\",github_app=~\"$app\"}[$window])))",
+          "legendFormat": "{{github_app}} p95",
           "range": true,
           "refId": "B",
           "instant": false
@@ -985,25 +1221,203 @@
             "uid": "$datasource"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le, app) (rate(githubsts_token_exchange_duration_seconds_bucket{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$instance\",app=~\"$app\"}[5m])))",
-          "legendFormat": "{{app}} p99",
+          "expr": "histogram_quantile(0.99, sum by (le, github_app) (rate(githubsts_token_exchange_duration_seconds_bucket{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$replica\",github_app_instance=~\"$app_instance\",github_app=~\"$app\"}[$window])))",
+          "legendFormat": "{{github_app}} p99",
           "range": true,
           "refId": "C",
           "instant": false
         }
       ],
-      "title": "Token Exchange Duration p50/p95/p99 by App",
+      "title": "Successful Exchange Duration by App",
       "type": "timeseries",
-      "description": "Per-app token-exchange duration percentiles. Drift vs. baseline highlights which app's hot path slowed."
+      "description": "p50/p95/p99 of successful exchanges only. Review volume before interpreting sparse percentiles."
+    },
+    {
+      "id": 511,
+      "type": "row",
+      "title": "Trace Explorer (Tempo)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 104
+      },
+      "panels": [],
+      "description": "Find a trace when you do not already have an ID. Click a traceID to open it in the waterfall above."
+    },
+    {
+      "id": 512,
+      "type": "table",
+      "title": "Recent Traces",
+      "datasource": {
+        "type": "tempo",
+        "uid": "${tempo_datasource}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 8,
+        "x": 0,
+        "y": 105
+      },
+      "description": "Most recent traces in the selected trace environment. Tempo lacks a Kubernetes namespace resource attribute in the reviewed deployment.",
+      "targets": [
+        {
+          "datasource": {
+            "type": "tempo",
+            "uid": "${tempo_datasource}"
+          },
+          "refId": "A",
+          "queryType": "traceql",
+          "query": "{resource.service.name=\"github-sts\" && resource.deployment.environment.name=\"$environment\"}",
+          "limit": 20,
+          "tableType": "traces"
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "countRows": false,
+          "fields": ""
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            }
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 513,
+      "type": "table",
+      "title": "Slow Traces (>250ms)",
+      "datasource": {
+        "type": "tempo",
+        "uid": "${tempo_datasource}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 8,
+        "x": 8,
+        "y": 105
+      },
+      "description": "Traces slower than 250 ms in the selected trace environment. This is a diagnostic threshold, not an agreed SLO.",
+      "targets": [
+        {
+          "datasource": {
+            "type": "tempo",
+            "uid": "${tempo_datasource}"
+          },
+          "refId": "A",
+          "queryType": "traceql",
+          "query": "{resource.service.name=\"github-sts\" && resource.deployment.environment.name=\"$environment\" && duration>250ms}",
+          "limit": 20,
+          "tableType": "traces"
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "countRows": false,
+          "fields": ""
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            }
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 514,
+      "type": "table",
+      "title": "Server-Fault Trace Candidates (HTTP >=500)",
+      "datasource": {
+        "type": "tempo",
+        "uid": "${tempo_datasource}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 8,
+        "x": 16,
+        "y": 105
+      },
+      "description": "Recent server-error traces. Expected 4xx policy/authentication rejections remain available in audit outcomes.",
+      "targets": [
+        {
+          "datasource": {
+            "type": "tempo",
+            "uid": "${tempo_datasource}"
+          },
+          "refId": "A",
+          "queryType": "traceql",
+          "query": "{resource.service.name=\"github-sts\" && resource.deployment.environment.name=\"$environment\" && span.http.response.status_code>=500}",
+          "limit": 20,
+          "tableType": "traces"
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "countRows": false,
+          "fields": ""
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            }
+          }
+        },
+        "overrides": []
+      }
     }
   ],
   "refresh": "30s",
   "schemaVersion": 39,
   "style": "dark",
   "tags": [
+    "audit",
     "github-sts",
-    "loki",
+    "jti",
     "logs",
+    "loki",
+    "metrics",
+    "oidc",
+    "prometheus",
+    "rate-limit",
+    "tempo",
+    "token-exchange",
     "traces"
   ],
   "templating": {
@@ -1014,7 +1428,7 @@
           "text": "Prometheus",
           "value": "Prometheus"
         },
-        "hide": 0,
+        "hide": 2,
         "includeAll": false,
         "label": "Prometheus",
         "multi": false,
@@ -1032,7 +1446,7 @@
           "text": "Loki",
           "value": "Loki"
         },
-        "hide": 0,
+        "hide": 2,
         "includeAll": false,
         "label": "Loki",
         "multi": false,
@@ -1045,11 +1459,53 @@
         "type": "datasource"
       },
       {
+        "name": "tempo_datasource",
+        "label": "Tempo",
+        "type": "datasource",
+        "query": "tempo",
+        "current": {},
+        "options": [],
+        "refresh": 1,
+        "regex": "",
+        "hide": 2,
+        "multi": false,
+        "includeAll": false,
+        "description": "Tempo datasource backing the trace panels."
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "dev",
+          "value": "dev"
+        },
+        "description": "Tempo resource environment. Keep this aligned with the selected Namespace until deployment exports a namespace resource attribute.",
+        "hide": 0,
+        "includeAll": false,
+        "label": "Trace Environment",
+        "multi": false,
+        "name": "environment",
+        "options": [
+          {
+            "selected": true,
+            "text": "dev",
+            "value": "dev"
+          },
+          {
+            "selected": false,
+            "text": "prod",
+            "value": "prod"
+          }
+        ],
+        "query": "dev,prod",
+        "skipUrlSync": false,
+        "type": "custom"
+      },
+      {
         "allValue": ".+",
         "current": {
-          "selected": true,
-          "text": "All",
-          "value": "$__all"
+          "selected": false,
+          "text": "github-sts-dev",
+          "value": "github-sts-dev"
         },
         "datasource": {
           "type": "prometheus",
@@ -1071,14 +1527,15 @@
         "regex": "",
         "skipUrlSync": false,
         "sort": 1,
-        "type": "query"
+        "type": "query",
+        "description": "Deployment namespace. The default selects one environment so production and development telemetry are never silently aggregated."
       },
       {
         "allValue": ".+",
         "current": {
-          "selected": true,
-          "text": "All",
-          "value": "$__all"
+          "selected": false,
+          "text": "github-sts",
+          "value": "github-sts"
         },
         "datasource": {
           "type": "prometheus",
@@ -1086,7 +1543,7 @@
         },
         "definition": "label_values(githubsts_http_requests_total{namespace=~\"$namespace\"}, job)",
         "hide": 0,
-        "includeAll": true,
+        "includeAll": false,
         "label": "Job",
         "multi": false,
         "name": "job",
@@ -1100,7 +1557,8 @@
         "regex": "",
         "skipUrlSync": false,
         "sort": 1,
-        "type": "query"
+        "type": "query",
+        "description": "Prometheus scrape job discovered from github-sts metrics."
       },
       {
         "allValue": ".+",
@@ -1116,14 +1574,75 @@
         "definition": "label_values(githubsts_http_requests_total{namespace=~\"$namespace\",job=~\"$job\"}, instance)",
         "hide": 0,
         "includeAll": true,
-        "label": "Instance",
+        "label": "github-sts Replica",
         "multi": true,
-        "name": "instance",
+        "name": "replica",
         "options": [],
         "query": {
           "qryType": 1,
           "query": "label_values(githubsts_http_requests_total{namespace=~\"$namespace\",job=~\"$job\"}, instance)",
-          "refId": "Prometheus-instance-Variable-Query"
+          "refId": "Prometheus-replica-Variable-Query"
+        },
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query",
+        "description": "github-sts pod as Prometheus sees it (IP:port). Metric panels only; use Pod for log panels."
+      },
+      {
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "$datasource"
+        },
+        "definition": "label_values(githubsts_github_reachable{namespace=~\"$namespace\",job=~\"$job\"}, github_app)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "App",
+        "multi": true,
+        "name": "app",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(githubsts_github_reachable{namespace=~\"$namespace\",job=~\"$job\"}, github_app)",
+          "refId": "Prometheus-app-Variable-Query"
+        },
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query",
+        "description": "Logical GitHub App. On log panels this matches app_extracted. Note: exchanges that fail before the app is resolved (oidc_invalid, jti_replay) carry an empty app, so picking a specific app hides them."
+      },
+      {
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "$datasource"
+        },
+        "definition": "label_values(githubsts_github_reachable{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"$app\"}, github_app_instance)",
+        "description": "Physical GitHub App instance within a logical app pool, from the Prometheus label github_app_instance. Values are the instance's configured name, or its app_id when the name is omitted. Applies to metric panels only; Loki audit panels carry the same value as instance_extracted.",
+        "hide": 0,
+        "includeAll": true,
+        "label": "GitHub App Instance",
+        "multi": true,
+        "name": "app_instance",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(githubsts_github_reachable{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"$app\"}, github_app_instance)",
+          "refId": "Prometheus-app-instance-Variable-Query"
         },
         "refresh": 2,
         "regex": "",
@@ -1139,20 +1658,22 @@
           "value": "$__all"
         },
         "datasource": {
-          "type": "prometheus",
-          "uid": "$datasource"
+          "type": "loki",
+          "uid": "$loki_datasource"
         },
-        "definition": "label_values(githubsts_github_reachable{namespace=~\"$namespace\",job=~\"$job\"}, app)",
+        "definition": "label_values({app=\"github-sts\", namespace=~\"$namespace\"}, pod)",
+        "description": "github-sts pod as Loki sees it. This is the log-side equivalent of the Replica variable.",
         "hide": 0,
         "includeAll": true,
-        "label": "App",
+        "label": "Pod",
         "multi": true,
-        "name": "app",
+        "name": "pod",
         "options": [],
         "query": {
-          "qryType": 1,
-          "query": "label_values(githubsts_github_reachable{namespace=~\"$namespace\",job=~\"$job\"}, app)",
-          "refId": "Prometheus-app-Variable-Query"
+          "label": "pod",
+          "refId": "Loki-pod-Variable-Query",
+          "stream": "{app=\"github-sts\", namespace=~\"$namespace\"}",
+          "type": 1
         },
         "refresh": 2,
         "regex": "",
@@ -1161,12 +1682,13 @@
         "type": "query"
       },
       {
-        "allValue": ".*",
+        "allValue": ".+",
         "current": {
           "selected": true,
           "text": "All",
           "value": "$__all"
         },
+        "description": "Log level, case-normalised in the query: the service writes INFO/WARN/ERROR and some dependencies write lower case.",
         "hide": 0,
         "includeAll": true,
         "label": "Level",
@@ -1180,34 +1702,159 @@
           },
           {
             "selected": false,
-            "text": "DEBUG",
+            "text": "Debug",
             "value": "DEBUG"
           },
           {
             "selected": false,
-            "text": "INFO",
+            "text": "Info",
             "value": "INFO"
           },
           {
             "selected": false,
-            "text": "WARNING",
-            "value": "WARNING"
+            "text": "Warn",
+            "value": "WARN"
           },
           {
             "selected": false,
-            "text": "ERROR",
+            "text": "Error",
             "value": "ERROR"
           }
         ],
-        "query": "DEBUG,INFO,WARNING,ERROR",
+        "query": "Debug : DEBUG,Info : INFO,Warn : WARN,Error : ERROR",
         "skipUrlSync": false,
         "type": "custom"
       },
       {
+        "allValue": ".+",
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "description": "Groups the 13 audit ExchangeResult values into triage buckets. Audit panels only. Auth Failure covers exchanges rejected before the GitHub App is resolved.",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Event Category",
+        "multi": true,
+        "name": "event_category",
+        "options": [
+          {
+            "selected": true,
+            "text": "All",
+            "value": "$__all"
+          },
+          {
+            "selected": false,
+            "text": "Success",
+            "value": "success"
+          },
+          {
+            "selected": false,
+            "text": "Policy Denied",
+            "value": "policy"
+          },
+          {
+            "selected": false,
+            "text": "Auth Failure",
+            "value": "auth"
+          },
+          {
+            "selected": false,
+            "text": "Upstream Error",
+            "value": "upstream"
+          },
+          {
+            "selected": false,
+            "text": "Infra Error",
+            "value": "infra"
+          }
+        ],
+        "query": "Success : success,Policy Denied : policy,Auth Failure : auth,Upstream Error : upstream,Infra Error : infra",
+        "skipUrlSync": false,
+        "type": "custom"
+      },
+      {
+        "auto": false,
+        "auto_count": 30,
+        "auto_min": "10s",
         "current": {
           "selected": false,
-          "text": ".*",
-          "value": ".*"
+          "text": "5m",
+          "value": "5m"
+        },
+        "description": "Lookback window for every rate() and per-interval panel. Widen it to smooth low-traffic periods, narrow it to catch short spikes.",
+        "hide": 0,
+        "label": "Rate Window",
+        "name": "window",
+        "options": [
+          {
+            "selected": false,
+            "text": "1m",
+            "value": "1m"
+          },
+          {
+            "selected": true,
+            "text": "5m",
+            "value": "5m"
+          },
+          {
+            "selected": false,
+            "text": "15m",
+            "value": "15m"
+          },
+          {
+            "selected": false,
+            "text": "30m",
+            "value": "30m"
+          },
+          {
+            "selected": false,
+            "text": "1h",
+            "value": "1h"
+          },
+          {
+            "selected": false,
+            "text": "6h",
+            "value": "6h"
+          },
+          {
+            "selected": false,
+            "text": "24h",
+            "value": "24h"
+          }
+        ],
+        "query": "1m,5m,15m,30m,1h,6h,24h",
+        "refresh": 2,
+        "skipUrlSync": false,
+        "type": "interval"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "description": "Case-sensitive substring applied to the raw log line before parsing. Leave empty to match everything.",
+        "hide": 0,
+        "label": "Line contains",
+        "name": "search",
+        "options": [
+          {
+            "selected": true,
+            "text": "",
+            "value": ""
+          }
+        ],
+        "query": "",
+        "skipUrlSync": false,
+        "type": "textbox"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
         },
         "hide": 0,
         "label": "Trace ID",
@@ -1219,9 +1866,41 @@
             "value": ".*"
           }
         ],
-        "query": ".*",
+        "query": "",
         "skipUrlSync": false,
-        "type": "textbox"
+        "type": "textbox",
+        "description": "Paste a 32-hex trace ID to pin one request across traces, metrics and logs. Empty means no filter. The value is substituted into Loki as a substring match, so a partial ID works too."
+      },
+      {
+        "name": "result",
+        "label": "Result",
+        "type": "custom",
+        "query": "success,policy_denied,org_policy_denied,trust_policy_invalid,policy_not_found,oidc_invalid,jti_replay,github_error,bundle_stale,bundle_unavailable,bundle_evaluation_failed,cache_error,unknown_error",
+        "options": [],
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "hide": 0,
+        "description": "Audit exchange result. Plain tokens with no regex metacharacters, so Grafana's multi-select interpolation is safe here."
+      },
+      {
+        "name": "identity",
+        "label": "Identity",
+        "type": "textbox",
+        "query": ".*",
+        "current": {
+          "selected": false,
+          "text": ".*",
+          "value": ".*"
+        },
+        "options": [],
+        "hide": 0,
+        "description": "Regex on the audit identity field, e.g. ci or ^deploy. Leave as .* for all."
       }
     ]
   },
@@ -1229,10 +1908,56 @@
     "from": "now-1h",
     "to": "now"
   },
-  "timepicker": {},
+  "timepicker": {
+    "refresh_intervals": [
+      "10s",
+      "30s",
+      "1m",
+      "5m",
+      "15m",
+      "1h"
+    ],
+    "quick_ranges": [
+      {
+        "display": "Last 15 minutes",
+        "from": "now-15m",
+        "to": "now"
+      },
+      {
+        "display": "Last 1 hour",
+        "from": "now-1h",
+        "to": "now"
+      },
+      {
+        "display": "Last 6 hours",
+        "from": "now-6h",
+        "to": "now"
+      },
+      {
+        "display": "Last 24 hours",
+        "from": "now-24h",
+        "to": "now"
+      },
+      {
+        "display": "Last 7 days",
+        "from": "now-7d",
+        "to": "now"
+      },
+      {
+        "display": "Previous hour",
+        "from": "now-2h",
+        "to": "now-1h"
+      },
+      {
+        "display": "Today so far",
+        "from": "now/d",
+        "to": "now"
+      }
+    ]
+  },
   "timezone": "",
-  "title": "GitHub STS - Logs & Traces",
+  "title": "GitHub STS - Request Investigation",
   "uid": "github-sts-logs",
-  "version": 1,
+  "version": 6,
   "weekStart": ""
 }
