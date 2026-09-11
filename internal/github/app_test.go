@@ -27,7 +27,7 @@ func generateTestKey(t *testing.T) *rsa.PrivateKey {
 func TestAppTokenProvider_GenerateAppJWT(t *testing.T) {
 	key := generateTestKey(t)
 	p := NewAppTokenProvider("test-app", "test-instance", 12345, key, "https://api.github.com", nil)
-	jwt, err := p.GenerateAppJWT()
+	jwt, err := p.GenerateAppJWT(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
