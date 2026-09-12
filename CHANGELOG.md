@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.1.2](https://github.com/Depthmark/github-sts/compare/v0.1.1...v0.1.2) (2026-09-12)
+
+
+### ✨ Features
+
+* add child span for tracing token exchange ([#88](https://github.com/Depthmark/github-sts/issues/88)) ([b167290](https://github.com/Depthmark/github-sts/commit/b167290dc9ad7fc66da7caeff8e4cebdd14667be))
+
+
+### 📦 Dependencies
+
+* **deps:** bump actions/deploy-pages from 5.0.0 to 5.0.1 in the github-actions-dependencies group ([#87](https://github.com/Depthmark/github-sts/issues/87)) ([d3a4288](https://github.com/Depthmark/github-sts/commit/d3a4288d02ec82f3e9691ac869eaed95b102df9b))
+* **deps:** bump chainguard/go from `ebb11e4` to `9168db8` in the docker-dependencies group ([#85](https://github.com/Depthmark/github-sts/issues/85)) ([a26f4c9](https://github.com/Depthmark/github-sts/commit/a26f4c9acf98e3f45f9ae3eaedb0148cfc36ce93))
+* **deps:** bump the golang-dependencies group across 1 directory with 12 updates ([#90](https://github.com/Depthmark/github-sts/issues/90)) ([cf3a826](https://github.com/Depthmark/github-sts/commit/cf3a826f0be402f3c6984f9ca9d8c2e0cec7a0e3))
+
 ## [0.1.1](https://github.com/Depthmark/github-sts/compare/v0.1.0...v0.1.1) (2026-09-07)
 
 
