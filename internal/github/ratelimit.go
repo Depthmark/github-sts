@@ -1,16 +1,20 @@
 package github
 
 import (
+	"bytes"
 	"context"
 	"crypto/rsa"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
+	"math/rand/v2"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/depthmark/github-sts/internal/metrics"
 	"github.com/golang-jwt/jwt/v5"
 )
 
@@ -44,19 +48,75 @@ type poolInstanceKey struct {
 	instance   string
 }
 
-// RateLimitPoller periodically polls GitHub rate limit endpoints for every
-// configured instance's installations. Self-contained — manages its own JWT
-// signing and token cache, isolated from the exchange-path AppTokenProvider.
+// rateLimitProbePath is the endpoint the poller reads installation buckets
+// from.
+//
+// GET /rate_limit cannot be used: it reports a fresh bucket (used=0, reset
+// about an hour out) that does not match the bucket real API calls spend,
+// in its headers and its body alike. A conditional GET of a static resource
+// can: GitHub does not count a 304 Not Modified against the primary rate
+// limit, and the 304 still carries the X-RateLimit-* headers of the live
+// bucket. /emojis does not change in practice, so its ETag stays valid for
+// the whole life of a token and every probe after the first is free. See
+// .agent-tasks/github-rate-limit-telemetry-drain-visibility.md (V1b).
+const rateLimitProbePath = "/emojis"
+
+// probeTokenPermissions narrows the poller's own installation token. The
+// probe needs no permission at all, and metadata:read is implicit on every
+// installation, so this is the least a token can hold. An empty request
+// body would inherit every permission the installation has, for a token
+// that sits in memory for most of an hour.
+var probeTokenPermissions = map[string]string{"metadata": "read"}
+
+const (
+	// defaultMinEventProbeSpacing bounds probes triggered by rate-limit
+	// signals, so a burst of 403s cannot turn into a burst of probes (which
+	// would count toward GitHub's secondary rate limits even when they are
+	// 304s).
+	defaultMinEventProbeSpacing = 5 * time.Second
+
+	// maxProbeBodyBytes caps how much of a 200 probe body is read before it
+	// is discarded. Draining lets the connection be reused.
+	maxProbeBodyBytes = 1 << 20
+)
+
+// RateLimitPoller keeps the QuotaStore fresh for every configured instance's
+// installations, without waiting for exchange traffic to reveal a change. It
+// probes each installation on a fixed interval, once more just after a
+// drained bucket resets, and on demand when a call on that instance was rate
+// limited (QuotaStore.RequestProbe).
+//
+// The poller only ever uses installation tokens it minted for itself,
+// narrowed to probeTokenPermissions and never handed to anyone. It never
+// sees, keeps or probes a token minted for a client, so a bucket that only
+// client tokens spend is out of its reach by design.
 type RateLimitPoller struct {
 	instances         []PoolInstanceConfig
+	byKey             map[poolInstanceKey]PoolInstanceConfig
 	apiURL            string
 	interval          time.Duration
+	quota             *QuotaStore
 	installationCache map[poolInstanceKey][]installationEntry
 	installationTTL   time.Duration
 	tokenCache        map[tokenCacheKey]tokenEntry
 	httpClient        *http.Client
 	mu                sync.Mutex
 	cancel            context.CancelFunc
+
+	// lastProbe is only touched by the poll loop goroutine.
+	lastProbe            map[poolInstanceKey]time.Time
+	minEventProbeSpacing time.Duration
+
+	// resetTimers holds at most one pending post-reset probe per instance,
+	// guarded by mu. Timers hand their key to the loop through resetDue.
+	resetTimers map[poolInstanceKey]*resetTimer
+	resetDue    chan poolInstanceKey
+	resetDelay  func() time.Duration
+}
+
+type resetTimer struct {
+	at    time.Time
+	timer *time.Timer
 }
 
 type installationEntry struct {
@@ -68,6 +128,10 @@ type installationEntry struct {
 type tokenEntry struct {
 	token     string
 	expiresAt time.Time
+	// etag is the ETag of this token's last full probe response. It is
+	// cached per token because GitHub varies the probe response on
+	// Authorization.
+	etag string
 }
 
 // tokenCacheKey additionally scopes a token cache entry by installation ID:
@@ -79,17 +143,39 @@ type tokenCacheKey struct {
 
 // NewRateLimitPoller creates a rate limit poller over the given flat list of
 // pool instances (one entry per physical GitHub App, across every
-// configured logical app).
-func NewRateLimitPoller(instances []PoolInstanceConfig, apiURL string, interval time.Duration) *RateLimitPoller {
-	return &RateLimitPoller{
-		instances:         instances,
-		apiURL:            apiURL,
-		interval:          interval,
-		installationCache: make(map[poolInstanceKey][]installationEntry),
-		installationTTL:   10 * time.Minute,
-		tokenCache:        make(map[tokenCacheKey]tokenEntry),
-		httpClient:        &http.Client{Timeout: 15 * time.Second},
+// configured logical app). Observations go to quota; a nil quota gets a
+// private store, so the gauges are still rendered.
+func NewRateLimitPoller(instances []PoolInstanceConfig, apiURL string, interval time.Duration, quota *QuotaStore) *RateLimitPoller {
+	if quota == nil {
+		quota = NewQuotaStore()
 	}
+	byKey := make(map[poolInstanceKey]PoolInstanceConfig, len(instances))
+	for _, pi := range instances {
+		byKey[poolInstanceKey{logicalApp: pi.LogicalApp, instance: pi.Instance}] = pi
+	}
+	return &RateLimitPoller{
+		instances:            instances,
+		byKey:                byKey,
+		apiURL:               apiURL,
+		interval:             interval,
+		quota:                quota,
+		installationCache:    make(map[poolInstanceKey][]installationEntry),
+		installationTTL:      10 * time.Minute,
+		tokenCache:           make(map[tokenCacheKey]tokenEntry),
+		httpClient:           &http.Client{Timeout: 15 * time.Second},
+		lastProbe:            make(map[poolInstanceKey]time.Time),
+		minEventProbeSpacing: defaultMinEventProbeSpacing,
+		resetTimers:          make(map[poolInstanceKey]*resetTimer),
+		resetDue:             make(chan poolInstanceKey, probeRequestBuffer),
+		resetDelay:           defaultResetDelay,
+	}
+}
+
+// defaultResetDelay waits 1 to 3 seconds past the reported reset, so a
+// small clock difference with GitHub does not probe the old window, and
+// replicas do not all probe in the same second.
+func defaultResetDelay() time.Duration {
+	return time.Second + rand.N(2*time.Second)
 }
 
 // Start begins the polling loop in a background goroutine.
@@ -99,10 +185,16 @@ func (p *RateLimitPoller) Start() {
 	go p.pollLoop(ctx)
 }
 
-// Stop halts the polling loop.
+// Stop halts the polling loop and any pending post-reset probe.
 func (p *RateLimitPoller) Stop() {
 	if p.cancel != nil {
 		p.cancel()
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for key, rt := range p.resetTimers {
+		rt.timer.Stop()
+		delete(p.resetTimers, key)
 	}
 }
 
@@ -119,28 +211,40 @@ func (p *RateLimitPoller) pollLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			p.pollAll(ctx)
+		case key := <-p.resetDue:
+			p.pollKey(ctx, key)
+		case key := <-p.quota.probeRequests():
+			if time.Since(p.lastProbe[key]) < p.minEventProbeSpacing {
+				continue
+			}
+			p.pollKey(ctx, key)
 		}
 	}
 }
 
 func (p *RateLimitPoller) pollAll(ctx context.Context) {
 	for _, pi := range p.instances {
-		key := poolInstanceKey{logicalApp: pi.LogicalApp, instance: pi.Instance}
-		installations, err := p.getInstallations(ctx, key, pi.AppConfig)
-		if err != nil {
-			slog.Error("rate limit poller: failed to get installations", "app", pi.LogicalApp, "instance", pi.Instance, "error", err)
-			continue
-		}
+		p.pollInstance(ctx, pi)
+	}
+}
 
-		for _, inst := range installations {
-			token, err := p.getOrCreateToken(ctx, key, pi.AppConfig, inst.id)
-			if err != nil {
-				slog.Error("rate limit poller: failed to get token", "app", pi.LogicalApp, "instance", pi.Instance, "installation", inst.id, "error", err)
-				continue
-			}
+func (p *RateLimitPoller) pollKey(ctx context.Context, key poolInstanceKey) {
+	if pi, ok := p.byKey[key]; ok {
+		p.pollInstance(ctx, pi)
+	}
+}
 
-			p.pollRateLimit(ctx, pi.LogicalApp, pi.Instance, token, inst.account)
-		}
+func (p *RateLimitPoller) pollInstance(ctx context.Context, pi PoolInstanceConfig) {
+	key := poolInstanceKey{logicalApp: pi.LogicalApp, instance: pi.Instance}
+	p.lastProbe[key] = time.Now()
+
+	installations, err := p.getInstallations(ctx, key, pi.AppConfig)
+	if err != nil {
+		slog.Error("rate limit poller: failed to get installations", "app", pi.LogicalApp, "instance", pi.Instance, "error", err)
+		return
+	}
+	for _, inst := range installations {
+		p.probeInstallation(ctx, pi, inst)
 	}
 }
 
@@ -207,37 +311,40 @@ func (p *RateLimitPoller) getInstallations(ctx context.Context, key poolInstance
 	return installations, nil
 }
 
-func (p *RateLimitPoller) getOrCreateToken(ctx context.Context, key poolInstanceKey, cfg AppConfig, installationID int64) (string, error) {
-	cacheKey := tokenCacheKey{poolInstanceKey: key, installationID: installationID}
-
+func (p *RateLimitPoller) getOrCreateToken(ctx context.Context, cacheKey tokenCacheKey, cfg AppConfig) (tokenEntry, error) {
 	p.mu.Lock()
 	if entry, ok := p.tokenCache[cacheKey]; ok && time.Now().Before(entry.expiresAt) {
 		p.mu.Unlock()
-		return entry.token, nil
+		return entry, nil
 	}
 	p.mu.Unlock()
 
 	appJWT, err := p.signJWT(cfg)
 	if err != nil {
-		return "", err
+		return tokenEntry{}, err
 	}
 
-	url := fmt.Sprintf("%s/app/installations/%d/access_tokens", p.apiURL, installationID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+	body, err := json.Marshal(map[string]any{"permissions": probeTokenPermissions})
 	if err != nil {
-		return "", err
+		return tokenEntry{}, err
+	}
+	url := fmt.Sprintf("%s/app/installations/%d/access_tokens", p.apiURL, cacheKey.installationID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return tokenEntry{}, err
 	}
 	req.Header.Set("Authorization", "Bearer "+appJWT)
 	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
-		return "", err
+		return tokenEntry{}, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusCreated {
-		return "", fmt.Errorf("POST access_tokens returned %d", resp.StatusCode)
+		return tokenEntry{}, fmt.Errorf("POST access_tokens returned %d", resp.StatusCode)
 	}
 
 	var result struct {
@@ -247,33 +354,144 @@ func (p *RateLimitPoller) getOrCreateToken(ctx context.Context, key poolInstance
 	_ = json.NewDecoder(resp.Body).Decode(&result)
 
 	// Cache with 5-minute buffer before actual expiry.
-	p.mu.Lock()
-	p.tokenCache[cacheKey] = tokenEntry{
+	entry := tokenEntry{
 		token:     result.Token,
 		expiresAt: result.ExpiresAt.Add(-5 * time.Minute),
 	}
+	p.mu.Lock()
+	p.tokenCache[cacheKey] = entry
 	p.mu.Unlock()
 
-	return result.Token, nil
+	return entry, nil
 }
 
-func (p *RateLimitPoller) pollRateLimit(ctx context.Context, appName, instance, token, account string) {
-	url := fmt.Sprintf("%s/rate_limit", p.apiURL)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+// probeInstallation reads one installation's bucket with a conditional
+// request and records it. Only a response that is authoritative for the
+// bucket is recorded: a 200 or 304, or a 403/429 that is itself a rate-limit
+// signal, carrying a complete set of headers. A 401 means the poller's token
+// is no longer valid, which says nothing about the bucket.
+func (p *RateLimitPoller) probeInstallation(ctx context.Context, pi PoolInstanceConfig, inst installationEntry) {
+	key := poolInstanceKey{logicalApp: pi.LogicalApp, instance: pi.Instance}
+	cacheKey := tokenCacheKey{poolInstanceKey: key, installationID: inst.id}
+	record := func(result string) {
+		metrics.GitHubRateLimitProbeTotal.WithLabelValues(pi.LogicalApp, pi.Instance, result).Inc()
+	}
+
+	entry, err := p.getOrCreateToken(ctx, cacheKey, pi.AppConfig)
 	if err != nil {
+		record("error")
+		slog.Error("rate limit poller: failed to get token", "app", pi.LogicalApp, "instance", pi.Instance, "installation", inst.id, "error", err)
 		return
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.apiURL+rateLimitProbePath, nil)
+	if err != nil {
+		record("error")
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+entry.token)
 	req.Header.Set("Accept", "application/vnd.github+json")
+	if entry.etag != "" {
+		req.Header.Set("If-None-Match", entry.etag)
+	}
 
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
-		slog.Error("rate limit poll failed", "app", appName, "instance", instance, "account", account, "error", err)
+		record("error")
+		slog.Error("rate limit probe failed", "app", pi.LogicalApp, "instance", pi.Instance, "account", inst.account, "error", err)
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxProbeBodyBytes))
 
-	ExtractRateLimitHeaders(resp, appName, instance, "rate_limit_poller")
+	info := ExtractRateLimitHeaders(resp, pi.LogicalApp, pi.Instance, "rate_limit_poller")
+
+	var result string
+	switch {
+	case resp.StatusCode == http.StatusNotModified:
+		result = "not_modified"
+	case resp.StatusCode == http.StatusOK:
+		result = "ok"
+		p.setETag(cacheKey, entry.token, resp.Header.Get("ETag"))
+	case resp.StatusCode == http.StatusUnauthorized:
+		p.dropToken(cacheKey, entry.token)
+		record("unauthorized")
+		slog.Warn("rate limit probe: poller token rejected, minting a new one next probe", "app", pi.LogicalApp, "instance", pi.Instance, "account", inst.account)
+		return
+	case info.RateLimited():
+		result = "rate_limited"
+	default:
+		record("error")
+		slog.Warn("rate limit probe: unexpected status", "app", pi.LogicalApp, "instance", pi.Instance, "account", inst.account, "status", resp.StatusCode)
+		return
+	}
+
+	if !info.Complete {
+		record("incomplete_headers")
+		slog.Warn("rate limit probe: response lacks rate-limit headers", "app", pi.LogicalApp, "instance", pi.Instance, "account", inst.account, "status", resp.StatusCode)
+		return
+	}
+	record(result)
+
+	if p.quota.Observe(pi.LogicalApp, pi.Instance, inst.account, info) && info.Remaining < info.Limit {
+		p.armResetProbe(key, info.ResetAt)
+	}
+}
+
+// setETag stores etag for the token it was served to, unless the token was
+// replaced in the meantime.
+func (p *RateLimitPoller) setETag(cacheKey tokenCacheKey, token, etag string) {
+	if etag == "" {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if entry, ok := p.tokenCache[cacheKey]; ok && entry.token == token {
+		entry.etag = etag
+		p.tokenCache[cacheKey] = entry
+	}
+}
+
+func (p *RateLimitPoller) dropToken(cacheKey tokenCacheKey, token string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if entry, ok := p.tokenCache[cacheKey]; ok && entry.token == token {
+		delete(p.tokenCache, cacheKey)
+	}
+}
+
+// armResetProbe schedules one probe of key just after resetAt, so a drained
+// bucket reads as recovered as soon as GitHub resets it, instead of after
+// the next tick or the next exchange. An instance keeps a single pending
+// timer, for its earliest known future reset.
+func (p *RateLimitPoller) armResetProbe(key poolInstanceKey, resetAt time.Time) {
+	now := time.Now()
+	if !resetAt.After(now) {
+		return
+	}
+	at := resetAt.Add(p.resetDelay())
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if cur, ok := p.resetTimers[key]; ok {
+		if cur.at.After(now) && !cur.at.After(at) {
+			return
+		}
+		cur.timer.Stop()
+	}
+	rt := &resetTimer{at: at}
+	rt.timer = time.AfterFunc(at.Sub(now), func() {
+		p.mu.Lock()
+		if p.resetTimers[key] == rt {
+			delete(p.resetTimers, key)
+		}
+		p.mu.Unlock()
+		select {
+		case p.resetDue <- key:
+		default:
+		}
+	})
+	p.resetTimers[key] = rt
 }
 
 func (p *RateLimitPoller) signJWT(cfg AppConfig) (string, error) {

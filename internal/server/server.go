@@ -35,7 +35,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	metricnoop "go.opentelemetry.io/otel/metric/noop"
-	semconv "go.opentelemetry.io/otel/semconv/v1.41.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -48,6 +48,7 @@ type Server struct {
 	ready              atomic.Bool
 	auditLogger        audit.Logger
 	jtiCache           jti.Cache
+	quotaStore         *github.QuotaStore
 	rateLimitPoller    *github.RateLimitPoller
 	reachabilityProber *github.ReachabilityProber
 	ipRateLimiter      *ratelimit.IPRateLimiter
@@ -160,9 +161,14 @@ func New(cfg *config.Settings, slogger *slog.Logger) (*Server, error) {
 		s.reachabilityProber = github.NewReachabilityProber(poolInstances, apiURL, cfg.Metrics.ReachabilityProbeInterval)
 	}
 
+	// One quota store for the process: the rate limit poller and every
+	// provider's own installation-token calls write to it, and it alone
+	// renders the rate-limit gauges.
+	s.quotaStore = github.NewQuotaStore()
+
 	// Initialize rate limit poller.
 	if cfg.Metrics.RateLimitPollEnabled && len(poolInstances) > 0 {
-		s.rateLimitPoller = github.NewRateLimitPoller(poolInstances, apiURL, cfg.Metrics.RateLimitPollInterval)
+		s.rateLimitPoller = github.NewRateLimitPoller(poolInstances, apiURL, cfg.Metrics.RateLimitPollInterval, s.quotaStore)
 	}
 
 	// Initialize one AppPool per logical app, each wrapping every one of
@@ -189,6 +195,7 @@ func New(cfg *config.Settings, slogger *slog.Logger) (*Server, error) {
 		members := make([]github.PoolMember, 0, len(app.Instances))
 		for _, inst := range app.Instances {
 			provider := github.NewAppTokenProvider(name, inst.Name, inst.AppID, inst.ParsedKey, apiURL, githubHTTPClient)
+			provider.SetQuotaStore(s.quotaStore)
 			members = append(members, github.PoolMember{Instance: inst.Name, Provider: provider})
 		}
 

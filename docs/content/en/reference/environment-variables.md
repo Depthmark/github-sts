@@ -81,8 +81,8 @@ Individual pool instances (`apps.<name>.instances[N]` in YAML) can also be set o
 |---|---|---|
 | `GITHUBSTS_METRICS_ENABLED` | `true` | Enable Prometheus metrics |
 | `GITHUBSTS_METRICS_AUTH_TOKEN` | n/a | Bearer token for the `/metrics` endpoint (empty = unauthenticated) |
-| `GITHUBSTS_METRICS_RATE_LIMIT_POLL_ENABLED` | `true` | Poll `GET /rate_limit` periodically |
-| `GITHUBSTS_METRICS_RATE_LIMIT_POLL_INTERVAL` | `60s` | Rate limit poll interval |
+| `GITHUBSTS_METRICS_RATE_LIMIT_POLL_ENABLED` | `true` | Probe each installation's rate limit bucket with a conditional `GET /emojis` request |
+| `GITHUBSTS_METRICS_RATE_LIMIT_POLL_INTERVAL` | `60s` | Rate limit probe interval. A `304 Not Modified` probe does not count against the rate limit |
 | `GITHUBSTS_METRICS_REACHABILITY_PROBE_ENABLED` | `true` | Probe GitHub API reachability |
 | `GITHUBSTS_METRICS_REACHABILITY_PROBE_INTERVAL` | `30s` | Reachability probe interval |
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -93,6 +94,100 @@ func TestAppTokenProvider_ResolveTarget(t *testing.T) {
 	}
 	if requestCounts["installation"] != 1 || requestCounts["token"] != 1 || requestCounts["repository"] != 1 {
 		t.Fatalf("expected one resolution sequence, got %v", requestCounts)
+	}
+}
+
+// TestAppTokenProvider_ResolveTarget_RecordsOnlyInstallationBucket checks
+// which responses reach the QuotaStore. The repository read is made with an
+// installation token and describes that installation's bucket. The two App
+// JWT calls before it (installation lookup, token mint) spend a different
+// bucket, so their headers are deliberately more recent and lower here: if
+// either were recorded, it would win.
+func TestAppTokenProvider_ResolveTarget_RecordsOnlyInstallationBucket(t *testing.T) {
+	const app = "target-quota"
+	installationReset := time.Now().Add(30 * time.Minute).Unix()
+	jwtHeaders := func(w http.ResponseWriter) {
+		w.Header().Set("X-RateLimit-Limit", "15000")
+		w.Header().Set("X-RateLimit-Remaining", "3")
+		w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(installationReset+600, 10))
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/installation"):
+			jwtHeaders(w)
+			_ = json.NewEncoder(w).Encode(map[string]int64{"id": 42})
+		case strings.Contains(r.URL.Path, "/access_tokens"):
+			jwtHeaders(w)
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]string{"token": "ghs_lookup"})
+		case r.URL.Path == "/repos/Depthmark/github-sts":
+			w.Header().Set("X-RateLimit-Limit", "5000")
+			w.Header().Set("X-RateLimit-Remaining", "4321")
+			w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(installationReset, 10))
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id": 1198676434, "name": "github-sts", "full_name": "Depthmark/github-sts",
+				"owner": map[string]any{"id": 268749784, "login": "Depthmark"},
+			})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	quota := NewQuotaStore()
+	p := NewAppTokenProvider(app, "i1", 12345, generateTestKey(t), srv.URL, nil)
+	p.SetQuotaStore(quota)
+	if _, err := p.ResolveTarget(context.Background(), RepositoryScope{Owner: "Depthmark", Repository: "github-sts"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	q, ok := quota.Lowest(app, "i1", "core")
+	if !ok {
+		t.Fatal("installation-token response was not recorded")
+	}
+	if q.Remaining != 4321 || q.Limit != 5000 || q.Account != "depthmark" {
+		t.Errorf("recorded quota = %+v; want the repository read (4321 of 5000, account depthmark), not an App JWT response", q)
+	}
+}
+
+// TestAppTokenProvider_RateLimitedMintRequestsProbe checks that a rate-limit
+// signal on an App JWT call asks the poller to refresh the instance, without
+// recording that call's headers as installation quota.
+func TestAppTokenProvider_RateLimitedMintRequestsProbe(t *testing.T) {
+	const app = "mint-probe"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/installation"):
+			_ = json.NewEncoder(w).Encode(map[string]int64{"id": 42})
+		case strings.Contains(r.URL.Path, "/access_tokens"):
+			w.Header().Set("X-RateLimit-Limit", "5000")
+			w.Header().Set("X-RateLimit-Remaining", "0")
+			w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10))
+			w.WriteHeader(http.StatusForbidden)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	quota := NewQuotaStore()
+	p := NewAppTokenProvider(app, "i1", 12345, generateTestKey(t), srv.URL, nil)
+	p.SetQuotaStore(quota)
+	if _, err := p.GetInstallationToken(context.Background(), "Depthmark/github-sts", map[string]string{"contents": "read"}, nil, "policy_loader"); err == nil {
+		t.Fatal("expected the rate-limited mint to fail")
+	}
+
+	select {
+	case key := <-quota.probeRequests():
+		if key != (poolInstanceKey{logicalApp: app, instance: "i1"}) {
+			t.Errorf("probe requested for %+v", key)
+		}
+	default:
+		t.Error("rate-limited mint did not request a probe")
+	}
+	if _, ok := quota.Lowest(app, "i1", "core"); ok {
+		t.Error("App JWT response headers were recorded as installation quota")
 	}
 }
 

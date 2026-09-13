@@ -93,11 +93,31 @@ Lorsque le paramètre est vide, le point de terminaison reste sans authentificat
 | `githubsts_github_rate_limit_used` | Gauge | Requêtes utilisées dans la fenêtre courante, par github_app, github_app_instance, resource |
 | `githubsts_github_rate_limit_reset_timestamp` | Gauge | Horodatage Unix du redémarrage de la fenêtre, par github_app, github_app_instance, resource |
 | `githubsts_github_rate_limit_remaining_percent` | Gauge | Pourcentage de la limite de débit restant, par github_app, github_app_instance, resource |
+| `githubsts_github_rate_limit_observed_timestamp` | Gauge | Horodatage Unix de l'observation rapportée par les jauges de limite de débit, par github_app, github_app_instance, resource |
+| `githubsts_github_rate_limit_probe_total` | Counter | Résultats des sondes de limite de débit, par github_app, github_app_instance, result |
 | `githubsts_github_rate_limit_exceeded_total` | Counter | Événements de dépassement de la limite de débit primaire, par github_app, github_app_instance, resource, caller |
 | `githubsts_github_secondary_rate_limit_total` | Counter | Événements de limite de débit secondaire (abus), par github_app, github_app_instance, caller |
 | `githubsts_github_secondary_rate_limit_retry_after_seconds` | Gauge | Valeur retry-after actuelle en secondes, par github_app, github_app_instance |
 
 Chaque instance du pool (étiquette `instance`) a sa propre série de limite de débit : une App avec 3 instances rapporte 3 séries `githubsts_github_rate_limit_remaining` indépendantes, pas une seule agrégée. Une App non poolée (une seule instance) porte quand même l'étiquette, avec `instance` égale à son unique instance normalisée.
+
+### Origine des valeurs de limite de débit
+
+Les jauges décrivent le compteur de l'installation de chaque membre du pool. Deux sources les alimentent :
+
+- **Le sondeur de limite de débit.** Quand `rate_limit_poll_enabled` est activé, chaque réplique sonde toutes les installations de chaque membre du pool une fois par `rate_limit_poll_interval`. Il envoie une requête conditionnelle `GET /emojis` avec un jeton qu'il émet pour lui-même, restreint à `metadata:read`. GitHub ne décompte pas une réponse `304 Not Modified` de la limite de débit primaire : après la première requête par jeton (environ une par heure, par installation, par réplique), la sonde ne coûte rien. Le sondeur sonde aussi un membre juste après la réinitialisation d'un compteur entamé, et dans les secondes qui suivent une réponse de limite de débit sur ce membre.
+- **Les appels de github-sts faits avec ses propres jetons d'installation**, comme la résolution du dépôt cible pendant un échange.
+
+`GET /rate_limit` n'est pas utilisé. Il rapporte un compteur distinct et inutilisé, et non celui que dépensent les appels à l'API.
+
+Ce que ces jauges ne montrent pas :
+
+- **Les compteurs dépensés uniquement par des jetons clients.** github-sts ne conserve ni ne sonde jamais un jeton émis pour un client. Si GitHub place un jeton client très sollicité sur son propre compteur, ce compteur reste invisible ici.
+- **Le compteur du JWT de l'App.** Les en-têtes des appels faits avec le JWT de l'App (recherche d'installation, émission de jetons) ne sont pas enregistrés : ces appels n'utilisent pas de jeton d'installation et ne décrivent donc pas le compteur d'une installation. Leurs réponses `403` et `429` sont tout de même comptées dans `githubsts_github_rate_limit_exceeded_total` et `githubsts_github_secondary_rate_limit_total`.
+
+Quand une App est installée sur plusieurs organisations, chaque jauge rapporte l'installation qui a le moins de requêtes restantes.
+
+L'étiquette `result` de `githubsts_github_rate_limit_probe_total` vaut `not_modified`, `ok`, `rate_limited`, `unauthorized`, `incomplete_headers` ou `error`. Un sondeur sain rapporte presque uniquement `not_modified`. Une hausse continue de `ok` signifie que les sondes sont décomptées de la limite de débit.
 
 ## Accessibilité de GitHub
 
@@ -156,6 +176,9 @@ histogram_quantile(0.99, rate(githubsts_token_exchange_duration_seconds_bucket[5
 
 # Rate limit approaching exhaustion
 githubsts_github_rate_limit_remaining_percent < 10
+
+# Rate limit reading is stale: the poller has not refreshed it
+time() - githubsts_github_rate_limit_observed_timestamp > 300
 
 # Secondary rate limit active
 githubsts_github_secondary_rate_limit_total > 0

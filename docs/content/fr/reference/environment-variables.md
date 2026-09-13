@@ -80,8 +80,8 @@ Chaque instance d'un pool (`apps.<name>.instances[N]` en YAML) peut aussi être 
 |---|---|---|
 | `GITHUBSTS_METRICS_ENABLED` | `true` | Activer les métriques Prometheus |
 | `GITHUBSTS_METRICS_AUTH_TOKEN` | — | Jeton Bearer pour le point de terminaison `/metrics` (vide = non authentifié) |
-| `GITHUBSTS_METRICS_RATE_LIMIT_POLL_ENABLED` | `true` | Interroger `GET /rate_limit` périodiquement |
-| `GITHUBSTS_METRICS_RATE_LIMIT_POLL_INTERVAL` | `60s` | Intervalle d'interrogation de la limite de débit |
+| `GITHUBSTS_METRICS_RATE_LIMIT_POLL_ENABLED` | `true` | Sonder le compteur de limite de débit de chaque installation avec une requête conditionnelle `GET /emojis` |
+| `GITHUBSTS_METRICS_RATE_LIMIT_POLL_INTERVAL` | `60s` | Intervalle des sondes de limite de débit. Une sonde `304 Not Modified` n'est pas décomptée de la limite de débit |
 | `GITHUBSTS_METRICS_REACHABILITY_PROBE_ENABLED` | `true` | Sonder l'accessibilité de l'API GitHub |
 | `GITHUBSTS_METRICS_REACHABILITY_PROBE_INTERVAL` | `30s` | Intervalle de la sonde d'accessibilité |
 
