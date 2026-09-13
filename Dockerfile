@@ -4,8 +4,11 @@
 # Chainguard Go (Wolfi-based) — minimal, daily-rebuilt, low CVE surface.
 # Pinned by multi-arch index digest so a registry-side retag cannot swap base.
 # Refresh with: docker buildx imagetools inspect cgr.dev/chainguard/go:latest
+# Built on $BUILDPLATFORM so the Go toolchain always runs natively on the
+# runner. GOARCH below cross-compiles the target binary, which avoids running
+# the whole toolchain under QEMU emulation on the non-native platform.
 # ─────────────────────────────────────────────────────────────────────────────
-FROM cgr.dev/chainguard/go:latest@sha256:9168db8fa4c342dfffc68febebe729be3fe6f722eaa5e402e59d8d14b6379fd6 AS builder
+FROM --platform=$BUILDPLATFORM cgr.dev/chainguard/go:latest@sha256:9168db8fa4c342dfffc68febebe729be3fe6f722eaa5e402e59d8d14b6379fd6 AS builder
 
 WORKDIR /build
 
