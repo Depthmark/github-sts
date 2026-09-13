@@ -6,6 +6,8 @@ import (
 	"sync/atomic"
 
 	"github.com/depthmark/github-sts/internal/metrics"
+	ststracing "github.com/depthmark/github-sts/internal/tracing"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // ReachabilityChecker reports whether a specific pool instance is currently
@@ -137,7 +139,7 @@ func (p *AppPool) candidateRing() []int {
 // AppPoolExhaustedTotal on exhaustion. op is called with ctx already bound
 // by the caller's closure — it's not threaded through runOnRing itself,
 // only used here for the ctx.Err() liveness check between attempts.
-func runOnRing[T any](p *AppPool, ctx context.Context, op func(PoolMember) (T, error)) (T, string, error) {
+func runOnRing[T any](p *AppPool, ctx context.Context, operation, tokenPurpose string, op func(context.Context, PoolMember) (T, error)) (T, string, error) {
 	candidates := p.candidateRing()
 
 	var zero T
@@ -155,11 +157,24 @@ func runOnRing[T any](p *AppPool, ctx context.Context, op func(PoolMember) (T, e
 			outcome = "failover"
 		}
 
-		result, err := op(m)
+		attemptCtx, attemptSpan := ststracing.Tracer().Start(ctx, "github.app_pool.attempt",
+			trace.WithAttributes(ststracing.AppPoolAttemptAttributes(
+				p.logicalName, m.Instance, operation, tokenPurpose, attempts,
+			)...),
+		)
+		result, err := op(attemptCtx, m)
 		if err == nil {
+			attemptSpan.SetAttributes(
+				ststracing.AttrGitHubPoolOutcome.String(outcome),
+				ststracing.StageResult("success"),
+			)
+			attemptSpan.End()
 			metrics.AppPoolSelectionTotal.WithLabelValues(p.logicalName, m.Instance, outcome).Inc()
 			return result, m.Instance, nil
 		}
+		ststracing.MarkError(attemptSpan, tokenMintErrorType(err))
+		attemptSpan.SetAttributes(ststracing.AttrGitHubPoolOutcome.String("failed"))
+		attemptSpan.End()
 		lastErr = err
 
 		var mintErr *TokenMintError
@@ -184,8 +199,8 @@ func runOnRing[T any](p *AppPool, ctx context.Context, op func(PoolMember) (T, e
 // failure — see design doc §5.5 on why a failed exchange doesn't name one
 // arbitrary tried instance).
 func (p *AppPool) GetInstallationToken(ctx context.Context, scope string, permissions map[string]string, repositories []string, caller string) (string, string, error) {
-	return runOnRing(p, ctx, func(m PoolMember) (string, error) {
-		return m.Provider.GetInstallationToken(ctx, scope, permissions, repositories, caller)
+	return runOnRing(p, ctx, "create_token", tokenPurpose(caller), func(attemptCtx context.Context, m PoolMember) (string, error) {
+		return m.Provider.GetInstallationToken(attemptCtx, scope, permissions, repositories, caller)
 	})
 }
 
@@ -196,8 +211,8 @@ func (p *AppPool) GetInstallationToken(ctx context.Context, scope string, permis
 // credential can't fix bad data, only a different network path or expired
 // credential can, and those cases already come back wrapped as retryable.
 func (p *AppPool) ResolveTarget(ctx context.Context, scope RepositoryScope) (TargetIdentity, error) {
-	identity, _, err := runOnRing(p, ctx, func(m PoolMember) (TargetIdentity, error) {
-		return m.Provider.ResolveTarget(ctx, scope)
+	identity, _, err := runOnRing(p, ctx, "resolve_target", "", func(attemptCtx context.Context, m PoolMember) (TargetIdentity, error) {
+		return m.Provider.ResolveTarget(attemptCtx, scope)
 	})
 	return identity, err
 }
@@ -206,8 +221,8 @@ func (p *AppPool) ResolveTarget(ctx context.Context, scope RepositoryScope) (Tar
 // ring/failover mechanics as GetInstallationToken, applied to minting a
 // token restricted to an already-resolved immutable target.
 func (p *AppPool) GetInstallationTokenForTarget(ctx context.Context, target TargetIdentity, permissions PermissionRequest, caller string) (MintedToken, string, error) {
-	return runOnRing(p, ctx, func(m PoolMember) (MintedToken, error) {
-		minted, _, err := m.Provider.GetInstallationTokenForTarget(ctx, target, permissions, caller)
+	return runOnRing(p, ctx, "create_token", "exchange", func(attemptCtx context.Context, m PoolMember) (MintedToken, error) {
+		minted, _, err := m.Provider.GetInstallationTokenForTarget(attemptCtx, target, permissions, caller)
 		return minted, err
 	})
 }

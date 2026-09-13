@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 
 	"github.com/depthmark/github-sts/internal/audit"
 )
@@ -85,6 +86,18 @@ const (
 	AttrBundleEvaluated   = attribute.Key("sts.bundle.evaluated")
 	AttrBundleAllow       = attribute.Key("sts.bundle.allow")
 
+	// Child-span attributes. Values are deliberately bounded enums or
+	// operator-configured app/instance names so spanmetrics cannot inherit
+	// caller-controlled cardinality from tracing.
+	AttrStageResult        = attribute.Key("sts.stage.result")
+	AttrTokenPurpose       = attribute.Key("sts.token.purpose")
+	AttrCacheName          = attribute.Key("sts.cache.name")
+	AttrCacheResult        = attribute.Key("sts.cache.result")
+	AttrGitHubAPIOperation = attribute.Key("github.api.operation")
+	AttrGitHubPoolAttempt  = attribute.Key("github.pool.attempt")
+	AttrGitHubPoolOutcome  = attribute.Key("github.pool.outcome")
+	AttrErrorType          = attribute.Key("error.type")
+
 	// Semantic conventions, used with their standard meanings only.
 	AttrClientAddress     = attribute.Key("client.address")
 	AttrUserAgentOriginal = attribute.Key("user_agent.original")
@@ -109,6 +122,10 @@ var AllowedKeys = map[attribute.Key]struct{}{
 	AttrPermissionsRequested: {}, AttrPermissionsGranted: {}, AttrPermissionsNarrowed: {},
 	AttrBundleEnforcement: {}, AttrBundleDigest: {},
 	AttrBundleApplicable: {}, AttrBundleEvaluated: {}, AttrBundleAllow: {},
+	AttrStageResult: {}, AttrTokenPurpose: {},
+	AttrCacheName: {}, AttrCacheResult: {},
+	AttrGitHubAPIOperation: {}, AttrGitHubPoolAttempt: {}, AttrGitHubPoolOutcome: {},
+	AttrErrorType:     {},
 	AttrClientAddress: {}, AttrUserAgentOriginal: {},
 }
 
@@ -209,6 +226,23 @@ func ExchangeAttributes(e audit.Event) []attribute.KeyValue {
 // closed set, safe by construction, and already public API.
 func ErrorCode(code string) attribute.KeyValue {
 	return AttrErrorCode.String(code)
+}
+
+// SpanStatus reserves ERROR for service and dependency failures. Expected
+// authentication and authorization denials remain Unset and are classified by
+// sts.result, preventing healthy policy enforcement from inflating error SLOs.
+func SpanStatus(result audit.ExchangeResult) (codes.Code, string) {
+	switch result {
+	case audit.ResultCacheError,
+		audit.ResultGitHubError,
+		audit.ResultBundleStale,
+		audit.ResultBundleUnavailable,
+		audit.ResultBundleEvaluationFailed,
+		audit.ResultUnknownError:
+		return codes.Error, string(result)
+	default:
+		return codes.Unset, ""
+	}
 }
 
 // formatPermissions renders a permission map as a sorted, comma-separated

@@ -20,6 +20,7 @@ import (
 	"github.com/depthmark/github-sts/internal/metrics"
 	"github.com/depthmark/github-sts/internal/oidc"
 	"github.com/depthmark/github-sts/internal/policy"
+	ststracing "github.com/depthmark/github-sts/internal/tracing"
 )
 
 // maxRequestBodyBytes limits POST request body size to 1 MB.
@@ -191,6 +192,7 @@ func NewExchangeHandler(
 // ServeHTTP handles the token exchange request.
 func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
+	requestCtx := r.Context()
 
 	traceID := traceIDFromContext(r)
 
@@ -263,6 +265,7 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// most wants to see the ask for.
 		RequestedPermissions: req.Permissions,
 	}
+	defer annotateExchangeSpan(requestCtx, &event)
 
 	// Step 1: Extract and validate OIDC token.
 	bearer := extractBearer(r)
@@ -279,7 +282,13 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if validate == nil {
 		validate = oidc.Validate
 	}
-	claims, err := validate(r.Context(), bearer, h.allowedIssuers)
+	oidcCtx, oidcSpan := startStage(requestCtx, "sts.oidc.validate")
+	claims, err := validate(oidcCtx, bearer, h.allowedIssuers)
+	if err != nil {
+		endStage(oidcSpan, "invalid", "")
+	} else {
+		endStage(oidcSpan, "success", "")
+	}
 	if err != nil {
 		event.Issuer = claimString(claims, "iss")
 		event.Subject = claimString(claims, "sub")
@@ -372,7 +381,16 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	event.JTI = audit.TruncateJTI(jtiValue, 50)
 
 	expTime := claimExpiry(claims)
-	isNew, err := h.jtiCache.Reserve(r.Context(), jtiValue, expTime)
+	jtiCtx, jtiSpan := startStage(requestCtx, "sts.jti.reserve")
+	isNew, err := h.jtiCache.Reserve(jtiCtx, jtiValue, expTime)
+	switch {
+	case err != nil:
+		endStage(jtiSpan, "", "jti_cache_error")
+	case !isNew:
+		endStage(jtiSpan, "replayed", "")
+	default:
+		endStage(jtiSpan, "reserved", "")
+	}
 	if err != nil {
 		event.Result = audit.ResultCacheError
 		event.ErrorReason = fmt.Sprintf("jti cache error: %v", err)
@@ -449,7 +467,18 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Resolve the caller-supplied target through the selected App before policy
 	// lookup. Names select the GitHub resource; immutable IDs authorize it.
-	targetIdentity, err := provider.ResolveTarget(r.Context(), targetScope)
+	targetCtx, targetSpan := startStage(requestCtx, "github.target.resolve",
+		ststracing.GitHubOperationAttributes(appName, "", "resolve_target", "")...)
+	targetIdentity, err := provider.ResolveTarget(targetCtx, targetScope)
+	if err != nil {
+		if errors.Is(err, github.ErrTargetScopeNotCanonical) {
+			endStage(targetSpan, "noncanonical", "")
+		} else {
+			endStage(targetSpan, "", "github_target_resolution_failed")
+		}
+	} else {
+		endStage(targetSpan, "success", "")
+	}
 	if err != nil {
 		event.Result = audit.ResultGitHubError
 		event.ErrorReason = fmt.Sprintf("target resolution failed: %v", err)
@@ -477,13 +506,27 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	event.TargetRepositoryID = targetIdentity.RepositoryID
 
 	// Step 4: Load and evaluate policy.
-	pol, err := h.policyLoader.Load(r.Context(), policy.LoadRequest{
+	policyCtx, policySpan := startStage(requestCtx, "sts.policy.load",
+		ststracing.GitHubOperationAttributes(appName, "", "fetch_policy", "")...)
+	pol, err := h.policyLoader.Load(policyCtx, policy.LoadRequest{
 		Scope:              targetIdentity.Scope,
 		TargetOwnerID:      targetIdentity.OwnerID,
 		TargetRepositoryID: targetIdentity.RepositoryID,
 		AppName:            appName,
 		Identity:           req.Identity,
 	})
+	if err != nil {
+		var validationErr *policy.ValidationError
+		if errors.As(err, &validationErr) {
+			endStage(policySpan, "invalid", "")
+		} else {
+			endStage(policySpan, "", "policy_load_failed")
+		}
+	} else if pol == nil {
+		endStage(policySpan, "not_found", "")
+	} else {
+		endStage(policySpan, "success", "")
+	}
 	if err != nil {
 		var validationErr *policy.ValidationError
 		if errors.As(err, &validationErr) {
@@ -530,7 +573,14 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusForbidden, ErrorResponse{Error: "forbidden", Code: CodePolicyNotFound, TraceID: traceID})
 		return
 	}
-	if err := pol.Validate(); err != nil {
+	_, policyValidationSpan := startStage(requestCtx, "sts.policy.validate")
+	policyValidationErr := pol.Validate()
+	if policyValidationErr != nil {
+		endStage(policyValidationSpan, "invalid", "")
+	} else {
+		endStage(policyValidationSpan, "valid", "")
+	}
+	if err := policyValidationErr; err != nil {
 		event.Result = audit.ResultPolicyInvalid
 		event.ErrorReason = err.Error()
 		event.DurationMS = msSince(start)
@@ -577,7 +627,13 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Policy evaluation.
+	_, policyEvalSpan := startStage(requestCtx, "sts.policy.evaluate")
 	evalResult := pol.Evaluate(claims)
+	if evalResult.Allowed {
+		endStage(policyEvalSpan, "allowed", "")
+	} else {
+		endStage(policyEvalSpan, "denied", "")
+	}
 	if !evalResult.Allowed {
 		event.Result = audit.ResultPolicyDenied
 		event.ErrorReason = evalResult.Reason
@@ -595,6 +651,7 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if sourceIdentity != nil {
+		_, relationshipSpan := startStage(requestCtx, "sts.policy.relationship")
 		relationship := pol.EvaluateGitHubRelationship(
 			policy.GitHubRepository{
 				OwnerID:      policy.GitHubID(sourceIdentity.RepositoryOwnerID),
@@ -605,6 +662,11 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				RepositoryID: policy.GitHubID(targetIdentity.RepositoryID),
 			},
 		)
+		if relationship.Allowed {
+			endStage(relationshipSpan, "allowed", "")
+		} else {
+			endStage(relationshipSpan, "denied", "")
+		}
 		if !relationship.Allowed {
 			event.Result = audit.ResultPolicyDenied
 			event.ErrorReason = relationship.Reason
@@ -624,7 +686,13 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// whether the exchange is allowed. A rejection here is the caller's
 	// request being malformed or over-reaching, so it is a 400, not a 403 —
 	// the identity was fine, the ask was not.
+	_, narrowingSpan := startStage(requestCtx, "sts.permissions.narrow")
 	effectivePermissions, err := policy.NarrowPermissions(pol.Permissions, req.Permissions)
+	if err != nil {
+		endStage(narrowingSpan, "rejected", "")
+	} else {
+		endStage(narrowingSpan, "accepted", "")
+	}
 	if err != nil {
 		event.Result = audit.ResultPolicyDenied
 		event.ErrorReason = fmt.Sprintf("permission narrowing rejected: %v", err)
@@ -680,7 +748,15 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				OrganizationWide: false,
 			},
 		}
-		decision, evalErr := h.bundleManager.Eval(r.Context(), input)
+		bundleCtx, bundleSpan := startStage(requestCtx, "sts.bundle.evaluate")
+		decision, evalErr := h.bundleManager.Eval(bundleCtx, input)
+		if evalErr != nil {
+			endStage(bundleSpan, "", "bundle_evaluation_failed")
+		} else if decision.Allow {
+			endStage(bundleSpan, "allowed", "")
+		} else {
+			endStage(bundleSpan, "denied", "")
+		}
 		if evalErr != nil {
 			if decision.SnapshotDigest != "" {
 				event.BundleDigest = decision.SnapshotDigest
@@ -770,10 +846,18 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	minted, instance, err := provider.GetInstallationTokenForTarget(r.Context(), targetIdentity, github.PermissionRequest{
+	tokenCtx, tokenSpan := startStage(requestCtx, "sts.token.issue",
+		ststracing.GitHubOperationAttributes(appName, "", "create_token", "exchange")...)
+	minted, instance, err := provider.GetInstallationTokenForTarget(tokenCtx, targetIdentity, github.PermissionRequest{
 		Ceiling:   pol.Permissions,
 		Effective: effectivePermissions,
 	}, traceID)
+	if err != nil {
+		endStage(tokenSpan, "", "github_token_issuance_failed")
+	} else {
+		tokenSpan.SetAttributes(ststracing.GitHubOperationAttributes(appName, instance, "create_token", "exchange")...)
+		endStage(tokenSpan, "success", "")
+	}
 	if err != nil {
 		event.Result = audit.ResultGitHubError
 		event.ErrorReason = fmt.Sprintf("github token issuance failed: %v", err)

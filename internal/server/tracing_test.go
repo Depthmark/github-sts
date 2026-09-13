@@ -9,10 +9,40 @@ import (
 
 	"github.com/depthmark/github-sts/internal/handler"
 	"github.com/depthmark/github-sts/internal/tracing"
+	"go.opentelemetry.io/otel"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
 )
+
+func TestTracingMiddlewareCorrelatesRootSpanAndHeader(t *testing.T) {
+	previous := otel.GetTracerProvider()
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() {
+		_ = provider.Shutdown(context.Background())
+		otel.SetTracerProvider(previous)
+	})
+
+	h := tracingMiddleware(traceIDMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sts/exchange", nil))
+
+	spans := recorder.Ended()
+	if len(spans) != 1 {
+		t.Fatalf("ended spans = %d, want 1", len(spans))
+	}
+	root := spans[0]
+	if root.Name() != "GET /sts/exchange" {
+		t.Errorf("root name = %q, want GET /sts/exchange", root.Name())
+	}
+	if got := rec.Header().Get("X-Trace-ID"); got != root.SpanContext().TraceID().String() {
+		t.Errorf("X-Trace-ID = %q, want root trace ID %q", got, root.SpanContext().TraceID())
+	}
+}
 
 // TestTraceIDMiddlewarePrefersSpanContext is the property the entire
 // correlation story rests on: the trace_id in the response header, in the

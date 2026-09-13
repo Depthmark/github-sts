@@ -219,7 +219,7 @@ func (p *AppTokenProvider) GetInstallationTokenForTarget(ctx context.Context, ta
 	if err != nil || repositoryID <= 0 || target.Scope == "" {
 		return MintedToken{}, "", fmt.Errorf("invalid target repository identity")
 	}
-	minted, err := p.getInstallationToken(ctx, target.Scope, permissions.Effective, nil, []int64{repositoryID}, permissions.Ceiling, caller)
+	minted, err := p.getInstallationToken(ctx, target.Scope, permissions.Effective, nil, []int64{repositoryID}, permissions.Ceiling, caller, "exchange")
 	if err != nil {
 		return MintedToken{}, "", err
 	}

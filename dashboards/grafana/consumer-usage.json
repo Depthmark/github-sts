@@ -1,0 +1,851 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "Observed repository/workload usage, access relationships, and token-exchange friction. Individual humans and downstream token use are outside current telemetry.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [
+    {
+      "asDropdown": false,
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": false,
+      "title": "Service Health",
+      "tooltip": "Caller-facing reliability and fleet health",
+      "type": "link",
+      "url": "/d/github-sts-fleet"
+    },
+    {
+      "asDropdown": false,
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": false,
+      "title": "App Capacity",
+      "tooltip": "GitHub App pool capacity and quota",
+      "type": "link",
+      "url": "/d/github-sts-multi-app"
+    },
+    {
+      "asDropdown": false,
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": false,
+      "title": "Governance & Change",
+      "tooltip": "Policy, access, and control evidence",
+      "type": "link",
+      "url": "/d/github-sts-governance"
+    },
+    {
+      "asDropdown": false,
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": false,
+      "title": "Request Investigation",
+      "tooltip": "Logs, traces, and request evidence",
+      "type": "link",
+      "url": "/d/github-sts-logs"
+    },
+    {
+      "asDropdown": false,
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": false,
+      "title": "Stack & Dependencies",
+      "tooltip": "Runtime and dependency behavior",
+      "type": "link",
+      "url": "/d/github-sts-stack"
+    },
+    {
+      "asDropdown": false,
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": false,
+      "title": "Telemetry Health",
+      "tooltip": "Coverage, loss, and schema compatibility",
+      "type": "link",
+      "url": "/d/github-sts-telemetry"
+    }
+  ],
+  "liveNow": false,
+  "panels": [
+    {
+      "collapsed": false,
+      "description": "Consumers are workloads and repository/identity cohorts observed in audit events. This dashboard does not identify individual humans or downstream token use.",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 100,
+      "panels": [],
+      "title": "Observed Consumer Activity",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
+      "description": "Successful consumer exchanges for the selected app and identity. The source-repository filter cannot apply to Prometheus metrics.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "blue",
+            "mode": "fixed"
+          },
+          "decimals": 2,
+          "mappings": [],
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 1
+      },
+      "id": 1,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "$datasource"
+          },
+          "editorMode": "code",
+          "expr": "sum(increase(githubsts_token_exchanges_total{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"$app\",identity=~\"$identity\",result=\"success\"}[$__range])) or on() (0 * count(githubsts_token_exchanges_total{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"$app\",identity=~\"$identity\"}))",
+          "legendFormat": "successes",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Successful Exchanges (range)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
+      "description": "Policy, OIDC, and replay rejections for the selected app and identity. The source-repository filter cannot apply to Prometheus metrics.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 2,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 1
+      },
+      "id": 2,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "$datasource"
+          },
+          "editorMode": "code",
+          "expr": "sum(increase(githubsts_token_exchanges_total{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"$app\",identity=~\"$identity\",result=~\"policy_denied|org_policy_denied|trust_policy_invalid|policy_not_found|oidc_invalid|jti_replay\"}[$__range])) or on() (0 * count(githubsts_token_exchanges_total{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"$app\",identity=~\"$identity\"}))",
+          "legendFormat": "rejections",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Rejected Exchanges (range)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
+      "description": "Broker and dependency failures for the selected app and identity. The source-repository filter cannot apply to Prometheus metrics.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 2,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 1
+      },
+      "id": 3,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "$datasource"
+          },
+          "editorMode": "code",
+          "expr": "sum(increase(githubsts_token_exchanges_total{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"$app\",identity=~\"$identity\",result=~\"cache_error|github_error|bundle_stale|bundle_unavailable|bundle_evaluation_failed|unknown_error\"}[$__range])) or on() (0 * count(githubsts_token_exchanges_total{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"$app\",identity=~\"$identity\"}))",
+          "legendFormat": "faults",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "System Faults (range)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "$loki_datasource"
+      },
+      "description": "Audit events for the selected app, identity, and source ID. No data can mean quiet traffic or missing/legacy fields.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "blue",
+            "mode": "fixed"
+          },
+          "decimals": 2,
+          "mappings": [],
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 1
+      },
+      "id": 4,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "$loki_datasource"
+          },
+          "editorMode": "code",
+          "expr": "sum(count_over_time({app=\"github-sts\",namespace=~\"$namespace\",log_channel=\"audit\"} | json | __error__=\"\" | app_extracted=~\"$app\" | identity=~\"$identity\" | source_repository_id=~\"$source_repository_id\" | source_repository_id!=\"\" [$__range]))",
+          "legendFormat": "attributed",
+          "range": false,
+          "refId": "A",
+          "instant": true,
+          "queryType": "instant"
+        }
+      ],
+      "title": "Audit Events with Source ID",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
+      "description": "Counts per scrape-safe rolling window for the selected app and identity. The source-repository filter cannot apply to Prometheus metrics.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 15,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 5
+      },
+      "id": 5,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "$datasource"
+          },
+          "editorMode": "code",
+          "expr": "sum by (github_app,result) (increase(githubsts_token_exchanges_total{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"$app\",identity=~\"$identity\"}[$__rate_interval]))",
+          "legendFormat": "{{github_app}} / {{result}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Exchange Outcomes by App",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "$loki_datasource"
+      },
+      "description": "Top 20 successful cohorts over the selected range. source_key uses immutable repository ID when present and a qualified-name fallback otherwise.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "blue",
+            "mode": "fixed"
+          },
+          "decimals": 2,
+          "mappings": [],
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 5
+      },
+      "id": 6,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "$loki_datasource"
+          },
+          "editorMode": "code",
+          "expr": "topk(20, sum by (namespace, source_key, identity, scope, app_extracted) (count_over_time({app=\"github-sts\",namespace=~\"$namespace\",log_channel=\"audit\"} | json | __error__=\"\" | app_extracted=~\"$app\" | result=\"success\" | identity=~\"$identity\" | source_repository_id=~\"$source_repository_id\" | label_format source_key=`{{ if .source_repository_id }}id:{{ .source_repository_id }}{{ else }}name:{{ .source_repository }}{{ end }}` [$__range])))",
+          "legendFormat": "{{namespace}} / {{source_key}} / {{identity}} -> {{scope}} / {{app_extracted}}",
+          "range": false,
+          "refId": "A",
+          "instant": true,
+          "queryType": "instant"
+        }
+      ],
+      "title": "Top Successful Source -> Target Cohorts",
+      "type": "table"
+    },
+    {
+      "collapsed": false,
+      "description": "",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 13
+      },
+      "id": 200,
+      "panels": [],
+      "title": "Friction and Change",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "$loki_datasource"
+      },
+      "description": "Top 20 non-success cohorts over the selected range. source_key uses immutable repository ID when present and a qualified-name fallback otherwise.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "blue",
+            "mode": "fixed"
+          },
+          "decimals": 2,
+          "mappings": [],
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 14
+      },
+      "id": 7,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "$loki_datasource"
+          },
+          "editorMode": "code",
+          "expr": "topk(20, sum by (namespace, source_key, identity, scope, app_extracted, result) (count_over_time({app=\"github-sts\",namespace=~\"$namespace\",log_channel=\"audit\"} | json | __error__=\"\" | app_extracted=~\"$app\" | result!=\"success\" | identity=~\"$identity\" | source_repository_id=~\"$source_repository_id\" | label_format source_key=`{{ if .source_repository_id }}id:{{ .source_repository_id }}{{ else }}name:{{ .source_repository }}{{ end }}` [$__range])))",
+          "legendFormat": "{{namespace}} / {{source_key}} / {{identity}} -> {{scope}} / {{app_extracted}} / {{result}}",
+          "range": false,
+          "refId": "A",
+          "instant": true,
+          "queryType": "instant"
+        }
+      ],
+      "title": "Top Rejected or Failed Cohorts",
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "$loki_datasource"
+      },
+      "description": "First observed in the most recent hour with no event in the preceding hour. This is an observed-window signal, not proof of first-ever adoption.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "blue",
+            "mode": "fixed"
+          },
+          "decimals": 2,
+          "mappings": [],
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 14
+      },
+      "id": 8,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "$loki_datasource"
+          },
+          "editorMode": "code",
+          "expr": "(sum by (namespace, app_extracted, source_key, identity) (count_over_time({app=\"github-sts\",namespace=~\"$namespace\",log_channel=\"audit\"} | json | __error__=\"\" | app_extracted=~\"$app\" | identity=~\"$identity\" | source_repository_id=~\"$source_repository_id\" | label_format source_key=`{{ if .source_repository_id }}id:{{ .source_repository_id }}{{ else }}name:{{ .source_repository }}{{ end }}` [1h])) > 0) unless on (namespace, app_extracted, source_key, identity) (sum by (namespace, app_extracted, source_key, identity) (count_over_time({app=\"github-sts\",namespace=~\"$namespace\",log_channel=\"audit\"} | json | __error__=\"\" | app_extracted=~\"$app\" | identity=~\"$identity\" | source_repository_id=~\"$source_repository_id\" | label_format source_key=`{{ if .source_repository_id }}id:{{ .source_repository_id }}{{ else }}name:{{ .source_repository }}{{ end }}` [1h] offset 1h)) > 0)",
+          "legendFormat": "{{namespace}} / {{source_key}} / {{identity}} / {{app_extracted}}",
+          "range": false,
+          "refId": "A",
+          "instant": true,
+          "queryType": "instant"
+        }
+      ],
+      "title": "Newly Observed Cohorts (1h baseline)",
+      "type": "table"
+    },
+    {
+      "collapsed": false,
+      "description": "",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 22
+      },
+      "id": 300,
+      "panels": [],
+      "title": "Recent Consumer Evidence",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "$loki_datasource"
+      },
+      "description": "Structured audit evidence for selected cohorts. Expand a line for repository IDs, policy provenance, permission sets, outcome, and trace ID.",
+      "gridPos": {
+        "h": 16,
+        "w": 24,
+        "x": 0,
+        "y": 23
+      },
+      "id": 9,
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "prettifyLogMessage": true,
+        "showCommonLabels": false,
+        "showLabels": false,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": false
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "$loki_datasource"
+          },
+          "editorMode": "code",
+          "expr": "{app=\"github-sts\",namespace=~\"$namespace\",log_channel=\"audit\"} | json | __error__=\"\" | app_extracted=~\"$app\" | identity=~\"$identity\" | source_repository_id=~\"$source_repository_id\"",
+          "refId": "A"
+        }
+      ],
+      "title": "Audit Events",
+      "type": "logs"
+    }
+  ],
+  "refresh": "5m",
+  "schemaVersion": 39,
+  "tags": [
+    "consumers",
+    "github-sts",
+    "sre",
+    "usage"
+  ],
+  "templating": {
+    "list": [
+      {
+        "current": {
+          "selected": false,
+          "text": "Prometheus",
+          "value": "Prometheus"
+        },
+        "hide": 2,
+        "includeAll": false,
+        "label": "Prometheus",
+        "multi": false,
+        "name": "datasource",
+        "options": [],
+        "query": "prometheus",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "Loki",
+          "value": "Loki"
+        },
+        "hide": 2,
+        "includeAll": false,
+        "label": "Loki",
+        "multi": false,
+        "name": "loki_datasource",
+        "options": [],
+        "query": "loki",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      },
+      {
+        "allValue": ".+",
+        "current": {
+          "selected": false,
+          "text": "github-sts-dev",
+          "value": "github-sts-dev"
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "$datasource"
+        },
+        "definition": "label_values(githubsts_ready, namespace)",
+        "description": "One deployment environment by default. Select All only for an intentional comparison.",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Namespace",
+        "multi": true,
+        "name": "namespace",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(githubsts_ready, namespace)",
+          "refId": "Prometheus-namespace-Variable-Query"
+        },
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "github-sts",
+          "value": "github-sts"
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "$datasource"
+        },
+        "definition": "label_values(githubsts_ready{namespace=~\"$namespace\"}, job)",
+        "description": "One STS scrape job. Keeping this single-select prevents generic runtime metrics from including unrelated jobs.",
+        "hide": 0,
+        "includeAll": false,
+        "label": "Job",
+        "multi": false,
+        "name": "job",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(githubsts_ready{namespace=~\"$namespace\"}, job)",
+          "refId": "Prometheus-job-Variable-Query"
+        },
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "$datasource"
+        },
+        "definition": "label_values(githubsts_github_reachable{namespace=~\"$namespace\",job=~\"$job\"}, github_app)",
+        "description": "Logical GitHub App. Empty app labels indicate legacy or pre-attribution telemetry and remain visible only in unfiltered views.",
+        "hide": 0,
+        "includeAll": true,
+        "label": "GitHub App",
+        "multi": true,
+        "name": "app",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(githubsts_github_reachable{namespace=~\"$namespace\",job=~\"$job\"}, github_app)",
+          "refId": "Prometheus-app-Variable-Query"
+        },
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": ".*",
+          "value": ".*"
+        },
+        "description": "Regex over the configured workload identity. Identity names are not unique humans; interpret them with source repository and app.",
+        "hide": 0,
+        "label": "Identity",
+        "name": "identity",
+        "options": [],
+        "query": ".*",
+        "skipUrlSync": false,
+        "type": "textbox"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": ".*",
+          "value": ".*"
+        },
+        "description": "Regex over immutable source repository ID when available. This filter applies to audit-backed panels; Prometheus exchange panels cannot apply it.",
+        "hide": 0,
+        "label": "Source Repository ID",
+        "name": "source_repository_id",
+        "options": [],
+        "query": ".*",
+        "skipUrlSync": false,
+        "type": "textbox"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "GitHub STS - Consumer Usage & Friction",
+  "uid": "github-sts-consumers",
+  "version": 1,
+  "weekStart": ""
+}

@@ -1,0 +1,1432 @@
+{
+  "uid": "github-sts-multi-app",
+  "title": "GitHub STS - App Capacity",
+  "description": "Logical GitHub App capacity, physical member reachability, pool selection, and quota evidence. Network reachability and successful token issuance are distinct states.",
+  "tags": [
+    "app-pool",
+    "fleet",
+    "github-apps",
+    "github-sts",
+    "metrics",
+    "prometheus",
+    "rate-limit",
+    "reachability",
+    "token-exchange",
+    "token-issuance"
+  ],
+  "timezone": "browser",
+  "editable": true,
+  "graphTooltip": 1,
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "label": "Datasource",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0,
+        "refresh": 1,
+        "regex": "",
+        "options": [],
+        "multi": false,
+        "includeAll": false
+      },
+      {
+        "name": "namespace",
+        "type": "query",
+        "label": "Namespace",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "definition": "label_values(githubsts_app_pool_instances, namespace)",
+        "query": {
+          "qryType": 1,
+          "query": "label_values(githubsts_app_pool_instances, namespace)",
+          "refId": "Prometheus-namespace-Variable-Query"
+        },
+        "current": {
+          "selected": false,
+          "text": "github-sts-dev",
+          "value": "github-sts-dev"
+        },
+        "options": [],
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "hide": 0,
+        "sort": 1,
+        "description": "Deployment namespace. The default selects one environment so production and development telemetry are never silently aggregated."
+      },
+      {
+        "name": "job",
+        "type": "query",
+        "label": "Job",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "definition": "label_values(githubsts_app_pool_instances{namespace=~\"$namespace\"}, job)",
+        "query": {
+          "qryType": 1,
+          "query": "label_values(githubsts_app_pool_instances{namespace=~\"$namespace\"}, job)",
+          "refId": "Prometheus-job-Variable-Query"
+        },
+        "current": {
+          "selected": false,
+          "text": "github-sts",
+          "value": "github-sts"
+        },
+        "options": [],
+        "refresh": 2,
+        "multi": false,
+        "includeAll": false,
+        "allValue": ".*",
+        "hide": 0,
+        "sort": 1,
+        "description": "Prometheus scrape job discovered from github-sts metrics."
+      },
+      {
+        "name": "app",
+        "type": "query",
+        "label": "GitHub App",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "definition": "label_values({__name__=~\"githubsts_app_pool_instances|githubsts_github_reachable|githubsts_token_exchanges_total|githubsts_github_tokens_issued_total\",namespace=~\"$namespace\",github_app!=\"\"}, github_app)",
+        "query": {
+          "qryType": 1,
+          "query": "label_values({__name__=~\"githubsts_app_pool_instances|githubsts_github_reachable|githubsts_token_exchanges_total|githubsts_github_tokens_issued_total\",namespace=~\"$namespace\",github_app!=\"\"}, github_app)",
+          "refId": "Prometheus-app-Variable-Query"
+        },
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "options": [],
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "hide": 0,
+        "sort": 1,
+        "description": "Logical GitHub App. Sourced from the union of four metrics, not from reachability alone, so an app still appears if it is configured but idle, or has only ever failed. The list is evaluated over the dashboard time range: widen the range to see apps that have since been removed."
+      },
+      {
+        "name": "app_instance",
+        "type": "query",
+        "label": "App Instance",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "definition": "label_values(githubsts_github_reachable{namespace=~\"$namespace\",github_app=~\"${app:regex}\"}, github_app_instance)",
+        "query": {
+          "qryType": 1,
+          "query": "label_values(githubsts_github_reachable{namespace=~\"$namespace\",github_app=~\"${app:regex}\"}, github_app_instance)",
+          "refId": "Prometheus-app-instance-Variable-Query"
+        },
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "options": [],
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "hide": 0,
+        "sort": 1,
+        "description": "Physical credential inside a pool. Applies only to metrics that carry github_app_instance — pool size, exhaustion and the policy metrics have no instance dimension and stay unfiltered."
+      },
+      {
+        "name": "detail_app",
+        "type": "query",
+        "label": "App Detail",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "definition": "label_values(githubsts_github_reachable{namespace=~\"$namespace\",job=~\"$job\"}, github_app)",
+        "query": {
+          "qryType": 1,
+          "query": "label_values(githubsts_github_reachable{namespace=~\"$namespace\",job=~\"$job\"}, github_app)",
+          "refId": "Prometheus-app-Variable-Query"
+        },
+        "current": {},
+        "options": [],
+        "refresh": 2,
+        "multi": false,
+        "includeAll": false,
+        "hide": 0,
+        "sort": 1,
+        "description": "One logical app for the detail row. Summary panels continue to use the GitHub App filter."
+      }
+    ]
+  },
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "Fleet",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "panels": []
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "GitHub Apps",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 1
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "count(count by (github_app) (githubsts_app_pool_instances{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"}))",
+          "refId": "A",
+          "range": false,
+          "instant": true,
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "custom": {},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "description": "Distinct logical GitHub Apps currently configured. Sourced from the pool metric, so an app counts as soon as it is configured, before it serves any traffic."
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Pool Instances",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 4,
+        "y": 1
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(max by (namespace, github_app) (githubsts_app_pool_instances{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"}))",
+          "refId": "A",
+          "range": false,
+          "instant": true,
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "custom": {},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "description": "Configured pool members, deduplicated across STS replicas. Replica disagreement is investigated in the inventory."
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Apps Network-Unreachable",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 8,
+        "y": 1
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "count(max by (github_app) (githubsts_github_reachable{namespace=~\"$namespace\",job=~\"$job\",github_app_instance=~\"${app_instance:regex}\",github_app=~\"${app:regex}\"}) == 0) or on() (0 * count(githubsts_github_reachable{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"}))",
+          "refId": "A",
+          "range": false,
+          "instant": true,
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "custom": {},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "noValue": "REACHABILITY TELEMETRY MISSING"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "description": "Logical apps whose members are network-unreachable. A reachable member can still have an authentication error."
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "System Fault %",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 1
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "100 * (sum(rate(githubsts_token_exchanges_total{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\",result=~\"cache_error|github_error|bundle_stale|bundle_unavailable|bundle_evaluation_failed|unknown_error\"}[$__rate_interval])) or on() 0 * sum(rate(githubsts_token_exchanges_total{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"}[$__rate_interval]))) / sum(rate(githubsts_token_exchanges_total{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"}[$__rate_interval]))",
+          "refId": "A",
+          "range": false,
+          "instant": true,
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "custom": {},
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 5
+              }
+            ]
+          },
+          "decimals": 2,
+          "noValue": "NO ATTRIBUTED TRAFFIC"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "description": "Broker/dependency fault outcomes divided by all attributed exchange attempts. Policy and authentication rejections are excluded."
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Min Last-Observed Quota",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 1
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "min(githubsts_github_rate_limit_remaining_percent{namespace=~\"$namespace\",job=~\"$job\",github_app_instance=~\"${app_instance:regex}\",github_app=~\"${app:regex}\",resource=\"core\"})",
+          "refId": "A",
+          "range": false,
+          "instant": true,
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "custom": {},
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 20
+              },
+              {
+                "color": "green",
+                "value": 50
+              }
+            ]
+          },
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      },
+      "description": "Minimum last-observed core quota. It is not fresh unless the upstream poll succeeded recently; installation-level scope is not represented by the current metric."
+    },
+    {
+      "id": 7,
+      "type": "row",
+      "title": "All GitHub Apps",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 5
+      },
+      "panels": [],
+      "description": "Every panel here groups by github_app, so a newly configured app appears on its own without editing the dashboard."
+    },
+    {
+      "id": 8,
+      "type": "table",
+      "title": "App / Member / Replica Inventory",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 6
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "max by (namespace, instance, github_app, github_app_instance) (githubsts_github_reachable{namespace=~\"$namespace\",job=~\"$job\",github_app_instance=~\"${app_instance:regex}\",github_app=~\"${app:regex}\"})",
+          "refId": "A",
+          "range": false,
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "custom": {},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Reachable"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "green",
+                      "value": 1
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.width",
+                "value": 100
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "countRows": false,
+          "fields": ""
+        }
+      },
+      "description": "Member reachability as reported by each replica. Duplicate rows reveal multiple reporters; disagreement indicates rollout or configuration drift.",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "indexByName": {
+              "namespace": 0,
+              "instance": 1,
+              "github_app": 2,
+              "github_app_instance": 3,
+              "Value": 4
+            },
+            "renameByName": {
+              "namespace": "Namespace",
+              "instance": "Replica",
+              "github_app": "App",
+              "github_app_instance": "Member",
+              "Value": "Reachable"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Token Exchanges by App",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 6
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (github_app) (rate(githubsts_token_exchanges_total{namespace=~\"$namespace\",job=~\"$job\",github_app_instance=~\"${app_instance:regex}\",github_app=~\"${app:regex}\"}[$__rate_interval]))",
+          "refId": "A",
+          "range": true,
+          "instant": false,
+          "legendFormat": "{{github_app}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false,
+            "legend": {},
+            "axisPlacement": "auto"
+          },
+          "unit": "reqps",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Exchange rate per logical app. A new app shows up as a new series."
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "System Fault % by App",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 6
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "100 * (sum by (github_app) (rate(githubsts_token_exchanges_total{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\",result=~\"cache_error|github_error|bundle_stale|bundle_unavailable|bundle_evaluation_failed|unknown_error\"}[$__rate_interval])) or on(github_app) 0 * sum by (github_app) (rate(githubsts_token_exchanges_total{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"}[$__rate_interval]))) / sum by (github_app) (rate(githubsts_token_exchanges_total{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"}[$__rate_interval]))",
+          "refId": "A",
+          "range": true,
+          "instant": false,
+          "legendFormat": "{{github_app}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false,
+            "legend": {},
+            "axisPlacement": "auto"
+          },
+          "unit": "percent",
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Per-app failure ratio. Isolates one misconfigured app from a fleet-wide problem."
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Rate Limit Remaining % by Instance",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 14
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "githubsts_github_rate_limit_remaining_percent{namespace=~\"$namespace\",job=~\"$job\",github_app_instance=~\"${app_instance:regex}\",github_app=~\"${app:regex}\",resource=\"core\"}",
+          "refId": "A",
+          "range": true,
+          "instant": false,
+          "legendFormat": "{{github_app}} / {{github_app_instance}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false,
+            "legend": {},
+            "axisPlacement": "auto"
+          },
+          "unit": "percent",
+          "max": 100,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Core headroom per credential. Pool rotation should keep these converging; one line diving alone means rotation is not spreading load."
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Provider Tokens Minted by App",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 14
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (github_app) (rate(githubsts_github_tokens_issued_total{namespace=~\"$namespace\",job=~\"$job\",github_app_instance=~\"${app_instance:regex}\",github_app=~\"${app:regex}\"}[$__rate_interval]))",
+          "refId": "A",
+          "range": true,
+          "instant": false,
+          "legendFormat": "{{github_app}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false,
+            "legend": {},
+            "axisPlacement": "auto"
+          },
+          "unit": "reqps",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Tokens minted through the shared provider, including internal policy-fetch tokens. This is not a count of consumer successes or every background token."
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Pool Selection Outcomes",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 22
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (github_app, outcome) (rate(githubsts_app_pool_selection_total{namespace=~\"$namespace\",job=~\"$job\",github_app_instance=~\"${app_instance:regex}\",github_app=~\"${app:regex}\"}[$__rate_interval]))",
+          "refId": "A",
+          "range": true,
+          "instant": false,
+          "legendFormat": "{{github_app}} / {{outcome}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false,
+            "legend": {},
+            "axisPlacement": "auto"
+          },
+          "unit": "reqps",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "How the rotation strategy picked a credential. Sustained failover or unreachable-skip means a pool member is degraded."
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "Pool Exhaustion & Unreachable Apps",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 22
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (github_app) (increase(githubsts_app_pool_exhausted_total{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"}[$__rate_interval])) or on() (0 * count(githubsts_app_pool_instances{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"}))",
+          "refId": "A",
+          "range": true,
+          "instant": false,
+          "legendFormat": "exhausted {{github_app}}"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "count by (github_app) (githubsts_github_reachable{namespace=~\"$namespace\",job=~\"$job\",github_app_instance=~\"${app_instance:regex}\",github_app=~\"${app:regex}\"} == 0)",
+          "refId": "B",
+          "range": true,
+          "instant": false,
+          "legendFormat": "unreachable instances {{github_app}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false,
+            "legend": {},
+            "axisPlacement": "auto"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Rolling pool exhaustion and unreachable-member evidence. Zero requires pool instrumentation; missing instrumentation remains No data."
+    },
+    {
+      "id": 15,
+      "type": "row",
+      "title": "Selected App Detail - $detail_app",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 29
+      },
+      "panels": [],
+      "description": "One selected logical app. This avoids repeating a full detail row for every app."
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
+      "title": "$detail_app — Reachability by Instance",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 0,
+        "y": 30
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "githubsts_github_reachable{namespace=~\"$namespace\",job=~\"$job\",github_app_instance=~\"${app_instance:regex}\",github_app=~\"$detail_app\"}",
+          "refId": "A",
+          "range": true,
+          "instant": false,
+          "legendFormat": "{{github_app_instance}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false,
+            "legend": {},
+            "axisPlacement": "auto"
+          },
+          "max": 1,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "1 = reachable, 0 = failing. One line per credential in this app's pool."
+    },
+    {
+      "id": 17,
+      "type": "timeseries",
+      "title": "$detail_app — Exchanges by Result",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 8,
+        "y": 30
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (result) (rate(githubsts_token_exchanges_total{namespace=~\"$namespace\",job=~\"$job\",github_app_instance=~\"${app_instance:regex}\",github_app=~\"$detail_app\"}[$__rate_interval]))",
+          "refId": "A",
+          "range": true,
+          "instant": false,
+          "legendFormat": "{{result}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false,
+            "legend": {},
+            "axisPlacement": "auto"
+          },
+          "unit": "reqps",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Outcome mix for this app. policy_denied is a policy problem; github_error is upstream."
+    },
+    {
+      "id": 18,
+      "type": "timeseries",
+      "title": "$detail_app - Provider Token Scopes",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 16,
+        "y": 30
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "topk(10, sum by (scope) (rate(githubsts_github_tokens_issued_total{namespace=~\"$namespace\",job=~\"$job\",github_app_instance=~\"${app_instance:regex}\",github_app=~\"$detail_app\"}[$__rate_interval])))",
+          "refId": "A",
+          "range": true,
+          "instant": false,
+          "legendFormat": "{{scope}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false,
+            "legend": {},
+            "axisPlacement": "auto"
+          },
+          "unit": "reqps",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Provider token minting by scope. Internal policy fetches may appear; use successful exchange outcomes for consumer success."
+    }
+  ],
+  "links": [
+    {
+      "asDropdown": false,
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": false,
+      "title": "Service Health",
+      "tooltip": "Caller-facing reliability and fleet health",
+      "type": "link",
+      "url": "/d/github-sts-fleet"
+    },
+    {
+      "asDropdown": false,
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": false,
+      "title": "Governance & Change",
+      "tooltip": "Policy, access, and control evidence",
+      "type": "link",
+      "url": "/d/github-sts-governance"
+    },
+    {
+      "asDropdown": false,
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": false,
+      "title": "Request Investigation",
+      "tooltip": "Logs, traces, and request evidence",
+      "type": "link",
+      "url": "/d/github-sts-logs"
+    },
+    {
+      "asDropdown": false,
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": false,
+      "title": "Stack & Dependencies",
+      "tooltip": "Runtime and dependency behavior",
+      "type": "link",
+      "url": "/d/github-sts-stack"
+    },
+    {
+      "asDropdown": false,
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": false,
+      "title": "Consumer Usage",
+      "tooltip": "Repository and identity usage patterns",
+      "type": "link",
+      "url": "/d/github-sts-consumers"
+    },
+    {
+      "asDropdown": false,
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": false,
+      "title": "Telemetry Health",
+      "tooltip": "Coverage, loss, and schema compatibility",
+      "type": "link",
+      "url": "/d/github-sts-telemetry"
+    }
+  ]
+}

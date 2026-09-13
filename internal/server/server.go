@@ -33,6 +33,10 @@ import (
 	"github.com/depthmark/github-sts/internal/tracing"
 
 	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	metricnoop "go.opentelemetry.io/otel/metric/noop"
+	semconv "go.opentelemetry.io/otel/semconv/v1.41.0"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const traceIDKey = handler.TraceIDKey
@@ -127,7 +131,7 @@ func New(cfg *config.Settings, slogger *slog.Logger) (*Server, error) {
 	}
 	githubHTTPClient := &http.Client{
 		Timeout:   15 * time.Second,
-		Transport: githubTransport,
+		Transport: otelhttp.NewTransport(githubTransport),
 	}
 
 	apiURL := "https://api.github.com"
@@ -336,6 +340,7 @@ func New(cfg *config.Settings, slogger *slog.Logger) (*Server, error) {
 	h = accessLogMiddleware(h, slogger, cfg.Server.SuppressHealthLogs)
 	h = traceIDMiddleware(h)
 	h = securityHeadersMiddleware(h)
+	h = tracingMiddleware(h)
 
 	tlsCfg, reloader, err := buildTLSConfig(cfg, slogger)
 	if err != nil {
@@ -702,6 +707,33 @@ func securityHeadersMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
+		next.ServeHTTP(w, r)
+	})
+}
+
+// tracingMiddleware starts one low-cardinality server span around each
+// application request. It is outermost so traceIDMiddleware can reuse the
+// active span's trace ID in the response, logs, and audit event.
+func tracingMiddleware(next http.Handler) http.Handler {
+	return otelhttp.NewHandler(
+		routeAttributeMiddleware(next),
+		"",
+		otelhttp.WithFilter(func(r *http.Request) bool {
+			return !isHealthPath(r.URL.Path)
+		}),
+		otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
+			return r.Method + " " + routePattern(r)
+		}),
+		// Native Prometheus middleware already records HTTP metrics.
+		otelhttp.WithMeterProvider(metricnoop.NewMeterProvider()),
+	)
+}
+
+// routeAttributeMiddleware records the mux's stable route pattern on the
+// active server span. Raw request paths never become span names or dimensions.
+func routeAttributeMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		trace.SpanFromContext(r.Context()).SetAttributes(semconv.HTTPRoute(routePattern(r)))
 		next.ServeHTTP(w, r)
 	})
 }
