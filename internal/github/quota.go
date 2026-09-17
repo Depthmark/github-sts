@@ -142,13 +142,7 @@ func NewQuotaStore() *QuotaStore {
 
 // Observe records info for one installation (account) of one pool instance
 // and refreshes that instance's gauges. It reports whether the observation
-// was accepted.
-//
-// Responses can land out of order, so an observation only replaces the
-// stored one when it describes a later window (a later reset), or the same
-// window with at least as many requests used. GitHub never refunds requests
-// inside a window, so a lower used count for the same reset is a stale
-// response and is dropped.
+// was accepted; see replacesQuota for the rules.
 func (s *QuotaStore) Observe(logicalApp, instance, account string, info RateLimitInfo) bool {
 	if s == nil || !info.Complete {
 		return false
@@ -169,11 +163,9 @@ func (s *QuotaStore) Observe(logicalApp, instance, account string, info RateLimi
 	}
 
 	s.mu.Lock()
-	if cur, ok := s.entries[key]; ok {
-		if next.ResetAt.Before(cur.ResetAt) || (next.ResetAt.Equal(cur.ResetAt) && next.Used < cur.Used) {
-			s.mu.Unlock()
-			return false
-		}
+	if cur, ok := s.entries[key]; ok && !replacesQuota(cur, next, next.ObservedAt) {
+		s.mu.Unlock()
+		return false
 	}
 	s.entries[key] = next
 	lowest, _ := s.lowestLocked(logicalApp, instance, info.Resource)
@@ -181,6 +173,47 @@ func (s *QuotaStore) Observe(logicalApp, instance, account string, info RateLimi
 
 	renderQuotaGauges(logicalApp, instance, info.Resource, lowest)
 	return true
+}
+
+// replacesQuota reports whether next should replace cur for the same
+// installation. Two facts about GitHub buckets drive it:
+//
+//   - A window never changes before it resets, and GitHub never refunds a
+//     request inside it, so within an open window used can only grow.
+//   - A response that spent a request reports used >= 1. A response that
+//     spent nothing can report a different, unused bucket: for installation
+//     tokens, GET /rate_limit and 304 Not Modified both answer with used=0
+//     and a reset about an hour out (V1b, observed in github-sts-dev on
+//     2026-09-13). Such a reading says nothing about an open window.
+//
+// So, while cur's window is open and cur counted requests (Used > 0), only
+// a reading of the same window with at least as many requests used replaces
+// it; a different reset or a used=0 reading is dropped. Once cur's window has
+// reset, or when cur itself was an uncounted reading, any reading for a later
+// or equal window replaces it, and a counted reading replaces it whatever its
+// reset.
+func replacesQuota(cur, next Quota, now time.Time) bool {
+	windowOpen := now.Before(cur.ResetAt)
+	switch {
+	case windowOpen && cur.Used > 0:
+		return next.ResetAt.Equal(cur.ResetAt) && next.Used >= cur.Used
+	case windowOpen:
+		return next.Used > 0 || !next.ResetAt.Before(cur.ResetAt)
+	default:
+		return next.ResetAt.After(cur.ResetAt) || (next.ResetAt.Equal(cur.ResetAt) && next.Used >= cur.Used)
+	}
+}
+
+// Installation returns the stored reading for one installation (account) of
+// one pool instance.
+func (s *QuotaStore) Installation(logicalApp, instance, account, resource string) (Quota, bool) {
+	if s == nil {
+		return Quota{}, false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	q, ok := s.entries[quotaKey{logicalApp: logicalApp, instance: instance, account: strings.ToLower(account), resource: resource}]
+	return q, ok
 }
 
 // Lowest returns the installation with the least remaining for one pool

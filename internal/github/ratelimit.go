@@ -53,12 +53,23 @@ type poolInstanceKey struct {
 //
 // GET /rate_limit cannot be used: it reports a fresh bucket (used=0, reset
 // about an hour out) that does not match the bucket real API calls spend,
-// in its headers and its body alike. A conditional GET of a static resource
-// can: GitHub does not count a 304 Not Modified against the primary rate
-// limit, and the 304 still carries the X-RateLimit-* headers of the live
-// bucket. /emojis does not change in practice, so its ETag stays valid for
-// the whole life of a token and every probe after the first is free. See
-// .agent-tasks/github-rate-limit-telemetry-drain-visibility.md (V1b).
+// in its headers and its body alike. The probe is a conditional GET of a
+// static resource instead. Its first response per token is a counted 200
+// that carries the installation bucket. Later responses are 304 Not
+// Modified and spend nothing, but for installation tokens they carry the
+// same unused bucket as /rate_limit (V1b, observed in github-sts-dev on
+// 2026-09-13), so QuotaStore drops their readings while it holds a counted
+// one; see replacesQuota.
+//
+// Left alone, that means only the very first probe per cached token is ever
+// trustworthy: every 304 after it is free but worthless, so a bucket drained
+// by traffic github-sts never sees (client tokens, or a probe reading it
+// directly) stays invisible for as long as the token is cached — up to
+// tokenEntry's ~55-minute TTL. forceCountedInterval bounds that: once a
+// cached etag is older than it, the probe skips If-None-Match and pays for
+// another counted 200, trading a small amount of bucket headroom for a
+// bounded staleness ceiling instead of an unbounded one. See
+// .agent-tasks/github-rate-limit-telemetry-drain-visibility.md.
 const rateLimitProbePath = "/emojis"
 
 // probeTokenPermissions narrows the poller's own installation token. The
@@ -102,6 +113,15 @@ type RateLimitPoller struct {
 	httpClient        *http.Client
 	mu                sync.Mutex
 	cancel            context.CancelFunc
+	now               func() time.Time
+
+	// forceCountedInterval bounds how long a cached etag can keep a probe
+	// conditional. Once it has held since the last counted 200 for longer
+	// than this, the probe drops If-None-Match and pays for a fresh one, so
+	// a drain this poller's own calls never observed is never invisible for
+	// longer than forceCountedInterval — see rateLimitProbePath. <= 0 forces
+	// every probe to be counted.
+	forceCountedInterval time.Duration
 
 	// lastProbe is only touched by the poll loop goroutine.
 	lastProbe            map[poolInstanceKey]time.Time
@@ -128,10 +148,13 @@ type installationEntry struct {
 type tokenEntry struct {
 	token     string
 	expiresAt time.Time
-	// etag is the ETag of this token's last full probe response. It is
-	// cached per token because GitHub varies the probe response on
+	// etag is the ETag of this token's last counted (200) probe response. It
+	// is cached per token because GitHub varies the probe response on
 	// Authorization.
 	etag string
+	// etagSetAt is when etag was captured. A probe only sends If-None-Match
+	// while etag is younger than forceCountedInterval; see rateLimitProbePath.
+	etagSetAt time.Time
 }
 
 // tokenCacheKey additionally scopes a token cache entry by installation ID:
@@ -144,8 +167,11 @@ type tokenCacheKey struct {
 // NewRateLimitPoller creates a rate limit poller over the given flat list of
 // pool instances (one entry per physical GitHub App, across every
 // configured logical app). Observations go to quota; a nil quota gets a
-// private store, so the gauges are still rendered.
-func NewRateLimitPoller(instances []PoolInstanceConfig, apiURL string, interval time.Duration, quota *QuotaStore) *RateLimitPoller {
+// private store, so the gauges are still rendered. forceCountedInterval
+// bounds how long a cached etag can keep probes conditional (and therefore
+// untrustworthy for installation tokens) between counted reads; see
+// rateLimitProbePath.
+func NewRateLimitPoller(instances []PoolInstanceConfig, apiURL string, interval time.Duration, quota *QuotaStore, forceCountedInterval time.Duration) *RateLimitPoller {
 	if quota == nil {
 		quota = NewQuotaStore()
 	}
@@ -163,6 +189,8 @@ func NewRateLimitPoller(instances []PoolInstanceConfig, apiURL string, interval 
 		installationTTL:      10 * time.Minute,
 		tokenCache:           make(map[tokenCacheKey]tokenEntry),
 		httpClient:           &http.Client{Timeout: 15 * time.Second},
+		now:                  time.Now,
+		forceCountedInterval: forceCountedInterval,
 		lastProbe:            make(map[poolInstanceKey]time.Time),
 		minEventProbeSpacing: defaultMinEventProbeSpacing,
 		resetTimers:          make(map[poolInstanceKey]*resetTimer),
@@ -391,7 +419,7 @@ func (p *RateLimitPoller) probeInstallation(ctx context.Context, pi PoolInstance
 	}
 	req.Header.Set("Authorization", "Bearer "+entry.token)
 	req.Header.Set("Accept", "application/vnd.github+json")
-	if entry.etag != "" {
+	if entry.etag != "" && p.forceCountedInterval > 0 && p.now().Sub(entry.etagSetAt) < p.forceCountedInterval {
 		req.Header.Set("If-None-Match", entry.etag)
 	}
 
@@ -412,7 +440,7 @@ func (p *RateLimitPoller) probeInstallation(ctx context.Context, pi PoolInstance
 		result = "not_modified"
 	case resp.StatusCode == http.StatusOK:
 		result = "ok"
-		p.setETag(cacheKey, entry.token, resp.Header.Get("ETag"))
+		p.recordCountedProbe(cacheKey, entry.token, resp.Header.Get("ETag"))
 	case resp.StatusCode == http.StatusUnauthorized:
 		p.dropToken(cacheKey, entry.token)
 		record("unauthorized")
@@ -438,16 +466,17 @@ func (p *RateLimitPoller) probeInstallation(ctx context.Context, pi PoolInstance
 	}
 }
 
-// setETag stores etag for the token it was served to, unless the token was
-// replaced in the meantime.
-func (p *RateLimitPoller) setETag(cacheKey tokenCacheKey, token, etag string) {
-	if etag == "" {
-		return
-	}
+// recordCountedProbe stores the etag (if any) and the counted-read timestamp
+// for the token a counted 200 was served to, unless the token was replaced in
+// the meantime. Recording the timestamp even for an empty etag is
+// deliberate: a probe with nothing to cache stays uncached (see its use in
+// probeInstallation), so no explicit staleness check is skipped.
+func (p *RateLimitPoller) recordCountedProbe(cacheKey tokenCacheKey, token, etag string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if entry, ok := p.tokenCache[cacheKey]; ok && entry.token == token {
 		entry.etag = etag
+		entry.etagSetAt = p.now()
 		p.tokenCache[cacheKey] = entry
 	}
 }

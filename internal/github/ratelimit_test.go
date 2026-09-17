@@ -51,7 +51,7 @@ func TestParseLinkNext(t *testing.T) {
 
 func TestRateLimitPoller_StartStop(t *testing.T) {
 	// Verify start/stop lifecycle doesn't panic.
-	poller := NewRateLimitPoller(nil, "http://localhost", 10*time.Minute, nil)
+	poller := NewRateLimitPoller(nil, "http://localhost", 10*time.Minute, nil, 5*time.Minute)
 	poller.Start()
 	poller.Stop()
 }
@@ -82,6 +82,10 @@ type fakeGitHub struct {
 	probeStatus func(n int) int
 	// omitRemaining drops X-RateLimit-Remaining from probe responses.
 	omitRemaining bool
+	// uncountedNotModified makes a 304 report an unused bucket (used=0,
+	// reset an hour out) instead of the installation's, which is what GitHub
+	// does for installation tokens (V1b).
+	uncountedNotModified bool
 	// mintedPermissions records every mint request's permissions.
 	mintedPermissions []map[string]any
 }
@@ -137,13 +141,17 @@ func (f *fakeGitHub) serve(w http.ResponseWriter, r *http.Request) {
 		if status == http.StatusOK && b.remaining > 0 {
 			b.remaining--
 		}
+		remaining, reset := b.remaining, b.reset
+		if status == http.StatusNotModified && f.uncountedNotModified {
+			remaining, reset = b.limit, time.Now().Add(time.Hour).Unix()
+		}
 		h := w.Header()
 		h.Set("X-RateLimit-Limit", strconv.FormatInt(b.limit, 10))
 		if !f.omitRemaining {
-			h.Set("X-RateLimit-Remaining", strconv.FormatInt(b.remaining, 10))
+			h.Set("X-RateLimit-Remaining", strconv.FormatInt(remaining, 10))
 		}
-		h.Set("X-RateLimit-Used", strconv.FormatInt(b.limit-b.remaining, 10))
-		h.Set("X-RateLimit-Reset", strconv.FormatInt(b.reset, 10))
+		h.Set("X-RateLimit-Used", strconv.FormatInt(b.limit-remaining, 10))
+		h.Set("X-RateLimit-Reset", strconv.FormatInt(reset, 10))
 		h.Set("X-RateLimit-Resource", "core")
 		if status == http.StatusOK && !f.omitETag {
 			h.Set("ETag", f.etag)
@@ -178,7 +186,10 @@ func newTestPoller(t *testing.T, app string, srv *httptest.Server, quota *QuotaS
 		Instance:   "i1",
 		AppConfig:  AppConfig{AppID: 1, PrivateKey: generateTestKey(t)},
 	}}
-	p := NewRateLimitPoller(instances, srv.URL, time.Hour, quota)
+	// A long forceCountedInterval here means existing probes stay purely
+	// conditional (as before this poller could force a counted re-read);
+	// TestRateLimitPoller_ForceCountedAfterStaleness exercises the new path.
+	p := NewRateLimitPoller(instances, srv.URL, time.Hour, quota, time.Hour)
 	t.Cleanup(p.Stop)
 	return p
 }
@@ -228,6 +239,87 @@ func TestRateLimitPoller_ConditionalProbeTracksLiveBucket(t *testing.T) {
 		if len(perms) != 1 || perms["metadata"] != "read" {
 			t.Errorf("poller token permissions = %v, want only metadata:read", perms)
 		}
+	}
+}
+
+// TestRateLimitPoller_UncountedNotModifiedDoesNotOverwrite replays what
+// github-sts-dev showed on 2026-09-13: counted 200 probes reported the real
+// installation bucket, then the first 304 reported used=0 with a reset an
+// hour out and, being a "later window", overwrote it. The gauges went back
+// to full within one poll.
+func TestRateLimitPoller_UncountedNotModifiedDoesNotOverwrite(t *testing.T) {
+	const app = "poller-v1b"
+	reset := time.Now().Add(40 * time.Minute).Unix()
+	fake, srv := newFakeGitHub(t, map[int64]*fakeBucket{7: {account: "org", limit: 5000, remaining: 4990, reset: reset}})
+	fake.uncountedNotModified = true
+	quota := NewQuotaStore()
+	p := newTestPoller(t, app, srv, quota)
+
+	p.pollAll(context.Background()) // 200: counted, real bucket, used 11
+	p.pollAll(context.Background()) // 304: uncounted bucket, must be dropped
+
+	q, ok := quota.Lowest(app, "i1", "core")
+	if !ok || q.Remaining != 4989 || q.ResetAt.Unix() != reset {
+		t.Fatalf("quota = %+v, %v; want the counted reading (4989, reset %d) kept", q, ok, reset)
+	}
+	if got := testutil.ToFloat64(metrics.GitHubRateLimitRemaining.WithLabelValues(app, "i1", "core")); got != 4989 {
+		t.Errorf("remaining gauge = %v, want 4989", got)
+	}
+}
+
+// TestRateLimitPoller_ForceCountedAfterStaleness reproduces the drain a 304
+// hides: something other than this poller (a client token, or in
+// github-sts-dev on 2026-09-16 an E2E harness probing the installation
+// directly) spends most of the bucket between polls. A 304 reports GitHub's
+// fake unused-bucket reading for installation tokens (V1b) and QuotaStore
+// correctly drops it, so without a staleness ceiling the drain would stay
+// invisible for as long as the token is cached (up to ~55 minutes). Once
+// forceCountedInterval has elapsed since the last counted read, the probe
+// must drop If-None-Match and pay for a fresh 200 that reveals it.
+func TestRateLimitPoller_ForceCountedAfterStaleness(t *testing.T) {
+	const app = "poller-force-counted"
+	reset := time.Now().Add(40 * time.Minute).Unix()
+	fake, srv := newFakeGitHub(t, map[int64]*fakeBucket{7: {account: "org", limit: 5000, remaining: 4990, reset: reset}})
+	fake.uncountedNotModified = true
+	quota := NewQuotaStore()
+	p := newTestPoller(t, app, srv, quota)
+	p.forceCountedInterval = 5 * time.Minute
+	clock := time.Now()
+	p.now = func() time.Time { return clock }
+
+	p.pollAll(context.Background()) // 200: counted, real bucket (remaining 4989)
+
+	// A drain that bypasses this poller entirely, exactly like a client
+	// token or an external probe hitting GitHub directly.
+	fake.spend(7, 4000)
+
+	clock = clock.Add(4 * time.Minute) // still within forceCountedInterval
+	p.pollAll(context.Background())    // 304: cached etag still fresh, sent; fake bucket dropped
+
+	if q, ok := quota.Lowest(app, "i1", "core"); !ok || q.Remaining != 4989 {
+		t.Fatalf("quota = %+v, %v; want the stale counted reading (4989) still in force before the staleness ceiling", q, ok)
+	}
+	if got := probeCount(app, "not_modified"); got != 1 {
+		t.Errorf("not_modified probes = %v, want 1 (still within forceCountedInterval)", got)
+	}
+
+	clock = clock.Add(2 * time.Minute) // now 6 minutes since the counted read
+	p.pollAll(context.Background())    // etag stale: If-None-Match dropped, forces a counted 200
+
+	q, ok := quota.Lowest(app, "i1", "core")
+	if !ok || q.Remaining != 988 {
+		t.Fatalf("quota = %+v, %v; want the drain (988 remaining: 989 after the spend, minus the forced probe's own request) visible once the etag went stale", q, ok)
+	}
+	if got := probeCount(app, "ok"); got != 2 {
+		t.Errorf("ok probes = %v, want 2 (initial + forced re-read)", got)
+	}
+	if got := probeCount(app, "not_modified"); got != 1 {
+		t.Errorf("not_modified probes = %v, want 1 (unchanged: the third poll was forced counted, not conditional)", got)
+	}
+
+	mints, _ := fake.counts()
+	if mints != 1 {
+		t.Errorf("mints = %d, want 1 (forcing a counted probe reuses the cached token, it does not mint a new one)", mints)
 	}
 }
 

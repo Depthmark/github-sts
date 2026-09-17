@@ -191,9 +191,10 @@ var (
 	}, []string{"github_app", "github_app_instance", "resource"})
 
 	// GitHubRateLimitProbeTotal counts rate-limit probe outcomes. result is
-	// one of: not_modified (conditional request, free), ok (full response,
-	// counted), rate_limited, unauthorized, incomplete_headers, error. A
-	// healthy poller is almost entirely not_modified.
+	// one of: ok (counted, the only result whose headers describe the
+	// installation bucket), not_modified (spends nothing; for installation
+	// tokens its headers describe an unused bucket and are not recorded),
+	// rate_limited, unauthorized, incomplete_headers, error.
 	GitHubRateLimitProbeTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "githubsts_github_rate_limit_probe_total",
 		Help: "Rate-limit probe outcomes per pool instance.",

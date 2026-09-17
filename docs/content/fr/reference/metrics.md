@@ -105,10 +105,10 @@ Chaque instance du pool (étiquette `instance`) a sa propre série de limite de 
 
 Les jauges décrivent le compteur de l'installation de chaque membre du pool. Deux sources les alimentent :
 
-- **Le sondeur de limite de débit.** Quand `rate_limit_poll_enabled` est activé, chaque réplique sonde toutes les installations de chaque membre du pool une fois par `rate_limit_poll_interval`. Il envoie une requête conditionnelle `GET /emojis` avec un jeton qu'il émet pour lui-même, restreint à `metadata:read`. GitHub ne décompte pas une réponse `304 Not Modified` de la limite de débit primaire : après la première requête par jeton (environ une par heure, par installation, par réplique), la sonde ne coûte rien. Le sondeur sonde aussi un membre juste après la réinitialisation d'un compteur entamé, et dans les secondes qui suivent une réponse de limite de débit sur ce membre.
+- **Le sondeur de limite de débit.** Quand `rate_limit_poll_enabled` est activé, chaque réplique sonde toutes les installations de chaque membre du pool une fois par `rate_limit_poll_interval`. Il envoie une requête conditionnelle `GET /emojis` avec un jeton qu'il émet pour lui-même, restreint à `metadata:read`. La première requête par jeton renvoie `200` et consomme une requête ; les sondes suivantes renvoient `304 Not Modified` et ne consomment rien — jusqu'à ce que la réponse mise en cache soit plus ancienne que `rate_limit_poll_force_counted_interval`, auquel cas le sondeur abandonne l'en-tête conditionnel et paie pour un nouveau `200` décompté plutôt que de continuer à faire confiance à un `304` non fiable (voir ci-dessous). Le sondeur sonde aussi un membre juste après la réinitialisation d'un compteur entamé, et dans les secondes qui suivent une réponse de limite de débit sur ce membre.
 - **Les appels de github-sts faits avec ses propres jetons d'installation**, comme la résolution du dépôt cible pendant un échange.
 
-`GET /rate_limit` n'est pas utilisé. Il rapporte un compteur distinct et inutilisé, et non celui que dépensent les appels à l'API.
+Seule une réponse qui a consommé une requête est enregistrée. Pour les jetons d'installation, GitHub répond aux requêtes qui ne consomment rien (`GET /rate_limit` et `304 Not Modified`) avec un compteur distinct et inutilisé : `used` vaut `0` et la réinitialisation est environ une heure plus tard. github-sts ignore un tel relevé dès qu'il détient un relevé décompté pour une fenêtre pas encore réinitialisée. Entre deux réponses décomptées, un relevé peut donc surestimer ce qui reste, et `githubsts_github_rate_limit_observed_timestamp` indique quand il a été pris — `rate_limit_poll_force_counted_interval` borne la durée possible de cet écart, au prix d'une requête supplémentaire consommée par instance chaque fois qu'il force une relecture.
 
 Ce que ces jauges ne montrent pas :
 
@@ -117,7 +117,7 @@ Ce que ces jauges ne montrent pas :
 
 Quand une App est installée sur plusieurs organisations, chaque jauge rapporte l'installation qui a le moins de requêtes restantes.
 
-L'étiquette `result` de `githubsts_github_rate_limit_probe_total` vaut `not_modified`, `ok`, `rate_limited`, `unauthorized`, `incomplete_headers` ou `error`. Un sondeur sain rapporte presque uniquement `not_modified`. Une hausse continue de `ok` signifie que les sondes sont décomptées de la limite de débit.
+L'étiquette `result` de `githubsts_github_rate_limit_probe_total` vaut `not_modified`, `ok`, `rate_limited`, `unauthorized`, `incomplete_headers` ou `error`. `ok` est une sonde décomptée et le seul résultat dont les en-têtes décrivent le compteur de l'installation. `not_modified` ne consomme rien et, pour les jetons d'installation, ne porte aucun relevé exploitable. `unauthorized`, `incomplete_headers` et `error` signifient que le sondeur ne produit pas de relevés.
 
 ## Accessibilité de GitHub
 
@@ -137,7 +137,7 @@ Visibilité sur la sélection d'instance pour une App poolée (`apps.<name>.inst
 | `githubsts_app_pool_selection_total` | Counter | Résultats de sélection, par github_app, github_app_instance, outcome |
 | `githubsts_app_pool_exhausted_total` | Counter | Requêtes où toutes les instances du pool ont échoué, par github_app |
 
-L'étiquette `outcome` de `githubsts_app_pool_selection_total` vaut aujourd'hui `selected`, `skipped_unreachable`, ou `failover`. (`skipped_rate_limited` est réservée à la stratégie `rate_limit_aware` prévue, pas encore implémentée ; voir [Configuration]({{< relref "/reference/configuration#pools-dapps-rotation-multi-instances-pour-la-limite-de-débit" >}}).)
+L'étiquette `outcome` de `githubsts_app_pool_selection_total` vaut `selected`, `failover`, `skipped_unreachable` ou `skipped_rate_limited`. `skipped_rate_limited` n'apparaît qu'avec `rotation.strategy: rate_limit_aware` : elle compte un membre que la requête a placé en fin d'ordre pour quota bas et n'a jamais tenté. Voir [Configuration]({{< relref "/reference/configuration#pools-dapps-rotation-multi-instances-pour-la-limite-de-débit" >}}).
 
 `githubsts_app_pool_exhausted_total` est le signal à surveiller par alerte : il signifie que toutes les instances du pool de cette App ont échoué pour une requête. Qu'une seule instance voie sa limite de débit chuter ne signifie pas en soi que des requêtes échouent : le pool a déjà basculé autour d'elle.
 

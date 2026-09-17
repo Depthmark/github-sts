@@ -110,27 +110,45 @@ func TestQuotaStore_ObserveRejectsIncomplete(t *testing.T) {
 func TestQuotaStore_ObserveOrdering(t *testing.T) {
 	now := time.Now()
 	window := now.Add(30 * time.Minute)
+	// uncounted is what GET /rate_limit or a 304 returns for an installation
+	// token: used=0 and a reset about an hour out (V1b).
+	uncounted := func(reset time.Time) RateLimitInfo { return completeInfo(5000, 5000, reset) }
 
 	tests := []struct {
 		name         string
+		first        RateLimitInfo
+		firstAt      time.Time // when first was observed; zero means now
 		second       RateLimitInfo
 		wantAccepted bool
 		wantRemain   int64
 	}{
-		{"same window, more used", completeInfo(5000, 4900, window), true, 4900},
-		{"same window, same used refreshes", completeInfo(5000, 4950, window), true, 4950},
-		{"same window, fewer used is stale", completeInfo(5000, 4990, window), false, 4950},
-		{"later window replaces", completeInfo(5000, 4999, window.Add(time.Hour)), true, 4999},
-		{"earlier window is stale", completeInfo(5000, 4000, window.Add(-time.Hour)), false, 4950},
+		{name: "same window, more used", first: completeInfo(5000, 4950, window), second: completeInfo(5000, 4900, window), wantAccepted: true, wantRemain: 4900},
+		{name: "same window, same used refreshes", first: completeInfo(5000, 4950, window), second: completeInfo(5000, 4950, window), wantAccepted: true, wantRemain: 4950},
+		{name: "same window, fewer used is stale", first: completeInfo(5000, 4950, window), second: completeInfo(5000, 4990, window), wantAccepted: false, wantRemain: 4950},
+		{name: "open window cannot move to a later reset", first: completeInfo(5000, 4950, window), second: completeInfo(5000, 4999, window.Add(time.Hour)), wantAccepted: false, wantRemain: 4950},
+		{name: "open window cannot move to an earlier reset", first: completeInfo(5000, 4950, window), second: completeInfo(5000, 4000, window.Add(-10*time.Minute)), wantAccepted: false, wantRemain: 4950},
+		{name: "uncounted reading never overwrites a counted open window (V1b)", first: completeInfo(5000, 4997, window), second: uncounted(now.Add(time.Hour)), wantAccepted: false, wantRemain: 4997},
+		{name: "counted reading replaces an uncounted one, even with an earlier reset", first: uncounted(now.Add(time.Hour)), second: completeInfo(5000, 4997, window), wantAccepted: true, wantRemain: 4997},
+		{name: "uncounted reading replaces an uncounted one with a later reset", first: uncounted(window), second: uncounted(window.Add(time.Minute)), wantAccepted: true, wantRemain: 5000},
+		{name: "after reset, the next window replaces", first: completeInfo(5000, 10, now.Add(-time.Second)), firstAt: now.Add(-time.Hour), second: completeInfo(5000, 4999, now.Add(time.Hour)), wantAccepted: true, wantRemain: 4999},
+		{name: "after reset, a stale response for the old window is dropped", first: completeInfo(5000, 10, now.Add(-time.Second)), firstAt: now.Add(-time.Hour), second: completeInfo(5000, 20, now.Add(-time.Second)), wantAccepted: false, wantRemain: 10},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			s := NewQuotaStore()
-			s.Observe("quota-order", "i1", "org", completeInfo(5000, 4950, window))
+			if !tt.firstAt.IsZero() {
+				s.now = func() time.Time { return tt.firstAt }
+			}
+			if !s.Observe("quota-order", "i1", "org", tt.first) {
+				t.Fatal("first observation rejected")
+			}
+			s.now = func() time.Time { return now }
 			if got := s.Observe("quota-order", "i1", "org", tt.second); got != tt.wantAccepted {
 				t.Fatalf("accepted = %v, want %v", got, tt.wantAccepted)
 			}
-			q, _ := s.Lowest("quota-order", "i1", "core")
+			s.mu.RLock()
+			q := s.entries[quotaKey{logicalApp: "quota-order", instance: "i1", account: "org", resource: "core"}]
+			s.mu.RUnlock()
 			if q.Remaining != tt.wantRemain {
 				t.Errorf("remaining = %d, want %d", q.Remaining, tt.wantRemain)
 			}

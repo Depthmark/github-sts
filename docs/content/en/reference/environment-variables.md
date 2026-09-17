@@ -34,8 +34,8 @@ All variables use the `GITHUBSTS_` prefix. Per-app variables follow `GITHUBSTS_A
 | `GITHUBSTS_APP_{NAME}_PRIVATE_KEY_PATH` | n/a | Path to PEM file |
 | `GITHUBSTS_APP_{NAME}_ORG_POLICY_REPO` | n/a | Central policy repository for repository-scoped requests (e.g. `.github`) |
 | `GITHUBSTS_APP_{NAME}_POLICY_RESOLUTION` | `org_first` | Resolution mode: `org_first`, `repo_first` (deprecated), or `org_only` |
-| `GITHUBSTS_APP_{NAME}_ROTATION_STRATEGY` | `round_robin` | Pool selection strategy: `round_robin` or `rate_limit_aware` (accepted, not yet implemented; see [Configuration]({{< relref "/reference/configuration#app-pools-multi-instance-rate-limit-rotation" >}})) |
-| `GITHUBSTS_APP_{NAME}_ROTATION_MIN_REMAINING_PCT` | `0` | `rate_limit_aware` only; currently has no effect |
+| `GITHUBSTS_APP_{NAME}_ROTATION_STRATEGY` | `round_robin` | Pool selection strategy: `round_robin` or `rate_limit_aware` (see [Configuration]({{< relref "/reference/configuration#app-pools-multi-instance-rate-limit-rotation" >}})) |
+| `GITHUBSTS_APP_{NAME}_ROTATION_MIN_REMAINING_PCT` | `0` | `rate_limit_aware` only: a member known to be below this remaining percentage is tried after the others |
 | `GITHUBSTS_APP_{NAME}_ROTATION_MAX_ATTEMPTS` | pool size, capped at `3` | Bound failover fan-out per request |
 
 Individual pool instances (`apps.<name>.instances[N]` in YAML) can also be set or overridden per-instance, 1-based and contiguous: the loader stops at the first index `N` where none of the four variables below is set.
@@ -82,7 +82,8 @@ Individual pool instances (`apps.<name>.instances[N]` in YAML) can also be set o
 | `GITHUBSTS_METRICS_ENABLED` | `true` | Enable Prometheus metrics |
 | `GITHUBSTS_METRICS_AUTH_TOKEN` | n/a | Bearer token for the `/metrics` endpoint (empty = unauthenticated) |
 | `GITHUBSTS_METRICS_RATE_LIMIT_POLL_ENABLED` | `true` | Probe each installation's rate limit bucket with a conditional `GET /emojis` request |
-| `GITHUBSTS_METRICS_RATE_LIMIT_POLL_INTERVAL` | `60s` | Rate limit probe interval. A `304 Not Modified` probe does not count against the rate limit |
+| `GITHUBSTS_METRICS_RATE_LIMIT_POLL_INTERVAL` | `60s` | Rate limit probe interval. Only the first probe per token spends a request; see the [Metrics reference]({{< relref "/reference/metrics" >}}) for which readings are recorded |
+| `GITHUBSTS_METRICS_RATE_LIMIT_POLL_FORCE_COUNTED_INTERVAL` | `5m` | Longest a probe may answer from a cached, conditional `304` before it pays for another counted read. Bounds how stale `rate_limit_aware` routing's quota view can get; `<= 0` makes every probe counted |
 | `GITHUBSTS_METRICS_REACHABILITY_PROBE_ENABLED` | `true` | Probe GitHub API reachability |
 | `GITHUBSTS_METRICS_REACHABILITY_PROBE_INTERVAL` | `30s` | Reachability probe interval |
 

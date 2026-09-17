@@ -35,8 +35,8 @@ Toutes les variables utilisent le préfixe `GITHUBSTS_`. Les variables par App s
 | `GITHUBSTS_APP_{NAME}_PRIVATE_KEY_PATH` | — | Chemin vers le fichier PEM |
 | `GITHUBSTS_APP_{NAME}_ORG_POLICY_REPO` | — | Dépôt des politiques d'organisation (par ex. `.github`) |
 | `GITHUBSTS_APP_{NAME}_POLICY_RESOLUTION` | `org_first` | Mode de résolution : `org_first`, `repo_first` (obsolète) ou `org_only` |
-| `GITHUBSTS_APP_{NAME}_ROTATION_STRATEGY` | `round_robin` | Stratégie de sélection du pool : `round_robin` ou `rate_limit_aware` (acceptée, pas encore implémentée ; voir [Configuration]({{< relref "/reference/configuration#pools-dapps-rotation-multi-instances-pour-la-limite-de-débit" >}})) |
-| `GITHUBSTS_APP_{NAME}_ROTATION_MIN_REMAINING_PCT` | `0` | `rate_limit_aware` uniquement ; actuellement sans effet |
+| `GITHUBSTS_APP_{NAME}_ROTATION_STRATEGY` | `round_robin` | Stratégie de sélection du pool : `round_robin` ou `rate_limit_aware` (voir [Configuration]({{< relref "/reference/configuration#pools-dapps-rotation-multi-instances-pour-la-limite-de-débit" >}})) |
+| `GITHUBSTS_APP_{NAME}_ROTATION_MIN_REMAINING_PCT` | `0` | `rate_limit_aware` uniquement : un membre connu comme étant sous ce pourcentage restant est tenté après les autres |
 | `GITHUBSTS_APP_{NAME}_ROTATION_MAX_ATTEMPTS` | taille du pool, plafonnée à `3` | Limite le nombre de bascules par requête |
 
 Chaque instance d'un pool (`apps.<name>.instances[N]` en YAML) peut aussi être définie ou surchargée individuellement, en base 1 et de façon contiguë : le chargeur s'arrête au premier index `N` où aucune des quatre variables ci-dessous n'est définie.
@@ -81,7 +81,8 @@ Chaque instance d'un pool (`apps.<name>.instances[N]` en YAML) peut aussi être 
 | `GITHUBSTS_METRICS_ENABLED` | `true` | Activer les métriques Prometheus |
 | `GITHUBSTS_METRICS_AUTH_TOKEN` | — | Jeton Bearer pour le point de terminaison `/metrics` (vide = non authentifié) |
 | `GITHUBSTS_METRICS_RATE_LIMIT_POLL_ENABLED` | `true` | Sonder le compteur de limite de débit de chaque installation avec une requête conditionnelle `GET /emojis` |
-| `GITHUBSTS_METRICS_RATE_LIMIT_POLL_INTERVAL` | `60s` | Intervalle des sondes de limite de débit. Une sonde `304 Not Modified` n'est pas décomptée de la limite de débit |
+| `GITHUBSTS_METRICS_RATE_LIMIT_POLL_INTERVAL` | `60s` | Intervalle des sondes de limite de débit. Seule la première sonde par jeton consomme une requête ; voir la [référence des métriques]({{< relref "/reference/metrics" >}}) pour les relevés enregistrés |
+| `GITHUBSTS_METRICS_RATE_LIMIT_POLL_FORCE_COUNTED_INTERVAL` | `5m` | Durée maximale pendant laquelle une sonde peut répondre depuis un `304` conditionnel en cache avant de payer pour un nouveau relevé décompté. Borne l'obsolescence possible du compteur vu par le routage `rate_limit_aware` ; `<= 0` force chaque sonde à être décomptée |
 | `GITHUBSTS_METRICS_REACHABILITY_PROBE_ENABLED` | `true` | Sonder l'accessibilité de l'API GitHub |
 | `GITHUBSTS_METRICS_REACHABILITY_PROBE_INTERVAL` | `30s` | Intervalle de la sonde d'accessibilité |
 
