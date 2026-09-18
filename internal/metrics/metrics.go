@@ -182,6 +182,24 @@ var (
 		Help: "Percentage of rate limit remaining.",
 	}, []string{"github_app", "github_app_instance", "resource"})
 
+	// GitHubRateLimitObservedTimestamp says how old the reading behind the
+	// other rate-limit gauges is. Without it a full bucket and a reading
+	// nobody has refreshed in an hour look identical.
+	GitHubRateLimitObservedTimestamp = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "githubsts_github_rate_limit_observed_timestamp",
+		Help: "Unix epoch timestamp of the observation the rate-limit gauges currently report.",
+	}, []string{"github_app", "github_app_instance", "resource"})
+
+	// GitHubRateLimitProbeTotal counts rate-limit probe outcomes. result is
+	// one of: ok (counted, the only result whose headers describe the
+	// installation bucket), not_modified (spends nothing; for installation
+	// tokens its headers describe an unused bucket and are not recorded),
+	// rate_limited, unauthorized, incomplete_headers, error.
+	GitHubRateLimitProbeTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "githubsts_github_rate_limit_probe_total",
+		Help: "Rate-limit probe outcomes per pool instance.",
+	}, []string{"github_app", "github_app_instance", "result"})
+
 	// GitHubRateLimitExceededTotal and GitHubSecondaryRateLimitTotal below
 	// still carry the pre-existing "caller" label, which has its own,
 	// unrelated unbounded-cardinality problem (it's the per-request trace
@@ -370,6 +388,7 @@ func Register() {
 	// Rate limit
 	prometheus.MustRegister(GitHubRateLimitLimit, GitHubRateLimitRemaining, GitHubRateLimitUsed,
 		GitHubRateLimitResetTimestamp, GitHubRateLimitRemainingPercent,
+		GitHubRateLimitObservedTimestamp, GitHubRateLimitProbeTotal,
 		GitHubRateLimitExceededTotal, GitHubSecondaryRateLimitTotal, GitHubSecondaryRateLimitRetryAfter)
 	// Reachability
 	prometheus.MustRegister(GitHubReachable, GitHubReachabilityCheckDuration, GitHubReachabilityFailuresTotal)

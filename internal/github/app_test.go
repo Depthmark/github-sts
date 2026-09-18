@@ -185,8 +185,18 @@ func TestExtractRateLimitHeaders(t *testing.T) {
 		},
 	}
 
-	// Should not panic.
-	ExtractRateLimitHeaders(resp, "test-app", "test-instance", "test")
+	info := ExtractRateLimitHeaders(resp, "test-app-extract", "test-instance", "test")
+	if !info.Complete || info.Limit != 5000 || info.Remaining != 4999 || info.Used != 1 || info.ResetAt.Unix() != 1711900000 {
+		t.Errorf("ExtractRateLimitHeaders() = %+v", info)
+	}
+	// Parsing alone never writes the gauges: only the QuotaStore renders
+	// them, from responses known to describe an installation bucket.
+	if n := testutil.CollectAndCount(metrics.GitHubRateLimitRemaining.WithLabelValues("test-app-extract", "test-instance", "core")); n != 1 {
+		t.Fatalf("collect count = %d", n)
+	}
+	if got := testutil.ToFloat64(metrics.GitHubRateLimitRemaining.WithLabelValues("test-app-extract", "test-instance", "core")); got != 0 {
+		t.Errorf("remaining gauge = %v, want untouched (0)", got)
+	}
 }
 
 func TestExtractRateLimitHeaders_PrimaryExceeded(t *testing.T) {

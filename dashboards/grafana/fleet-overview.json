@@ -751,7 +751,8 @@
         }
       ],
       "title": "Rate Limit % per App (core, min)",
-      "type": "stat"
+      "type": "stat",
+      "description": "Lowest core headroom of any member of each app. One member running low is expected: pool routing sends traffic to its siblings. For whether a whole pool needs another member, use App Capacity > Rate-Limit Buckets > Tightest Pools, which reports headroom across all members and all buckets. Values come from github-sts's own counted GitHub responses, never from buckets that only client tokens spend."
     },
     {
       "collapsed": false,
@@ -1213,7 +1214,8 @@
         }
       ],
       "title": "Rate Limit Remaining by App",
-      "type": "timeseries"
+      "type": "timeseries",
+      "description": "Requests remaining in each bucket for the lowest member of each app. Buckets have very different limits (core is thousands per hour, search is 30 per minute), so compare a line with its own limit, not with other lines. For pool-wide headroom per bucket, use App Capacity > Rate-Limit Buckets > Tightest Pools."
     },
     {
       "collapsed": false,

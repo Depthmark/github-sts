@@ -160,7 +160,7 @@ func (p *AppTokenProvider) fetchTarget(ctx context.Context, scope RepositoryScop
 		return TargetIdentity{}, &TokenMintError{Retryable: true, Err: fmt.Errorf("resolving target %q: %w", scope.String(), err)}
 	}
 	defer func() { _ = resp.Body.Close() }()
-	ExtractRateLimitHeaders(resp, p.appName, p.instance, "target_resolver")
+	p.noteInstallationRateLimit(scope.Owner, ExtractRateLimitHeaders(resp, p.appName, p.instance, "target_resolver"))
 
 	if resp.StatusCode != http.StatusOK {
 		metrics.GitHubAPICalls.WithLabelValues(p.appName, p.instance, "resolve_target", "error").Inc()

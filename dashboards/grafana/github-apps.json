@@ -7,10 +7,12 @@
     "fleet",
     "github-apps",
     "github-sts",
+    "loki",
     "metrics",
     "prometheus",
     "rate-limit",
     "reachability",
+    "routing",
     "token-exchange",
     "token-issuance"
   ],
@@ -39,6 +41,20 @@
         "options": [],
         "multi": false,
         "includeAll": false
+      },
+      {
+        "name": "loki_datasource",
+        "type": "datasource",
+        "label": "Logs datasource",
+        "query": "loki",
+        "current": {},
+        "hide": 0,
+        "refresh": 1,
+        "regex": "",
+        "options": [],
+        "multi": false,
+        "includeAll": false,
+        "description": "Loki datasource for the Pool Routing row. Exchange mints are counted from the audit log, the only signal that records which member minted the consumer token."
       },
       {
         "name": "namespace",
@@ -153,6 +169,75 @@
         "description": "Physical credential inside a pool. Applies only to metrics that carry github_app_instance — pool size, exhaustion and the policy metrics have no instance dimension and stay unfiltered."
       },
       {
+        "name": "routing_window",
+        "type": "custom",
+        "label": "Routing Window",
+        "query": "15m,1h,3h,6h,24h",
+        "current": {
+          "selected": true,
+          "text": "1h",
+          "value": "1h"
+        },
+        "options": [
+          {
+            "selected": false,
+            "text": "15m",
+            "value": "15m"
+          },
+          {
+            "selected": true,
+            "text": "1h",
+            "value": "1h"
+          },
+          {
+            "selected": false,
+            "text": "3h",
+            "value": "3h"
+          },
+          {
+            "selected": false,
+            "text": "6h",
+            "value": "6h"
+          },
+          {
+            "selected": false,
+            "text": "24h",
+            "value": "24h"
+          }
+        ],
+        "multi": false,
+        "includeAll": false,
+        "hide": 0,
+        "description": "Rolling window for the share panels in Pool Routing. Each point is the share of the previous window, so a routing change shows up as lines converging over one window. Low-traffic pools need a longer window to avoid 0% / 100% flapping."
+      },
+      {
+        "name": "bucket",
+        "type": "query",
+        "label": "Bucket",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "definition": "label_values(githubsts_github_rate_limit_remaining{namespace=~\"$namespace\"}, resource)",
+        "query": {
+          "qryType": 1,
+          "query": "label_values(githubsts_github_rate_limit_remaining{namespace=~\"$namespace\"}, resource)",
+          "refId": "Prometheus-bucket-Variable-Query"
+        },
+        "current": {
+          "selected": true,
+          "text": "core",
+          "value": "core"
+        },
+        "options": [],
+        "refresh": 2,
+        "multi": false,
+        "includeAll": false,
+        "hide": 0,
+        "sort": 1,
+        "description": "GitHub rate-limit bucket (the resource label) for the per-member panels in Rate-Limit Buckets. Only buckets the broker exports are listed; core is the one pool routing acts on. Tightest Pools and Pool Headroom Over Time always cover every bucket."
+      },
+      {
         "name": "detail_app",
         "type": "query",
         "label": "App Detail",
@@ -190,6 +275,22 @@
         "iconColor": "rgba(0, 211, 255, 1)",
         "name": "Annotations & Alerts",
         "type": "dashboard"
+      },
+      {
+        "name": "Replica starts",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "enable": true,
+        "hide": false,
+        "iconColor": "purple",
+        "expr": "max by (pod) (process_start_time_seconds{namespace=~\"$namespace\",job=~\"$job\"}) > time() - 120",
+        "step": "60s",
+        "titleFormat": "{{pod}} started",
+        "textFormat": "",
+        "tagKeys": "pod",
+        "useValueForTime": false
       }
     ]
   },
@@ -541,7 +642,7 @@
         "graphMode": "area",
         "justifyMode": "auto"
       },
-      "description": "Minimum last-observed core quota. It is not fresh unless the upstream poll succeeded recently; installation-level scope is not represented by the current metric."
+      "description": "Minimum last-observed core quota. It is not fresh unless the upstream poll succeeded recently; installation-level scope is not represented by the current metric. Values come from STS's own installation-token calls and the rate-limit poller. Buckets that only consumer tokens spend are never observed, so a consumer can exhaust GitHub while this reads full."
     },
     {
       "id": 7,
@@ -825,81 +926,6 @@
       "description": "Per-app failure ratio. Isolates one misconfigured app from a fleet-wide problem."
     },
     {
-      "id": 11,
-      "type": "timeseries",
-      "title": "Rate Limit Remaining % by Instance",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 14
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "githubsts_github_rate_limit_remaining_percent{namespace=~\"$namespace\",job=~\"$job\",github_app_instance=~\"${app_instance:regex}\",github_app=~\"${app:regex}\",resource=\"core\"}",
-          "refId": "A",
-          "range": true,
-          "instant": false,
-          "legendFormat": "{{github_app}} / {{github_app_instance}}"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "mappings": [],
-          "custom": {
-            "drawStyle": "line",
-            "lineWidth": 1,
-            "fillOpacity": 8,
-            "showPoints": "never",
-            "spanNulls": false,
-            "legend": {},
-            "axisPlacement": "auto"
-          },
-          "unit": "percent",
-          "max": 100,
-          "min": 0,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true,
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "description": "Core headroom per credential. Pool rotation should keep these converging; one line diving alone means rotation is not spreading load."
-    },
-    {
       "id": 12,
       "type": "timeseries",
       "title": "Provider Tokens Minted by App",
@@ -909,8 +935,8 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
-        "x": 12,
+        "w": 8,
+        "x": 0,
         "y": 14
       },
       "targets": [
@@ -981,10 +1007,10 @@
         "uid": "${datasource}"
       },
       "gridPos": {
-        "h": 7,
-        "w": 12,
-        "x": 0,
-        "y": 22
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 14
       },
       "targets": [
         {
@@ -993,11 +1019,11 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (github_app, outcome) (rate(githubsts_app_pool_selection_total{namespace=~\"$namespace\",job=~\"$job\",github_app_instance=~\"${app_instance:regex}\",github_app=~\"${app:regex}\"}[$__rate_interval]))",
+          "expr": "sum by (github_app, github_app_instance, outcome) (rate(githubsts_app_pool_selection_total{namespace=~\"$namespace\",job=~\"$job\",github_app_instance=~\"${app_instance:regex}\",github_app=~\"${app:regex}\"}[$__rate_interval]))",
           "refId": "A",
           "range": true,
           "instant": false,
-          "legendFormat": "{{github_app}} / {{outcome}}"
+          "legendFormat": "{{github_app}} / {{github_app_instance}} / {{outcome}}"
         }
       ],
       "fieldConfig": {
@@ -1043,7 +1069,7 @@
           "sort": "desc"
         }
       },
-      "description": "How the rotation strategy picked a credential. Sustained failover or unreachable-skip means a pool member is degraded."
+      "description": "How the rotation strategy picked a credential, per member. A failover series names the member that absorbed the retry; sustained failover or unreachable-skip means another member is degraded. Counts every pool call (target resolution, policy reads, mint), not only exchange mints."
     },
     {
       "id": 14,
@@ -1054,10 +1080,10 @@
         "uid": "${datasource}"
       },
       "gridPos": {
-        "h": 7,
-        "w": 12,
-        "x": 12,
-        "y": 22
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 14
       },
       "targets": [
         {
@@ -1130,6 +1156,1346 @@
       "description": "Rolling pool exhaustion and unreachable-member evidence. Zero requires pool instrumentation; missing instrumentation remains No data."
     },
     {
+      "id": 19,
+      "type": "row",
+      "title": "Pool Routing",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 22
+      },
+      "panels": [],
+      "description": "Which pool member serves each exchange. A healthy N-member pool converges on 1/N per member. Filter GitHub App to one pooled app for a readable comparison."
+    },
+    {
+      "id": 20,
+      "type": "timeseries",
+      "title": "Exchange Mint Share by Instance",
+      "datasource": {
+        "type": "datasource",
+        "uid": "-- Mixed --"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 23
+      },
+      "interval": "1m",
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "${loki_datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (github_app, github_app_instance) (count_over_time({app=\"github-sts\", namespace=~\"$namespace\", log_channel=\"audit\"} |= \"success\" | json github_app=\"app\", github_app_instance=\"instance\", result=\"result\" | result=\"success\" | github_app_instance!=\"\" | github_app=~\"${app:regex}\" | github_app_instance=~\"${app_instance:regex}\" [$routing_window]))\n/ on (github_app) group_left\nsum by (github_app) (count_over_time({app=\"github-sts\", namespace=~\"$namespace\", log_channel=\"audit\"} |= \"success\" | json github_app=\"app\", github_app_instance=\"instance\", result=\"result\" | result=\"success\" | github_app_instance!=\"\" | github_app=~\"${app:regex}\" [$routing_window]))",
+          "refId": "A",
+          "queryType": "range",
+          "legendFormat": "{{github_app}} / {{github_app_instance}}"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "1 / max by (github_app) (githubsts_app_pool_instances{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"} > 1)",
+          "refId": "B",
+          "range": true,
+          "instant": false,
+          "legendFormat": "{{github_app}} fair share (1/N)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false,
+            "legend": {},
+            "axisPlacement": "auto"
+          },
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "min": 0,
+          "max": 1
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*fair share.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    10
+                  ]
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "text"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "min",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Share of successful exchanges each member minted over the Routing Window, from the audit log (the `instance` field is the member that minted the consumer token). The dashed line is 1/N for pooled apps. Before the round-robin fix a 2-member pool sits far from the line, because each exchange advances the shared cursor an even number of times and the mint keeps landing on the same member. After the fix both members converge on the line."
+    },
+    {
+      "id": 23,
+      "type": "timeseries",
+      "title": "Pool Call Share by Instance (all operations)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 23
+      },
+      "interval": "1m",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (github_app, github_app_instance) (increase(githubsts_app_pool_selection_total{namespace=~\"$namespace\",job=~\"$job\",github_app_instance=~\"${app_instance:regex}\",github_app=~\"${app:regex}\",outcome=~\"selected|failover\"}[$routing_window]))\n/ on (github_app) group_left ()\n(sum by (github_app) (increase(githubsts_app_pool_selection_total{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\",outcome=~\"selected|failover\"}[$routing_window])) > 0)",
+          "refId": "A",
+          "range": true,
+          "instant": false,
+          "legendFormat": "{{github_app}} / {{github_app_instance}}"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "1 / max by (github_app) (githubsts_app_pool_instances{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"} > 1)",
+          "refId": "B",
+          "range": true,
+          "instant": false,
+          "legendFormat": "{{github_app}} fair share (1/N)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false,
+            "legend": {},
+            "axisPlacement": "auto"
+          },
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "min": 0,
+          "max": 1
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*fair share.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    10
+                  ]
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "text"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "mean",
+            "min",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Same share, from githubsts_app_pool_selection_total. This counts every pool call: target resolution (even when the target cache answers), policy reads and the exchange mint. In a 2-member pool the resolve and the mint land on opposite members, so this panel can read 50/50 while exchange mints are badly skewed. Read it next to Exchange Mint Share: agreement between the two is what a fixed rotation looks like."
+    },
+    {
+      "id": 21,
+      "type": "bargauge",
+      "title": "Exchange Mint Share, Selected Range",
+      "datasource": {
+        "type": "loki",
+        "uid": "${loki_datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 32
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "${loki_datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (github_app, github_app_instance) (count_over_time({app=\"github-sts\", namespace=~\"$namespace\", log_channel=\"audit\"} |= \"success\" | json github_app=\"app\", github_app_instance=\"instance\", result=\"result\" | result=\"success\" | github_app_instance!=\"\" | github_app=~\"${app:regex}\" | github_app_instance=~\"${app_instance:regex}\" [$__range]))\n/ on (github_app) group_left\nsum by (github_app) (count_over_time({app=\"github-sts\", namespace=~\"$namespace\", log_channel=\"audit\"} |= \"success\" | json github_app=\"app\", github_app_instance=\"instance\", result=\"result\" | result=\"success\" | github_app_instance!=\"\" | github_app=~\"${app:regex}\" [$__range]))",
+          "refId": "A",
+          "queryType": "instant",
+          "legendFormat": "{{github_app}} / {{github_app_instance}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "gradient",
+        "valueMode": "color",
+        "showUnfilled": true,
+        "namePlacement": "top",
+        "sizing": "auto",
+        "minVizHeight": 16,
+        "maxVizHeight": 300,
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "description": "Exchange mint share per member over the whole dashboard time range. Fair share is 1/N: 50% each for a 2-member pool. To compare before and after a deploy, set the time range to one side of the Replica starts annotation, then the other."
+    },
+    {
+      "id": 22,
+      "type": "bargauge",
+      "title": "Exchange Mints by Replica, Selected Range",
+      "datasource": {
+        "type": "loki",
+        "uid": "${loki_datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 16,
+        "x": 8,
+        "y": 32
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "${loki_datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (pod, github_app, github_app_instance) (count_over_time({app=\"github-sts\", namespace=~\"$namespace\", log_channel=\"audit\"} |= \"success\" | json github_app=\"app\", github_app_instance=\"instance\", result=\"result\" | result=\"success\" | github_app_instance!=\"\" | github_app=~\"${app:regex}\" | github_app_instance=~\"${app_instance:regex}\" [$__range]))",
+          "refId": "A",
+          "queryType": "instant",
+          "legendFormat": "{{pod}} / {{github_app}} / {{github_app_instance}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "unit": "short",
+          "min": 0,
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "basic",
+        "valueMode": "color",
+        "showUnfilled": true,
+        "namePlacement": "left",
+        "sizing": "auto",
+        "minVizHeight": 16,
+        "maxVizHeight": 300,
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "description": "Exchange mints per replica and member. Each replica keeps its own round-robin cursor, so the skew is per replica: before the fix a replica sends almost every mint to one member. Pod names change on every rollout, so replicas from before and after a deploy appear as separate bars in a range that spans it."
+    },
+    {
+      "id": 24,
+      "type": "row",
+      "title": "Rate-Limit Buckets",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 40
+      },
+      "panels": [],
+      "description": "Tightest Pools and Pool Headroom Over Time cover every bucket. The per-member panels below show the bucket picked in the Bucket variable (default core, the bucket pool routing acts on). Each member is shown once, at its lowest replica reading."
+    },
+    {
+      "id": 28,
+      "type": "table",
+      "title": "Tightest Pools (all buckets)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 14,
+        "x": 0,
+        "y": 41
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "((min_over_time((100 * sum by (github_app, resource) ((min by (github_app, github_app_instance, resource) (githubsts_github_rate_limit_remaining{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"}) and on (github_app, github_app_instance, resource) (max by (github_app, github_app_instance, resource) (githubsts_github_rate_limit_reset_timestamp{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"}) > time())) or on (github_app, github_app_instance, resource) max by (github_app, github_app_instance, resource) (githubsts_github_rate_limit_limit{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"})) / sum by (github_app, resource) (max by (github_app, github_app_instance, resource) (githubsts_github_rate_limit_limit{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"})))[5m:30s])) and on (github_app, resource) ((min_over_time((100 * sum by (github_app, resource) ((min by (github_app, github_app_instance, resource) (githubsts_github_rate_limit_remaining{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"}) and on (github_app, github_app_instance, resource) (max by (github_app, github_app_instance, resource) (githubsts_github_rate_limit_reset_timestamp{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"}) > time())) or on (github_app, github_app_instance, resource) max by (github_app, github_app_instance, resource) (githubsts_github_rate_limit_limit{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"})) / sum by (github_app, resource) (max by (github_app, github_app_instance, resource) (githubsts_github_rate_limit_limit{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"})))[5m:30s])) < 99)) * on (github_app, resource) group_left (github_app_instance) (0 * (bottomk by (github_app, resource) (1, 100 * ((min by (github_app, github_app_instance, resource) (githubsts_github_rate_limit_remaining{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"}) and on (github_app, github_app_instance, resource) (max by (github_app, github_app_instance, resource) (githubsts_github_rate_limit_reset_timestamp{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"}) > time())) or on (github_app, github_app_instance, resource) max by (github_app, github_app_instance, resource) (githubsts_github_rate_limit_limit{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"})) / on (github_app, github_app_instance, resource) max by (github_app, github_app_instance, resource) (githubsts_github_rate_limit_limit{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"}))) + 1)",
+          "refId": "A",
+          "range": false,
+          "instant": true,
+          "legendFormat": "",
+          "format": "table"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "(bottomk by (github_app, resource) (1, 100 * ((min by (github_app, github_app_instance, resource) (githubsts_github_rate_limit_remaining{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"}) and on (github_app, github_app_instance, resource) (max by (github_app, github_app_instance, resource) (githubsts_github_rate_limit_reset_timestamp{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"}) > time())) or on (github_app, github_app_instance, resource) max by (github_app, github_app_instance, resource) (githubsts_github_rate_limit_limit{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"})) / on (github_app, github_app_instance, resource) max by (github_app, github_app_instance, resource) (githubsts_github_rate_limit_limit{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"}))) and on (github_app, resource) ((min_over_time((100 * sum by (github_app, resource) ((min by (github_app, github_app_instance, resource) (githubsts_github_rate_limit_remaining{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"}) and on (github_app, github_app_instance, resource) (max by (github_app, github_app_instance, resource) (githubsts_github_rate_limit_reset_timestamp{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"}) > time())) or on (github_app, github_app_instance, resource) max by (github_app, github_app_instance, resource) (githubsts_github_rate_limit_limit{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"})) / sum by (github_app, resource) (max by (github_app, github_app_instance, resource) (githubsts_github_rate_limit_limit{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"})))[5m:30s])) < 99)",
+          "refId": "B",
+          "range": false,
+          "instant": true,
+          "legendFormat": "",
+          "format": "table"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "((min by (github_app, github_app_instance, resource) (githubsts_github_rate_limit_reset_timestamp{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"}) - time()) and on (github_app, github_app_instance, resource) (bottomk by (github_app, resource) (1, 100 * ((min by (github_app, github_app_instance, resource) (githubsts_github_rate_limit_remaining{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"}) and on (github_app, github_app_instance, resource) (max by (github_app, github_app_instance, resource) (githubsts_github_rate_limit_reset_timestamp{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"}) > time())) or on (github_app, github_app_instance, resource) max by (github_app, github_app_instance, resource) (githubsts_github_rate_limit_limit{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"})) / on (github_app, github_app_instance, resource) max by (github_app, github_app_instance, resource) (githubsts_github_rate_limit_limit{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"})))) and on (github_app, resource) ((min_over_time((100 * sum by (github_app, resource) ((min by (github_app, github_app_instance, resource) (githubsts_github_rate_limit_remaining{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"}) and on (github_app, github_app_instance, resource) (max by (github_app, github_app_instance, resource) (githubsts_github_rate_limit_reset_timestamp{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"}) > time())) or on (github_app, github_app_instance, resource) max by (github_app, github_app_instance, resource) (githubsts_github_rate_limit_limit{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"})) / sum by (github_app, resource) (max by (github_app, github_app_instance, resource) (githubsts_github_rate_limit_limit{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"})))[5m:30s])) < 99)",
+          "refId": "C",
+          "range": false,
+          "instant": true,
+          "legendFormat": "",
+          "format": "table"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "((time() - max by (github_app, github_app_instance, resource) (githubsts_github_rate_limit_observed_timestamp{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"})) and on (github_app, github_app_instance, resource) (bottomk by (github_app, resource) (1, 100 * ((min by (github_app, github_app_instance, resource) (githubsts_github_rate_limit_remaining{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"}) and on (github_app, github_app_instance, resource) (max by (github_app, github_app_instance, resource) (githubsts_github_rate_limit_reset_timestamp{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"}) > time())) or on (github_app, github_app_instance, resource) max by (github_app, github_app_instance, resource) (githubsts_github_rate_limit_limit{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"})) / on (github_app, github_app_instance, resource) max by (github_app, github_app_instance, resource) (githubsts_github_rate_limit_limit{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"})))) and on (github_app, resource) ((min_over_time((100 * sum by (github_app, resource) ((min by (github_app, github_app_instance, resource) (githubsts_github_rate_limit_remaining{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"}) and on (github_app, github_app_instance, resource) (max by (github_app, github_app_instance, resource) (githubsts_github_rate_limit_reset_timestamp{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"}) > time())) or on (github_app, github_app_instance, resource) max by (github_app, github_app_instance, resource) (githubsts_github_rate_limit_limit{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"})) / sum by (github_app, resource) (max by (github_app, github_app_instance, resource) (githubsts_github_rate_limit_limit{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"})))[5m:30s])) < 99)",
+          "refId": "D",
+          "range": false,
+          "instant": true,
+          "legendFormat": "",
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "indexByName": {
+              "github_app": 0,
+              "resource": 1,
+              "Value #A": 2,
+              "github_app_instance": 3,
+              "Value #B": 4,
+              "Value #C": 5,
+              "Value #D": 6
+            },
+            "renameByName": {
+              "github_app": "App",
+              "resource": "Bucket",
+              "Value #A": "Pool headroom (5m low)",
+              "github_app_instance": "Lowest member",
+              "Value #B": "Lowest member headroom",
+              "Value #C": "Lowest member resets in",
+              "Value #D": "Reading age"
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*headroom.*"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "min",
+                "value": 0
+              },
+              {
+                "id": "max",
+                "value": 100
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background",
+                  "mode": "basic"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 10
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 25
+                    },
+                    {
+                      "color": "green",
+                      "value": 50
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Lowest member resets in"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Reading age"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "text",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 150
+                    },
+                    {
+                      "color": "red",
+                      "value": 300
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "countRows": false,
+          "fields": ""
+        },
+        "sortBy": [
+          {
+            "displayName": "Pool headroom (5m low)",
+            "desc": false
+          }
+        ]
+      },
+      "description": "Every pool and bucket whose headroom dipped below 99% in the last 5 minutes, tightest first (the 1% floor ignores the rate limit poller's own probes). Pool headroom is what is left across all members divided by their combined limit, at its lowest over the last 5 minutes so minute buckets (search, code_search) do not flicker. A member whose bucket has already reset counts as full. One low member is handled by routing; a pool that stays low in one bucket needs another member. An empty table means no pool is under pressure in any bucket. Only buckets the broker exports appear, and a bucket that only client tokens spend is never visible."
+    },
+    {
+      "id": 29,
+      "type": "state-timeline",
+      "title": "Pool Headroom Over Time (active buckets)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 10,
+        "x": 14,
+        "y": 41
+      },
+      "interval": "1m",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "(100 * sum by (github_app, resource) ((min by (github_app, github_app_instance, resource) (githubsts_github_rate_limit_remaining{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"}) and on (github_app, github_app_instance, resource) (max by (github_app, github_app_instance, resource) (githubsts_github_rate_limit_reset_timestamp{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"}) > time())) or on (github_app, github_app_instance, resource) max by (github_app, github_app_instance, resource) (githubsts_github_rate_limit_limit{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"})) / sum by (github_app, resource) (max by (github_app, github_app_instance, resource) (githubsts_github_rate_limit_limit{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"}))) and on (github_app, resource) (min by (github_app, resource) (min_over_time(githubsts_github_rate_limit_remaining_percent{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"}[$__range])) < 99)",
+          "refId": "A",
+          "range": true,
+          "instant": false,
+          "legendFormat": "{{github_app}} / {{resource}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "decimals": 0,
+          "custom": {
+            "fillOpacity": 80,
+            "lineWidth": 0,
+            "spanNulls": false
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 10
+              },
+              {
+                "color": "yellow",
+                "value": 25
+              },
+              {
+                "color": "green",
+                "value": 50
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showValue": "never",
+        "rowHeight": 0.8,
+        "mergeValues": true,
+        "alignValue": "left",
+        "legend": {
+          "showLegend": false,
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "description": "Pool headroom per app and bucket over the time range, one band each, only for buckets where some member dipped below 99% in the range (the 1% floor ignores the rate limit poller's own probes). Green at 50% or more, yellow from 25%, orange from 10%, red below 10%. Use it to see when pressure started and whether it repeats, for example nightly CI."
+    },
+    {
+      "id": 25,
+      "type": "timeseries",
+      "title": "Rate Limit Remaining by Instance ($bucket)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 49
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "min by (github_app, github_app_instance) (githubsts_github_rate_limit_remaining{namespace=~\"$namespace\",job=~\"$job\",github_app_instance=~\"${app_instance:regex}\",github_app=~\"${app:regex}\",resource=\"$bucket\"})",
+          "refId": "A",
+          "range": true,
+          "instant": false,
+          "legendFormat": "{{github_app}} / {{github_app_instance}}"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "max by (github_app, github_app_instance) (githubsts_github_rate_limit_limit{namespace=~\"$namespace\",job=~\"$job\",github_app_instance=~\"${app_instance:regex}\",github_app=~\"${app:regex}\",resource=\"$bucket\"})",
+          "refId": "B",
+          "range": true,
+          "instant": false,
+          "legendFormat": "{{github_app}} / {{github_app_instance}} limit"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false,
+            "legend": {},
+            "axisPlacement": "auto"
+          },
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* limit$"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    10
+                  ]
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "text"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "min"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Core requests remaining per member in absolute terms, with the bucket limit dashed. A drain shows as the solid line falling away from the dashed one, then jumping back at the reset. Values come from STS's own installation-token calls and the rate-limit poller, never from buckets that only consumer tokens spend."
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Rate Limit Remaining % by Instance ($bucket)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 49
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "min by (github_app, github_app_instance) (githubsts_github_rate_limit_remaining_percent{namespace=~\"$namespace\",job=~\"$job\",github_app_instance=~\"${app_instance:regex}\",github_app=~\"${app:regex}\",resource=\"$bucket\"})",
+          "refId": "A",
+          "range": true,
+          "instant": false,
+          "legendFormat": "{{github_app}} / {{github_app_instance}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false,
+            "legend": {},
+            "axisPlacement": "auto"
+          },
+          "unit": "percent",
+          "max": 100,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Core headroom per member, lowest replica reading. With rotation working, members of one pool drain together; one line diving alone means rotation is not spreading load. Values come from STS's own installation-token calls and the rate-limit poller, never from buckets that only consumer tokens spend."
+    },
+    {
+      "id": 26,
+      "type": "table",
+      "title": "Rate Limit Resets In ($bucket)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 14,
+        "x": 0,
+        "y": 57
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "min by (github_app, github_app_instance) (githubsts_github_rate_limit_reset_timestamp{namespace=~\"$namespace\",job=~\"$job\",github_app_instance=~\"${app_instance:regex}\",github_app=~\"${app:regex}\",resource=\"$bucket\"}) - time()",
+          "refId": "A",
+          "range": false,
+          "instant": true,
+          "legendFormat": "",
+          "format": "table"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "min by (github_app, github_app_instance) (githubsts_github_rate_limit_remaining{namespace=~\"$namespace\",job=~\"$job\",github_app_instance=~\"${app_instance:regex}\",github_app=~\"${app:regex}\",resource=\"$bucket\"})",
+          "refId": "B",
+          "range": false,
+          "instant": true,
+          "legendFormat": "",
+          "format": "table"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "time() - max by (github_app, github_app_instance) (githubsts_github_rate_limit_observed_timestamp{namespace=~\"$namespace\",job=~\"$job\",github_app_instance=~\"${app_instance:regex}\",github_app=~\"${app:regex}\",resource=\"$bucket\"})",
+          "refId": "C",
+          "range": false,
+          "instant": true,
+          "legendFormat": "",
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "indexByName": {
+              "github_app": 0,
+              "github_app_instance": 1,
+              "Value #B": 2,
+              "Value #A": 3,
+              "Value #C": 4
+            },
+            "renameByName": {
+              "github_app": "App",
+              "github_app_instance": "Instance",
+              "Value #A": "Resets in",
+              "Value #B": "Remaining",
+              "Value #C": "Reading age"
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Resets in"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "orange",
+                      "value": null
+                    },
+                    {
+                      "color": "text",
+                      "value": 0
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Remaining"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Reading age"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "text",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 150
+                    },
+                    {
+                      "color": "red",
+                      "value": 300
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "countRows": false,
+          "fields": ""
+        },
+        "sortBy": [
+          {
+            "displayName": "Resets in",
+            "desc": false
+          }
+        ]
+      },
+      "description": "Per member: requests remaining, time until the core bucket resets, and how old that reading is. Reading age comes from githubsts_github_rate_limit_observed_timestamp: orange past 150s (more than two 60s polls missed), red past 300s. A negative Resets in (orange) means nothing has observed the bucket since it reset, so Remaining is stale. A reset that stays about one hour out on every refresh is the signature of an uncounted reading (GET /rate_limit, or a 304 probe with an installation token), not of a real bucket; check Rate Limit Probes. Values come from STS's own installation-token calls and the rate-limit poller, never from buckets that only consumer tokens spend."
+    },
+    {
+      "id": 27,
+      "type": "timeseries",
+      "title": "Rate Limit Probes",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 10,
+        "x": 14,
+        "y": 57
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (result) (increase(githubsts_github_rate_limit_probe_total{namespace=~\"$namespace\",job=~\"$job\",github_app_instance=~\"${app_instance:regex}\",github_app=~\"${app:regex}\"}[$__rate_interval]))",
+          "refId": "A",
+          "range": true,
+          "instant": false,
+          "legendFormat": "{{result}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "custom": {
+            "drawStyle": "bars",
+            "lineWidth": 1,
+            "fillOpacity": 80,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            },
+            "legend": {},
+            "axisPlacement": "auto"
+          },
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "ok"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "not_modified"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "rate_limited"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "unauthorized"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "dark-red"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "incomplete_headers"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "purple"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "error"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "dark-red"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "calcs": [
+            "sum"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "description": "Rate-limit probe outcomes, from githubsts_github_rate_limit_probe_total. ok is a counted request and the only probe result whose headers describe the real installation bucket, so its rate is also what the poller spends. not_modified (orange) is a conditional 304: with an installation token its headers report an unused bucket (used=0, reset about one hour out), so readings taken while it appears are not trustworthy. rate_limited means the bucket is exhausted. unauthorized, incomplete_headers and error mean the poller is not producing readings at all. No data means the running build predates the probe."
+    },
+    {
       "id": 15,
       "type": "row",
       "title": "Selected App Detail - $detail_app",
@@ -1138,7 +2504,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 29
+        "y": 65
       },
       "panels": [],
       "description": "One selected logical app. This avoids repeating a full detail row for every app."
@@ -1155,7 +2521,7 @@
         "h": 7,
         "w": 8,
         "x": 0,
-        "y": 30
+        "y": 66
       },
       "targets": [
         {
@@ -1226,7 +2592,7 @@
         "h": 7,
         "w": 8,
         "x": 8,
-        "y": 30
+        "y": 66
       },
       "targets": [
         {
@@ -1296,7 +2662,7 @@
         "h": 7,
         "w": 8,
         "x": 16,
-        "y": 30
+        "y": 66
       },
       "targets": [
         {

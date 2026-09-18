@@ -62,6 +62,7 @@ type AppTokenProvider struct {
 	mu                sync.RWMutex
 	jwtCache          cachedJWT
 	jwtMu             sync.Mutex
+	quota             *QuotaStore // nil records nothing; see SetQuotaStore
 	installSF         singleflight.Group
 	targetSF          singleflight.Group
 }
@@ -214,7 +215,7 @@ func (p *AppTokenProvider) fetchInstallationID(ctx context.Context, org string) 
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	ExtractRateLimitHeaders(resp, p.appName, p.instance, "get_installation")
+	p.noteAppJWTRateLimit(ExtractRateLimitHeaders(resp, p.appName, p.instance, "get_installation"))
 
 	if resp.StatusCode == http.StatusNotFound {
 		metrics.GitHubAPICalls.WithLabelValues(p.appName, p.instance, "get_installation", "not_found").Inc()
@@ -517,7 +518,7 @@ func (p *AppTokenProvider) getInstallationToken(ctx context.Context, scope strin
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	ExtractRateLimitHeaders(resp, p.appName, p.instance, caller)
+	p.noteAppJWTRateLimit(ExtractRateLimitHeaders(resp, p.appName, p.instance, caller))
 
 	if resp.StatusCode == http.StatusUnprocessableEntity {
 		metrics.GitHubAPICalls.WithLabelValues(p.appName, p.instance, "create_token", "error").Inc()
@@ -648,74 +649,66 @@ func isRetryableTokenMintStatus(resp *http.Response) bool {
 	return false
 }
 
-// ExtractRateLimitHeaders reads GitHub rate limit headers from an HTTP
-// response and updates Prometheus gauges. Also detects rate limit exceeded
-// conditions on 403 or 429 responses. instance labels which pool member (or,
-// for a non-pooled app, which normalized single instance) made the call.
-func ExtractRateLimitHeaders(resp *http.Response, appName, instance, caller string) {
-	resource := resp.Header.Get("X-RateLimit-Resource")
-	if resource == "" {
-		resource = "core"
-	}
+// ExtractRateLimitHeaders parses GitHub rate limit headers from an HTTP
+// response, counts primary and secondary rate-limit events on 403 or 429
+// responses, and returns the parsed values. instance labels which pool
+// member (or, for a non-pooled app, which normalized single instance) made
+// the call.
+//
+// It does not write the rate-limit gauges. Those describe one installation
+// bucket, and only the QuotaStore renders them, from responses the caller
+// knows were spent on that bucket (see QuotaStore). The event counters stay
+// here because every call site's 403/429 matters for failover, whichever
+// bucket it came from.
+func ExtractRateLimitHeaders(resp *http.Response, appName, instance, caller string) RateLimitInfo {
+	info := ParseRateLimitHeaders(resp)
 
-	if v := resp.Header.Get("X-RateLimit-Limit"); v != "" {
-		if n, err := strconv.ParseFloat(v, 64); err == nil {
-			metrics.GitHubRateLimitLimit.WithLabelValues(appName, instance, resource).Set(n)
-		}
-	}
-
-	var remaining, limit float64
-	if v := resp.Header.Get("X-RateLimit-Remaining"); v != "" {
-		if n, err := strconv.ParseFloat(v, 64); err == nil {
-			remaining = n
-			metrics.GitHubRateLimitRemaining.WithLabelValues(appName, instance, resource).Set(n)
-		}
-	}
-
-	if v := resp.Header.Get("X-RateLimit-Used"); v != "" {
-		if n, err := strconv.ParseFloat(v, 64); err == nil {
-			metrics.GitHubRateLimitUsed.WithLabelValues(appName, instance, resource).Set(n)
-		}
-	}
-
-	if v := resp.Header.Get("X-RateLimit-Reset"); v != "" {
-		if n, err := strconv.ParseFloat(v, 64); err == nil {
-			metrics.GitHubRateLimitResetTimestamp.WithLabelValues(appName, instance, resource).Set(n)
-		}
-	}
-
-	if v := resp.Header.Get("X-RateLimit-Limit"); v != "" {
-		if n, err := strconv.ParseFloat(v, 64); err == nil {
-			limit = n
-		}
-	}
-
-	if limit > 0 {
-		pct := (remaining / limit) * 100
-		metrics.GitHubRateLimitRemainingPercent.WithLabelValues(appName, instance, resource).Set(pct)
-	}
-
-	// Detect rate limit exceeded on 403 or 429 — GitHub documents both status
-	// codes for primary and secondary rate limits (see
+	// GitHub documents both 403 and 429 for primary and secondary rate
+	// limits (see
 	// https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api#exceeding-the-rate-limit).
 	// Signal detection matches isRetryableTokenMintStatus exactly (an
 	// explicit Retry-After or X-RateLimit-Remaining: 0 header), so failover
 	// and observability share one contract: a header absent is not the same
-	// as a header present with value 0, and the parsed remaining float above
-	// (0 when the header is absent) is deliberately not reused here.
-	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
-		if retryAfter := resp.Header.Get("Retry-After"); retryAfter != "" {
-			// Secondary/abuse rate limit.
-			metrics.GitHubSecondaryRateLimitTotal.WithLabelValues(appName, instance, caller).Inc()
-			if n, err := strconv.ParseFloat(retryAfter, 64); err == nil {
-				metrics.GitHubSecondaryRateLimitRetryAfter.WithLabelValues(appName, instance).Set(n)
-			}
-			slog.Warn("secondary rate limit hit", "app", appName, "instance", instance, "status", resp.StatusCode, "retry_after", retryAfter, "caller", caller)
-		} else if resp.Header.Get("X-RateLimit-Remaining") == "0" {
-			// Primary rate limit exceeded.
-			metrics.GitHubRateLimitExceededTotal.WithLabelValues(appName, instance, resource, caller).Inc()
-			slog.Warn("primary rate limit exceeded", "app", appName, "instance", instance, "status", resp.StatusCode, "resource", resource, "caller", caller)
+	// as a header present with value 0.
+	switch {
+	case info.SecondaryLimited:
+		metrics.GitHubSecondaryRateLimitTotal.WithLabelValues(appName, instance, caller).Inc()
+		if n, err := strconv.ParseFloat(resp.Header.Get("Retry-After"), 64); err == nil {
+			metrics.GitHubSecondaryRateLimitRetryAfter.WithLabelValues(appName, instance).Set(n)
 		}
+		slog.Warn("secondary rate limit hit", "app", appName, "instance", instance, "status", resp.StatusCode, "retry_after", resp.Header.Get("Retry-After"), "caller", caller)
+	case info.PrimaryExceeded:
+		metrics.GitHubRateLimitExceededTotal.WithLabelValues(appName, instance, info.Resource, caller).Inc()
+		slog.Warn("primary rate limit exceeded", "app", appName, "instance", instance, "status", resp.StatusCode, "resource", info.Resource, "caller", caller)
+	}
+	return info
+}
+
+// SetQuotaStore attaches the process-wide QuotaStore. Installation-token
+// responses are recorded into it, and any rate-limit signal asks the poller
+// to refresh this instance. Call it before the provider serves requests; a
+// provider without a store records nothing.
+func (p *AppTokenProvider) SetQuotaStore(q *QuotaStore) {
+	p.quota = q
+}
+
+// noteAppJWTRateLimit handles the rate-limit headers of an App JWT call
+// (installation lookup, token mint). Those spend the App's JWT bucket, not
+// an installation bucket, so they are never recorded as installation quota.
+// A rate-limit signal still triggers a probe, because it usually arrives
+// during the same burst that is draining the installation.
+func (p *AppTokenProvider) noteAppJWTRateLimit(info RateLimitInfo) {
+	if info.RateLimited() {
+		p.quota.RequestProbe(p.appName, p.instance)
+	}
+}
+
+// noteInstallationRateLimit records the headers of a call made with one of
+// STS's own installation tokens for account's installation.
+func (p *AppTokenProvider) noteInstallationRateLimit(account string, info RateLimitInfo) {
+	p.quota.Observe(p.appName, p.instance, account, info)
+	if info.RateLimited() {
+		p.quota.RequestProbe(p.appName, p.instance)
 	}
 }
 

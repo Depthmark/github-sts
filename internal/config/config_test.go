@@ -95,6 +95,7 @@ metrics:
   auth_token: "yaml-metrics-secret"
   rate_limit_poll_enabled: false
   rate_limit_poll_interval: 30s
+  rate_limit_poll_force_counted_interval: 2m
   reachability_probe_enabled: false
   reachability_probe_interval: 15s
 `
@@ -154,6 +155,9 @@ metrics:
 	if cfg.Metrics.RateLimitPollInterval != 30*time.Second {
 		t.Errorf("rate_limit_poll_interval = %v, want 30s", cfg.Metrics.RateLimitPollInterval)
 	}
+	if cfg.Metrics.RateLimitPollForceCountedInterval != 2*time.Minute {
+		t.Errorf("rate_limit_poll_force_counted_interval = %v, want 2m", cfg.Metrics.RateLimitPollForceCountedInterval)
+	}
 }
 
 func TestLoad_Defaults(t *testing.T) {
@@ -188,6 +192,9 @@ oidc:
 	}
 	if cfg.Audit.BufferSize != 1024 {
 		t.Errorf("default buffer_size = %d, want 1024", cfg.Audit.BufferSize)
+	}
+	if cfg.Metrics.RateLimitPollForceCountedInterval != 5*time.Minute {
+		t.Errorf("default rate_limit_poll_force_counted_interval = %v, want 5m", cfg.Metrics.RateLimitPollForceCountedInterval)
 	}
 	if cfg.Health.AuthToken != "" {
 		t.Errorf("default health.auth_token = %q, want empty", cfg.Health.AuthToken)
