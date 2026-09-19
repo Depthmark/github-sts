@@ -93,11 +93,31 @@ When the setting is empty, the endpoint remains unauthenticated. HTTPS protects 
 | `githubsts_github_rate_limit_used` | Gauge | Requests used in current window, by github_app, github_app_instance, resource |
 | `githubsts_github_rate_limit_reset_timestamp` | Gauge | Unix epoch timestamp when window resets, by github_app, github_app_instance, resource |
 | `githubsts_github_rate_limit_remaining_percent` | Gauge | Percentage of rate limit remaining, by github_app, github_app_instance, resource |
+| `githubsts_github_rate_limit_observed_timestamp` | Gauge | Unix epoch timestamp of the observation the rate limit gauges report, by github_app, github_app_instance, resource |
+| `githubsts_github_rate_limit_probe_total` | Counter | Rate limit probe outcomes, by github_app, github_app_instance, result |
 | `githubsts_github_rate_limit_exceeded_total` | Counter | Primary rate limit exceeded events, by github_app, github_app_instance, resource, caller |
 | `githubsts_github_secondary_rate_limit_total` | Counter | Secondary (abuse) rate limit events, by github_app, github_app_instance, caller |
 | `githubsts_github_secondary_rate_limit_retry_after_seconds` | Gauge | Current retry-after in seconds, by github_app, github_app_instance |
 
 Every pool member (`instance` label) has its own rate limit series: an app with 3 instances reports 3 independent `githubsts_github_rate_limit_remaining` series, not one aggregate. A single-instance (non-pooled) app still carries the label, with `instance` equal to that app's one normalized instance.
+
+### Where the rate limit values come from
+
+The gauges describe each pool member's GitHub App installation bucket. Two sources write them:
+
+- **The rate limit poller.** When `rate_limit_poll_enabled` is on, each replica probes every installation of every pool member once per `rate_limit_poll_interval`. It sends a conditional `GET /emojis` request with a token it mints for itself, narrowed to `metadata:read`. The first request per token returns `200` and spends a request; later probes return `304 Not Modified` and spend nothing, until the cached response is older than `rate_limit_poll_force_counted_interval`, at which point the poller drops the conditional header and pays for another counted `200` rather than keep trusting an untrustworthy `304` (see below). The poller also probes a member again just after a partly used bucket resets, and within seconds of a rate limit response on that member.
+- **github-sts's own installation-token calls**, such as target repository resolution during an exchange.
+
+Only a response that spent a request is recorded. For installation tokens, GitHub answers requests that spend nothing (`GET /rate_limit`, and `304 Not Modified`) with a separate, unused bucket: `used` is `0` and the reset is about an hour out. github-sts ignores such a reading whenever it already holds a counted one for a window that has not reset. As a result, between two counted responses a reading can overstate what is left, and `githubsts_github_rate_limit_observed_timestamp` shows when it was taken; `rate_limit_poll_force_counted_interval` bounds how long that gap can grow, at the cost of one extra spent request per instance each time it forces a re-read.
+
+Things these gauges do not show:
+
+- **Buckets that only client tokens spend.** github-sts never keeps or probes a token it minted for a client. If GitHub moves a heavily used client token onto a bucket of its own, that bucket is invisible here.
+- **The App JWT bucket.** Headers from App JWT calls (installation lookup, token minting) are not recorded, because those calls do not use an installation token and so do not describe an installation bucket. Their `403` and `429` responses still count in `githubsts_github_rate_limit_exceeded_total` and `githubsts_github_secondary_rate_limit_total`.
+
+When an App is installed on more than one organization, each gauge reports the installation with the least remaining.
+
+`githubsts_github_rate_limit_probe_total`'s `result` label is one of `not_modified`, `ok`, `rate_limited`, `unauthorized`, `incomplete_headers`, or `error`. `ok` is a counted probe and the only probe result whose headers describe the installation bucket. `not_modified` spends nothing and, for installation tokens, carries no usable reading. `unauthorized`, `incomplete_headers` and `error` mean the poller is not producing readings.
 
 ## GitHub reachability
 
@@ -117,7 +137,7 @@ Visibility into instance selection for a pooled app (`apps.<name>.instances`; se
 | `githubsts_app_pool_selection_total` | Counter | Selection outcomes, by github_app, github_app_instance, outcome |
 | `githubsts_app_pool_exhausted_total` | Counter | Requests where every pool instance failed, by github_app |
 
-`githubsts_app_pool_selection_total`'s `outcome` label is one of `selected`, `skipped_unreachable`, or `failover` today. (`skipped_rate_limited` is reserved for the planned `rate_limit_aware` strategy, which is not yet implemented; see [Configuration]({{< relref "/reference/configuration#app-pools-multi-instance-rate-limit-rotation" >}}).)
+`githubsts_app_pool_selection_total`'s `outcome` label is one of `selected`, `failover`, `skipped_unreachable`, or `skipped_rate_limited`. `skipped_rate_limited` only appears with `rotation.strategy: rate_limit_aware`: it counts a member that request moved to the back of the order for low quota and never tried. See [Configuration]({{< relref "/reference/configuration#app-pools-multi-instance-rate-limit-rotation" >}}).
 
 `githubsts_app_pool_exhausted_total` is the signal worth alerting on: it means every instance in that app's pool failed for one request. A single instance's rate-limit gauge dropping doesn't by itself mean requests are failing: the pool has already failed over around it.
 
@@ -192,6 +212,9 @@ histogram_quantile(0.99, rate(githubsts_token_exchange_duration_seconds_bucket[5
 
 # Rate limit approaching exhaustion
 githubsts_github_rate_limit_remaining_percent < 10
+
+# Rate limit reading is stale: the poller has not refreshed it
+time() - githubsts_github_rate_limit_observed_timestamp > 300
 
 # Secondary rate limit active
 githubsts_github_secondary_rate_limit_total > 0

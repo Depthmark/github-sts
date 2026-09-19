@@ -72,6 +72,21 @@ func (f *fakeReachability) IsReachable(_, instance string) bool {
 	return !f.down[instance]
 }
 
+// rotate stands in for one exchange's mint taking its turn. Only
+// GetInstallationTokenForTarget advances the cursor; tests that loop over a
+// peeking call (GetInstallationToken, ResolveTarget) to exercise every
+// starting member rotate between iterations.
+func rotate(p *AppPool) {
+	p.cursor.Add(1)
+}
+
+var testTarget = TargetIdentity{Scope: "myorg/myrepo", Owner: "myorg", OwnerID: "2002", Repository: "myrepo", RepositoryID: "9001"}
+
+func mintForTarget(pool *AppPool) (string, error) {
+	_, instance, err := pool.GetInstallationTokenForTarget(context.Background(), testTarget, PermissionRequest{}, "test")
+	return instance, err
+}
+
 func TestAppPool_RoundRobin_DistributesEvenly(t *testing.T) {
 	var callsA, callsB, callsC int32
 	srvA := newMockGitHubServer(1, countingHandler(&callsA, succeedHandler("tok-a")))
@@ -90,7 +105,7 @@ func TestAppPool_RoundRobin_DistributesEvenly(t *testing.T) {
 
 	const n = 300
 	for i := 0; i < n; i++ {
-		if _, _, err := pool.GetInstallationToken(context.Background(), "myorg", nil, nil, "test"); err != nil {
+		if _, err := mintForTarget(pool); err != nil {
 			t.Fatalf("call %d: unexpected error: %v", i, err)
 		}
 	}
@@ -127,6 +142,7 @@ func TestAppPool_BaselineFilter_SkipsUnreachableInstance(t *testing.T) {
 		if instance == "b" {
 			t.Fatalf("call %d: instance b was selected despite being reported unreachable", i)
 		}
+		rotate(pool)
 	}
 
 	// Not just "skipped once" — the baseline filter must keep skipping it
@@ -236,6 +252,7 @@ func TestAppPool_Failover_OnRetryableStatus(t *testing.T) {
 				if instance != "succeed-me" || token != "tok-ok" {
 					t.Errorf("call %d: instance=%q token=%q, want succeed-me/tok-ok", i, instance, token)
 				}
+				rotate(pool)
 			}
 			if atomic.LoadInt32(&failCalls) == 0 {
 				t.Error("fail-me was never invoked — this test never actually exercised failover")
@@ -265,6 +282,7 @@ func TestAppPool_Failover_OnTransportError(t *testing.T) {
 		if instance != "succeed-me" || token != "tok-ok" {
 			t.Errorf("call %d: instance=%q token=%q, want succeed-me/tok-ok", i, instance, token)
 		}
+		rotate(pool)
 	}
 }
 
@@ -338,6 +356,7 @@ func TestAppPool_ResolveTarget_FailsOverOnRepoLookupFailure(t *testing.T) {
 				if identity.RepositoryID != "9001" {
 					t.Errorf("call %d: repository id = %q, want 9001 (must resolve via succeed-me)", i, identity.RepositoryID)
 				}
+				rotate(pool)
 			}
 			if atomic.LoadInt32(&failCalls) == 0 {
 				t.Error("fail-me's repo lookup was never invoked — this test never actually exercised failover")
@@ -368,6 +387,7 @@ func TestAppPool_NoFailover_On422(t *testing.T) {
 	sawFailure := false
 	for i := 0; i < 4; i++ {
 		_, instance, err := pool.GetInstallationToken(context.Background(), "myorg", nil, nil, "test")
+		rotate(pool)
 		if err != nil {
 			sawFailure = true
 			if instance != "" {
@@ -413,6 +433,7 @@ func TestAppPool_NoFailover_OnUnsignaledStatus(t *testing.T) {
 			sawFailure := false
 			for i := 0; i < 4; i++ {
 				_, instance, err := pool.GetInstallationToken(context.Background(), "myorg", nil, nil, "test")
+				rotate(pool)
 				if err != nil {
 					sawFailure = true
 					if instance != "" {

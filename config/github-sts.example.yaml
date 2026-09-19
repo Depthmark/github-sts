@@ -130,7 +130,7 @@ metrics:
   enabled: true
   auth_token: ""                    # Bearer token for /metrics endpoint (empty = unauthenticated)
   rate_limit_poll_enabled: true
-  rate_limit_poll_interval: 60s     # Poll GET /rate_limit periodically
+  rate_limit_poll_interval: 60s     # Probe each installation's bucket (conditional GET /emojis; a 304 is free)
   reachability_probe_enabled: true
   reachability_probe_interval: 30s  # Probe GitHub API reachability
 

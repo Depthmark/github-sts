@@ -168,9 +168,10 @@ type RotationConfig struct {
 	// (default) or "rate_limit_aware" (opt-in).
 	Strategy string `yaml:"strategy"`
 
-	// MinRemainingPct applies only to the rate_limit_aware strategy: skip a
-	// candidate instance whose last-observed remaining/limit percentage is
-	// below this value. Ignored by round_robin.
+	// MinRemainingPct applies only to the rate_limit_aware strategy: a
+	// candidate whose installation is known to be below this remaining
+	// percentage (or out of requests) is tried after the others. Ignored by
+	// round_robin.
 	MinRemainingPct float64 `yaml:"min_remaining_pct"`
 
 	// MaxAttempts bounds failover fan-out per request. Defaults to
@@ -226,10 +227,22 @@ type HealthConfig struct {
 
 // MetricsConfig holds Prometheus metrics settings.
 type MetricsConfig struct {
-	Enabled                   bool          `yaml:"enabled"`
-	AuthToken                 string        `yaml:"auth_token"`
-	RateLimitPollEnabled      bool          `yaml:"rate_limit_poll_enabled"`
-	RateLimitPollInterval     time.Duration `yaml:"rate_limit_poll_interval"`
+	Enabled               bool          `yaml:"enabled"`
+	AuthToken             string        `yaml:"auth_token"`
+	RateLimitPollEnabled  bool          `yaml:"rate_limit_poll_enabled"`
+	RateLimitPollInterval time.Duration `yaml:"rate_limit_poll_interval"`
+
+	// RateLimitPollForceCountedInterval bounds how long the poller's
+	// conditional-GET probe can keep answering from a cached etag before it
+	// pays for another counted read. Left uncapped, only the very first
+	// probe per token (which is cached for close to an hour) is ever
+	// trustworthy for an installation token: every 304 after it reports a
+	// fake, unused bucket (see QuotaStore.replacesQuota) and is correctly
+	// dropped, so a drain this poller's own calls never observed — client
+	// traffic, or a probe run directly against the bucket — stays invisible
+	// for up to that hour. <= 0 forces every probe to be counted.
+	RateLimitPollForceCountedInterval time.Duration `yaml:"rate_limit_poll_force_counted_interval"`
+
 	ReachabilityProbeEnabled  bool          `yaml:"reachability_probe_enabled"`
 	ReachabilityProbeInterval time.Duration `yaml:"reachability_probe_interval"`
 }
@@ -370,11 +383,12 @@ func defaults() *Settings {
 			BufferSize:  1024,
 		},
 		Metrics: MetricsConfig{
-			Enabled:                   true,
-			RateLimitPollEnabled:      true,
-			RateLimitPollInterval:     60 * time.Second,
-			ReachabilityProbeEnabled:  true,
-			ReachabilityProbeInterval: 30 * time.Second,
+			Enabled:                           true,
+			RateLimitPollEnabled:              true,
+			RateLimitPollInterval:             60 * time.Second,
+			RateLimitPollForceCountedInterval: 5 * time.Minute,
+			ReachabilityProbeEnabled:          true,
+			ReachabilityProbeInterval:         30 * time.Second,
 		},
 		Tracing: TracingConfig{
 			Enabled:     false,
@@ -1155,6 +1169,9 @@ func applyEnvOverrides(cfg *Settings) error {
 		return err
 	}
 	if err := envDuration("GITHUBSTS_METRICS_RATE_LIMIT_POLL_INTERVAL", &cfg.Metrics.RateLimitPollInterval); err != nil {
+		return err
+	}
+	if err := envDuration("GITHUBSTS_METRICS_RATE_LIMIT_POLL_FORCE_COUNTED_INTERVAL", &cfg.Metrics.RateLimitPollForceCountedInterval); err != nil {
 		return err
 	}
 	if err := envBool("GITHUBSTS_METRICS_REACHABILITY_PROBE_ENABLED", &cfg.Metrics.ReachabilityProbeEnabled); err != nil {
