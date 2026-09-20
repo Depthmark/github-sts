@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.1.2](https://github.com/Depthmark/github-sts/compare/v0.1.1...v0.1.2) (2026-09-20)
+
+
+### ✨ Features
+
+* add child span for tracing token exchange ([#88](https://github.com/Depthmark/github-sts/issues/88)) ([b167290](https://github.com/Depthmark/github-sts/commit/b167290dc9ad7fc66da7caeff8e4cebdd14667be))
+* allow rate limit aware routing of the of an application ([#97](https://github.com/Depthmark/github-sts/issues/97)) ([902bcad](https://github.com/Depthmark/github-sts/commit/902bcad279a528a47e1669908d760323df19a784))
+* improve docker build by running a buildkit native for cross-com… ([#92](https://github.com/Depthmark/github-sts/issues/92)) ([02c53cf](https://github.com/Depthmark/github-sts/commit/02c53cf7db3dc94455f9ff9f139e4a48d27cf890))
+
+
+### 📦 Dependencies
+
+* **deps:** bump actions/deploy-pages from 5.0.0 to 5.0.1 in the github-actions-dependencies group ([#87](https://github.com/Depthmark/github-sts/issues/87)) ([d3a4288](https://github.com/Depthmark/github-sts/commit/d3a4288d02ec82f3e9691ac869eaed95b102df9b))
+* **deps:** bump chainguard/go from `ebb11e4` to `9168db8` in the docker-dependencies group ([#85](https://github.com/Depthmark/github-sts/issues/85)) ([a26f4c9](https://github.com/Depthmark/github-sts/commit/a26f4c9acf98e3f45f9ae3eaedb0148cfc36ce93))
+* **deps:** bump github/codeql-action/upload-sarif from 4.37.9 to 4.38.0 in the github-actions-dependencies group ([#96](https://github.com/Depthmark/github-sts/issues/96)) ([9ea215e](https://github.com/Depthmark/github-sts/commit/9ea215ec5514d757ef04fc53b4b80322351437fd))
+* **deps:** bump the docker-dependencies group with 2 updates ([#94](https://github.com/Depthmark/github-sts/issues/94)) ([0a167e3](https://github.com/Depthmark/github-sts/commit/0a167e39c1b2cc46810eb52f6fecc4586750c7e3))
+* **deps:** bump the golang-dependencies group across 1 directory with 12 updates ([#90](https://github.com/Depthmark/github-sts/issues/90)) ([cf3a826](https://github.com/Depthmark/github-sts/commit/cf3a826f0be402f3c6984f9ca9d8c2e0cec7a0e3))
+
 ## [0.1.1](https://github.com/Depthmark/github-sts/compare/v0.1.0...v0.1.1) (2026-09-07)
 
 
