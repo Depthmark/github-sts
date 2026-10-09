@@ -1,6 +1,7 @@
 .PHONY: build test test-race test-rego lint coverage vuln-check clean docker \
         goreleaser-check goreleaser-snapshot \
         ci act act-actions hooks validate-examples validate-repository-policies \
+        check-skills \
         docs-serve docs-build docs-check docs-links docs-style docs-translate \
         docs-hugo-version docs-satellites docs-schema check-github-permissions
 
@@ -146,6 +147,18 @@ validate-repository-policies:
 	@command -v check-jsonschema >/dev/null 2>&1 || { echo "install: pipx install check-jsonschema"; exit 1; }
 	check-jsonschema --schemafile $(SCHEMA) $(REPOSITORY_POLICIES)
 
+# Check the agent skills in skills/: each SKILL.md declares a valid name and
+# description, and every policy field a skill quotes exists in the schema. The
+# policy examples are then extracted and validated whole, so a skill cannot ship
+# an example the broker would reject.
+SKILLS_DIR ?= skills
+SKILLS_EXAMPLES := $(or $(TMPDIR),/tmp)/github-sts-skill-examples
+check-skills:
+	@command -v check-jsonschema >/dev/null 2>&1 || { echo "install: pipx install check-jsonschema"; exit 1; }
+	@rm -rf $(SKILLS_EXAMPLES)
+	python3 tools/check-skills.py --skills $(SKILLS_DIR) --schema $(SCHEMA) --extract $(SKILLS_EXAMPLES)
+	check-jsonschema --schemafile $(SCHEMA) $(SKILLS_EXAMPLES)/*.sts.yaml
+
 # Diff the permission table in internal/policy against GitHub's published
 # OpenAPI description. Excluded from `ci` on purpose: it reaches the network,
 # and GitHub adding a permission should open a pull request rather than turn an
@@ -154,7 +167,7 @@ check-github-permissions:
 	go test -tags githubspec -count=1 -v ./internal/policy/ -run 'TestGitHubSpec|TestValidPermissionLevelsMatchGitHubSpec'
 
 # Run all checks (CI)
-ci: lint test-race test-rego vuln-check build bin/github-sts validate-examples
+ci: lint test-race test-rego vuln-check build bin/github-sts validate-examples check-skills
 
 # Run all CI jobs locally with act
 act:

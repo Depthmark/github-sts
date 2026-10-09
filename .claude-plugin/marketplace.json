@@ -1,0 +1,14 @@
+{
+  "name": "depthmark",
+  "description": "Agent skills shipped with github-sts.",
+  "owner": {
+    "name": "Depthmark"
+  },
+  "plugins": [
+    {
+      "name": "github-sts",
+      "source": "./",
+      "description": "Write github-sts trust policies and wire GitHub Actions workflows to the broker."
+    }
+  ]
+}

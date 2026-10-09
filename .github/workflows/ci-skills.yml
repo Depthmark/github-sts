@@ -1,0 +1,57 @@
+---
+name: CI (Skills)
+
+# The agent skills in skills/ are released with the app and describe its trust
+# policy format. This gate fails a pull request whose skills name a policy
+# field the schema does not define, so a schema change cannot ship with skills
+# that still teach the old shape.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'skills/**'
+      - '.claude-plugin/**'
+      - 'internal/policy/yaml/schema_v1.json'
+      - 'tools/check-skills.py'
+      - '.github/workflows/ci-skills.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'skills/**'
+      - '.claude-plugin/**'
+      - 'internal/policy/yaml/schema_v1.json'
+      - 'tools/check-skills.py'
+      - '.github/workflows/ci-skills.yml'
+
+concurrency:
+  group: ci-skills-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  skills:
+    name: Skills
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install check-jsonschema
+        run: pipx install check-jsonschema
+
+      - name: Check skills against the schema
+        run: make check-skills
+
+      # release-please writes the app version into the plugin manifest. A
+      # manifest that drifts from the release manifest means the extra-files
+      # entry in release-please-config.json stopped matching.
+      - name: Check the manifest version
+        run: |
+          app="$(jq -r '."."' .release-please-manifest.json)"
+          plugin="$(jq -r '.version' .claude-plugin/plugin.json)"
+          test "$app" = "$plugin" || { echo "plugin.json is at $plugin, the app is at $app"; exit 1; }

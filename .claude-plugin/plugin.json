@@ -1,0 +1,12 @@
+{
+  "name": "github-sts",
+  "version": "0.1.2",
+  "description": "Skills for repository owners who use github-sts: write a trust policy that validates, and wire a GitHub Actions workflow that exchanges a token.",
+  "author": {
+    "name": "Depthmark"
+  },
+  "homepage": "https://depthmark.github.io/github-sts/integrations/agent-skills/",
+  "repository": "https://github.com/Depthmark/github-sts",
+  "license": "MIT",
+  "keywords": ["github-sts", "oidc", "github-actions", "trust-policy"]
+}
