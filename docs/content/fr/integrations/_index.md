@@ -13,4 +13,5 @@ translationStatus: pending-review
 {{< card link="compatibility" title="Compatibilité" icon="clipboard-list" subtitle="Combinaisons de versions prises en charge et incompatibilités connues" >}}
 {{< card link="monitor-usage" title="Surveiller l'utilisation" icon="chart-bar" subtitle="Métriques Prometheus et entrées du journal d'audit à surveiller" >}}
 {{< card link="publishing-bundles" title="Publier des bundles signés" icon="upload" subtitle="Versions minimales de cosign et du registre, avec des exemples pour GHCR, Harbor, Nexus et Artifactory" >}}
+{{< card link="agent-skills" title="Skills pour agents" icon="sparkles" subtitle="Laissez un agent de code écrire la politique de confiance et brancher le workflow" >}}
 {{< /cards >}}
