@@ -12,6 +12,10 @@ it and how to publish one to four common registries.
 See [Compatibility]({{< relref "/integrations/compatibility" >}}) for what
 happens when a bundle is signed some other way.
 
+For GitHub Container Registry with keyless signing, a coding agent can do these
+steps with the `publish-policy-bundle` skill. See
+[Agent skills]({{< relref "/integrations/agent-skills#publish-a-policy-bundle" >}}).
+
 ## Minimum versions
 
 ### Cosign

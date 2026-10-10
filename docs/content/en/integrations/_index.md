@@ -12,5 +12,5 @@ translationKey: integrations
 {{< card link="compatibility" title="Compatibility" icon="clipboard-list" subtitle="Supported release combinations and known incompatibilities" >}}
 {{< card link="monitor-usage" title="Monitor usage" icon="chart-bar" subtitle="Prometheus metrics and audit log entries to watch" >}}
 {{< card link="publishing-bundles" title="Publishing signed bundles" icon="upload" subtitle="Minimum cosign and registry versions, with examples for GHCR, Harbor, Nexus, and Artifactory" >}}
-{{< card link="agent-skills" title="Agent skills" icon="sparkles" subtitle="Let a coding agent write the trust policy and wire the workflow" >}}
+{{< card link="agent-skills" title="Agent skills" icon="sparkles" subtitle="Let a coding agent write the trust policy, wire the workflow and publish a signed bundle" >}}
 {{< /cards >}}

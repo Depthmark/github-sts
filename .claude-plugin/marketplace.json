@@ -8,7 +8,7 @@
     {
       "name": "github-sts",
       "source": "./",
-      "description": "Write github-sts trust policies and wire GitHub Actions workflows to the broker."
+      "description": "Write github-sts trust policies, wire GitHub Actions workflows to the broker, and publish signed policy bundles."
     }
   ]
 }

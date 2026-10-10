@@ -13,6 +13,10 @@ produisent et comment en publier un vers quatre registres courants.
 Voir [Compatibilité]({{< relref "/integrations/compatibility" >}}) pour ce qui
 se passe lorsqu'un bundle est signé autrement.
 
+Pour GitHub Container Registry avec une signature sans clé, un agent de code
+peut réaliser ces étapes avec le skill `publish-policy-bundle`. Voir
+[Skills pour agents]({{< relref "/integrations/agent-skills#publier-un-bundle-de-politique" >}}).
+
 ## Versions minimales
 
 ### Cosign
