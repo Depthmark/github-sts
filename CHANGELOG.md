@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.1.3](https://github.com/Depthmark/github-sts/compare/v0.1.2...v0.1.3) (2026-10-10)
+
+
+### ✨ Features
+
+* add a skill for github-sts admin to create bundle ([#108](https://github.com/Depthmark/github-sts/issues/108)) ([bf9330b](https://github.com/Depthmark/github-sts/commit/bf9330b47de12782c26bb20ba7eccbf001faa797))
+* add a skill to help user create an identity and consume the ser… ([#107](https://github.com/Depthmark/github-sts/issues/107)) ([fd80f69](https://github.com/Depthmark/github-sts/commit/fd80f6936dd75e2731b6e36bd6ee55381d30f95c))
+
+
+### 📦 Dependencies
+
+* **deps:** bump the docker-dependencies group with 2 updates ([#101](https://github.com/Depthmark/github-sts/issues/101)) ([28eb6a0](https://github.com/Depthmark/github-sts/commit/28eb6a0ab5108b102e0540417037b7b12324f9d3))
+* **deps:** bump the github-actions-dependencies group across 1 directory with 2 updates ([#105](https://github.com/Depthmark/github-sts/issues/105)) ([bfe6ca0](https://github.com/Depthmark/github-sts/commit/bfe6ca0c191b77b2d34aac2a50175a02c7f3a3b4))
+
 ## [0.1.2](https://github.com/Depthmark/github-sts/compare/v0.1.1...v0.1.2) (2026-09-27)
 
 
