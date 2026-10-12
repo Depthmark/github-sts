@@ -24,6 +24,7 @@ jobs:
         id: sts
         with:
           sts-url: https://github-sts.adelisle.com
+          audience: github-sts
           scope: Depthmark/github-sts
           identity: release
           app: depthmark-release-bot
