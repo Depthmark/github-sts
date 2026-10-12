@@ -1,12 +1,15 @@
-# yaml-language-server: $schema=https://depthmark.github.io/github-sts//schemas/sts/v1/trust-policy.json
+# yaml-language-server: $schema=https://depthmark.github.io/github-sts/schemas/sts/v1/trust-policy.json
 issuer: https://token.actions.githubusercontent.com
-subject: "repo:Depthmark/github-sts:ref:refs/heads/main"
-
-claim_pattern:
-  workflow_ref: "Depthmark/github-sts/.github/workflows/release-please.yml@refs/heads/main"
-
 audience: github-sts
-
+claim_pattern:
+  job_workflow_ref: 'Depthmark/github-sts/\.github/workflows/release-please\.yml@refs/heads/main'
+github:
+  sources:
+    - owner_id: "268749784"
+      repository_id: "1198676434"
+  target:
+    owner_id: "268749784"
+    repository_id: "1198676434"
 permissions:
   contents: write
   checks: write
