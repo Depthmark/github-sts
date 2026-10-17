@@ -96,7 +96,7 @@ jobs:
   go:
     name: Go
     needs: [preflight, ci-go, ci-schema]
-    uses: Depthmark/reusable-workflows/.github/workflows/go-release.yml@17176e51cb55f5d707734c62e47cacc5978bd6e9 # v1.1.0
+    uses: Depthmark/reusable-workflows/.github/workflows/go-release.yml@55c7a3dbce97a8ba6ea8ed45fc26463b1b8a1f77 # v1.2.0
     with:
       tag_name: ${{ needs.preflight.outputs.tag_name }}
       install-cosign: true
@@ -114,7 +114,7 @@ jobs:
     name: Docker
     needs: [preflight, ci-go, ci-schema]
     if: needs.preflight.outputs.publish_docker == 'true'
-    uses: Depthmark/reusable-workflows/.github/workflows/docker-build-push.yml@17176e51cb55f5d707734c62e47cacc5978bd6e9 # v1.1.0
+    uses: Depthmark/reusable-workflows/.github/workflows/docker-build-push.yml@55c7a3dbce97a8ba6ea8ed45fc26463b1b8a1f77 # v1.2.0
     with:
       tag_name: ${{ needs.preflight.outputs.tag_name }}
       sign: true
