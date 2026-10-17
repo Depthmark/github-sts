@@ -18,7 +18,7 @@ permissions: {}
 
 jobs:
   ci:
-    uses: Depthmark/reusable-workflows/.github/workflows/ci-actions.yml@17176e51cb55f5d707734c62e47cacc5978bd6e9 # v1.1.0
+    uses: Depthmark/reusable-workflows/.github/workflows/ci-actions.yml@55c7a3dbce97a8ba6ea8ed45fc26463b1b8a1f77 # v1.2.0
     with:
       poutine-skip-rules: "github_action_from_unverified_creator_used"
     permissions:
