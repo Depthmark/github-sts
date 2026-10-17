@@ -6,7 +6,7 @@ translationKey: environment-variables
 translationStatus: pending-review
 ---
 
-Toutes les variables utilisent le préfixe `GITHUBSTS_`. Les variables par App suivent le modèle `GITHUBSTS_APP_{NAME}_{FIELD}`.
+Toutes les variables utilisent le préfixe `GITHUBSTS_`. Les variables par App suivent le modèle `GITHUBSTS_APP_{NAME}_{FIELD}`. La seule exception est `AZURE_TOKEN_CREDENTIALS`, lue par le SDK Azure quand une clé d'App est détenue dans Azure Key Vault (voir [Paramètres de la GitHub App](#paramètres-de-la-github-app)).
 
 ## Paramètres du serveur
 
@@ -31,22 +31,28 @@ Toutes les variables utilisent le préfixe `GITHUBSTS_`. Les variables par App s
 | Variable | Par défaut | Description |
 |---|---|---|
 | `GITHUBSTS_APP_{NAME}_APP_ID` | *obligatoire* | ID numérique de la GitHub App |
-| `GITHUBSTS_APP_{NAME}_PRIVATE_KEY` | *obligatoire* | Chaîne PEM (mutuellement exclusive avec `_PATH`) |
+| `GITHUBSTS_APP_{NAME}_PRIVATE_KEY` | — | Chaîne PEM. Chaque instance exige exactement une source de clé : celle-ci, `_PRIVATE_KEY_PATH`, ou `_SIGNER_PROVIDER` avec `_SIGNER_KEY_ID` |
 | `GITHUBSTS_APP_{NAME}_PRIVATE_KEY_PATH` | — | Chemin vers le fichier PEM |
+| `GITHUBSTS_APP_{NAME}_SIGNER_PROVIDER` | — | Service de gestion de clés qui détient la clé de l'App : `azure` (voir [Configuration]({{< relref "/reference/configuration#signer" >}})) |
+| `GITHUBSTS_APP_{NAME}_SIGNER_KEY_ID` | — | Identifiant de la clé dans ce service, pour Azure `https://<vault>.vault.azure.net/keys/<name>[/<version>]` |
 | `GITHUBSTS_APP_{NAME}_ORG_POLICY_REPO` | — | Dépôt des politiques d'organisation (par ex. `.github`) |
 | `GITHUBSTS_APP_{NAME}_POLICY_RESOLUTION` | `org_first` | Mode de résolution : `org_first`, `repo_first` (obsolète) ou `org_only` |
 | `GITHUBSTS_APP_{NAME}_ROTATION_STRATEGY` | `round_robin` | Stratégie de sélection du pool : `round_robin` ou `rate_limit_aware` (voir [Configuration]({{< relref "/reference/configuration#pools-dapps-rotation-multi-instances-pour-la-limite-de-débit" >}})) |
 | `GITHUBSTS_APP_{NAME}_ROTATION_MIN_REMAINING_PCT` | `0` | `rate_limit_aware` uniquement : un membre connu comme étant sous ce pourcentage restant est tenté après les autres |
 | `GITHUBSTS_APP_{NAME}_ROTATION_MAX_ATTEMPTS` | taille du pool, plafonnée à `3` | Limite le nombre de bascules par requête |
 
-Chaque instance d'un pool (`apps.<name>.instances[N]` en YAML) peut aussi être définie ou surchargée individuellement, en base 1 et de façon contiguë : le chargeur s'arrête au premier index `N` où aucune des quatre variables ci-dessous n'est définie.
+Chaque instance d'un pool (`apps.<name>.instances[N]` en YAML) peut aussi être définie ou surchargée individuellement, en base 1 et de façon contiguë : le chargeur s'arrête au premier index `N` où aucune des six variables ci-dessous n'est définie.
 
 | Variable | Par défaut | Description |
 |---|---|---|
 | `GITHUBSTS_APP_{NAME}_INSTANCE_{N}_APP_ID` | — | ID numérique de la GitHub App pour l'instance `N` du pool |
 | `GITHUBSTS_APP_{NAME}_INSTANCE_{N}_PRIVATE_KEY` | — | Chaîne PEM pour l'instance `N` du pool (mutuellement exclusive avec `_PATH`) |
 | `GITHUBSTS_APP_{NAME}_INSTANCE_{N}_PRIVATE_KEY_PATH` | — | Chemin vers le fichier PEM pour l'instance `N` du pool |
+| `GITHUBSTS_APP_{NAME}_INSTANCE_{N}_SIGNER_PROVIDER` | — | Service de gestion de clés qui détient la clé de l'instance `N` du pool : `azure` |
+| `GITHUBSTS_APP_{NAME}_INSTANCE_{N}_SIGNER_KEY_ID` | — | Identifiant de la clé dans ce service, pour l'instance `N` du pool |
 | `GITHUBSTS_APP_{NAME}_INSTANCE_{N}_NAME` | `app_id` (converti en chaîne) | Étiquette de métriques/audit pour l'instance `N` du pool |
+
+Avec `signer.provider: azure`, github-sts exige aussi `AZURE_TOKEN_CREDENTIALS`, qui désigne le seul type de crédentiel avec lequel il s'authentifie auprès d'Azure : `WorkloadIdentityCredential`, `ManagedIdentityCredential` ou `EnvironmentCredential`. Ce crédentiel lit ensuite ses propres variables `AZURE_*`. Voir [Configuration]({{< relref "/reference/configuration#signer" >}}).
 
 ## Paramètres de politique et de sécurité
 
@@ -97,7 +103,7 @@ Chaque instance d'un pool (`apps.<name>.instances[N]` en YAML) peut aussi être 
 
 ## Notes de sécurité
 
-- **Clés privées :** Préférez `GITHUBSTS_APP_{NAME}_PRIVATE_KEY_PATH` à `_PRIVATE_KEY`. Les variables d'environnement apparaissent dans les listes de processus et les points de terminaison de débogage. Montez les clés comme fichiers depuis un magasin de secrets.
+- **Clés privées :** Préférez `GITHUBSTS_APP_{NAME}_PRIVATE_KEY_PATH` à `_PRIVATE_KEY`. Les variables d'environnement apparaissent dans les listes de processus et les points de terminaison de débogage. Montez les clés comme fichiers depuis un magasin de secrets. Mieux encore, gardez la clé dans un coffre de clés avec `_SIGNER_PROVIDER` et `_SIGNER_KEY_ID` : le broker ne la détient alors jamais.
 - **Audience :** Définissez `GITHUBSTS_OIDC_REQUIRED_AUDIENCE` en production. C'est une défense en profondeur en plus du champ `audience:` par politique.
 - **Backend JTI :** Utilisez `redis` pour les déploiements multi-réplicas. Le backend `memory` est par instance et n'empêche pas le rejeu inter-réplicas.
 - **Liste d'autorisation d'émetteurs :** `GITHUBSTS_OIDC_ALLOWED_ISSUERS` est obligatoire. Une liste vide est une erreur de validation, pas un repli « accepter n'importe quel émetteur ».

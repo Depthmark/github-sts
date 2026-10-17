@@ -66,7 +66,7 @@ func TestReachabilityProber_ProbeInstance_UpdatesStateAndMetrics(t *testing.T) {
 	// API base URL), so simulating two different outcomes needs two
 	// probers rather than one prober with mixed instances.
 	up := NewReachabilityProber(
-		[]PoolInstanceConfig{{LogicalApp: "checkout", Instance: "checkout-1", AppConfig: AppConfig{AppID: 1, PrivateKey: key}}},
+		[]PoolInstanceConfig{{LogicalApp: "checkout", Instance: "checkout-1", AppConfig: AppConfig{Credential: newTestCredential(t, "checkout", "checkout-1", 1, key)}}},
 		upSrv.URL, time.Hour,
 	)
 	up.probeAll(context.Background())
@@ -75,7 +75,7 @@ func TestReachabilityProber_ProbeInstance_UpdatesStateAndMetrics(t *testing.T) {
 	}
 
 	down := NewReachabilityProber(
-		[]PoolInstanceConfig{{LogicalApp: "checkout", Instance: "checkout-2", AppConfig: AppConfig{AppID: 2, PrivateKey: key}}},
+		[]PoolInstanceConfig{{LogicalApp: "checkout", Instance: "checkout-2", AppConfig: AppConfig{Credential: newTestCredential(t, "checkout", "checkout-2", 2, key)}}},
 		downSrv.URL, time.Hour,
 	)
 	down.probeAll(context.Background())

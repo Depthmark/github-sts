@@ -3,7 +3,6 @@ package github
 import (
 	"bytes"
 	"context"
-	"crypto/rsa"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,21 +14,23 @@ import (
 	"time"
 
 	"github.com/depthmark/github-sts/internal/metrics"
-	"github.com/golang-jwt/jwt/v5"
 )
 
 // AppConfig holds the configuration for a GitHub App.
 type AppConfig struct {
-	AppID         int64
-	PrivateKey    *rsa.PrivateKey
+	// Credential authenticates as the App. It is the same source the
+	// instance's AppTokenProvider uses, so the pollers reuse its cached JWT
+	// rather than asking the key for signatures of their own.
+	Credential    *AppCredentialSource
 	OrgPolicyRepo string
 }
 
 // PoolInstanceConfig identifies one physical GitHub App instance for the
 // background pollers (RateLimitPoller, ReachabilityProber), which sweep
 // every instance of every configured app on a fixed interval rather than
-// going through AppPool/AppTokenProvider — each poller manages its own JWT
-// signing and token cache, isolated from the exchange-path request flow.
+// going through AppPool/AppTokenProvider. Each poller keeps its own
+// installation-token cache, isolated from the exchange-path request flow; the
+// App JWT comes from the instance's shared AppCredentialSource.
 // For a non-pooled app, this is that app's single normalized instance.
 type PoolInstanceConfig struct {
 	LogicalApp string // the app name callers pass as ?app=
@@ -285,7 +286,7 @@ func (p *RateLimitPoller) getInstallations(ctx context.Context, key poolInstance
 	}
 	p.mu.Unlock()
 
-	appJWT, err := p.signJWT(cfg)
+	appJWT, err := p.signJWT(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -347,7 +348,7 @@ func (p *RateLimitPoller) getOrCreateToken(ctx context.Context, cacheKey tokenCa
 	}
 	p.mu.Unlock()
 
-	appJWT, err := p.signJWT(cfg)
+	appJWT, err := p.signJWT(ctx, cfg)
 	if err != nil {
 		return tokenEntry{}, err
 	}
@@ -523,15 +524,9 @@ func (p *RateLimitPoller) armResetProbe(key poolInstanceKey, resetAt time.Time) 
 	p.resetTimers[key] = rt
 }
 
-func (p *RateLimitPoller) signJWT(cfg AppConfig) (string, error) {
-	now := time.Now()
-	claims := jwt.MapClaims{
-		"iat": now.Add(-60 * time.Second).Unix(),
-		"exp": now.Add(10 * time.Minute).Unix(),
-		"iss": fmt.Sprintf("%d", cfg.AppID),
-	}
-	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
-	return tok.SignedString(cfg.PrivateKey)
+func (p *RateLimitPoller) signJWT(ctx context.Context, cfg AppConfig) (string, error) {
+	token, _, err := cfg.Credential.appJWT(ctx)
+	return token, err
 }
 
 // parseLinkNext extracts the "next" URL from a GitHub Link header.

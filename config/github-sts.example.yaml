@@ -52,6 +52,15 @@ apps:
       -----END RSA PRIVATE KEY-----
     # … or as a file path (mutually exclusive with private_key)
     # private_key_path: "/etc/github-sts/keys/default.pem"
+    # … or keep the key in Azure Key Vault, so github-sts never holds it
+    # (mutually exclusive with both). Requires AZURE_TOKEN_CREDENTIALS to name
+    # the Azure credential type, WorkloadIdentityCredential recommended. A
+    # broker never mixes vault keys and PEMs: every app instance then needs a
+    # signer. See the Configuration reference, "Keeping the App key in a key
+    # vault".
+    # signer:
+    #   provider: azure
+    #   key_id: "https://myvault.vault.azure.net/keys/github-app-default"
 
     # For org-level scopes (scope="myorg"), set org_policy_repo to the
     # repository name where org-level trust policies live.

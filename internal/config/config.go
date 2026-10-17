@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/depthmark/github-sts/internal/bundle"
 	"github.com/depthmark/github-sts/internal/policy"
+	"github.com/depthmark/github-sts/internal/signer"
 	"github.com/depthmark/github-sts/internal/yamlstrict"
 	"gopkg.in/yaml.v3"
 )
@@ -113,16 +115,17 @@ func (s *ServerConfig) TLSCipherSuiteIDs() []uint16 {
 }
 
 // AppConfig holds per-application GitHub App settings. An app is backed by
-// either the legacy flat fields (AppID/PrivateKey(Path)) or a pool of
-// physical instances (Instances) — Validate rejects configs setting both or
-// neither. Load normalizes the flat form into a single-element Instances
+// either the legacy flat fields (AppID with PrivateKey, PrivateKeyPath or
+// Signer) or a pool of physical instances (Instances) — Validate rejects
+// configs setting both or neither. Load normalizes the flat form into a single-element Instances
 // pool, so every consumer downstream of Load only ever sees the Instances
 // shape; see (*Settings).normalizeInstances.
 type AppConfig struct {
 	// Legacy flat fields. Mutually exclusive with Instances.
-	AppID          int64  `yaml:"app_id"`
-	PrivateKey     string `yaml:"private_key"`
-	PrivateKeyPath string `yaml:"private_key_path"`
+	AppID          int64        `yaml:"app_id"`
+	PrivateKey     string       `yaml:"private_key"`
+	PrivateKeyPath string       `yaml:"private_key_path"`
+	Signer         SignerConfig `yaml:"signer"`
 
 	// Instances backs this logical app with a pool of N physical GitHub
 	// Apps so github-sts can spread /sts/exchange traffic across
@@ -156,9 +159,28 @@ type AppInstanceConfig struct {
 	PrivateKey     string `yaml:"private_key"`
 	PrivateKeyPath string `yaml:"private_key_path"`
 
+	// Signer names a key held by a key management service. It is the third
+	// key source, exclusive with PrivateKey and PrivateKeyPath: with it, the
+	// private key never enters this process (ADR github-sts/0018).
+	Signer SignerConfig `yaml:"signer"`
+
 	// ParsedKey is the RSA private key parsed from PrivateKey or
-	// PrivateKeyPath. Not serialized — populated during Load().
+	// PrivateKeyPath. Not serialized — populated during Load(). Nil when the
+	// instance uses Signer.
 	ParsedKey *rsa.PrivateKey `yaml:"-"`
+}
+
+// SignerConfig names a GitHub App key held by a key management service. The
+// same two fields describe every provider: KeyID is the one string each
+// service uses to name a key (for Azure, the key's URL in the vault).
+type SignerConfig struct {
+	Provider string `yaml:"provider"`
+	KeyID    string `yaml:"key_id"`
+}
+
+// IsSet reports whether any signer field is set.
+func (c SignerConfig) IsSet() bool {
+	return c.Provider != "" || c.KeyID != ""
 }
 
 // RotationConfig controls how AppPool selects among a logical app's pooled
@@ -473,11 +495,11 @@ func (s *Settings) Validate() error {
 	}
 
 	for name, app := range s.Apps {
-		hasFlatForm := app.AppID != 0 || app.PrivateKey != "" || app.PrivateKeyPath != ""
+		hasFlatForm := app.AppID != 0 || app.PrivateKey != "" || app.PrivateKeyPath != "" || app.Signer.IsSet()
 		hasInstances := len(app.Instances) > 0
 
 		if hasFlatForm && hasInstances {
-			return fmt.Errorf("app %q: app_id/private_key/private_key_path and instances are mutually exclusive", name)
+			return fmt.Errorf("app %q: app_id/private_key/private_key_path/signer and instances are mutually exclusive", name)
 		}
 
 		if hasInstances {
@@ -488,13 +510,8 @@ func (s *Settings) Validate() error {
 			if app.AppID == 0 {
 				return fmt.Errorf("app %q: app_id is required", name)
 			}
-			hasInline := app.PrivateKey != ""
-			hasPath := app.PrivateKeyPath != ""
-			if !hasInline && !hasPath {
-				return fmt.Errorf("app %q: private_key or private_key_path is required", name)
-			}
-			if hasInline && hasPath {
-				return fmt.Errorf("app %q: private_key and private_key_path are mutually exclusive", name)
+			if err := validateKeySource(fmt.Sprintf("app %q", name), app.PrivateKey, app.PrivateKeyPath, app.Signer); err != nil {
+				return err
 			}
 		}
 
@@ -530,6 +547,10 @@ func (s *Settings) Validate() error {
 		}
 
 		s.Apps[name] = app
+	}
+
+	if err := s.validateOneKeySourceKind(); err != nil {
+		return err
 	}
 
 	if s.JTI.Backend == "redis" && s.RedisURL() == "" {
@@ -622,7 +643,7 @@ func (s *Settings) Validate() error {
 }
 
 // validateInstances validates a pooled app's instance list: each instance
-// needs an app_id and exactly one private key source, an optional name must
+// needs an app_id and exactly one key source, an optional name must
 // match the same safe character set used for Prometheus label values
 // elsewhere, and app_id must be unique within this one pool (a duplicate
 // here almost certainly means the same physical App was pasted in twice).
@@ -640,13 +661,8 @@ func validateInstances(appName string, instances []AppInstanceConfig) error {
 		if inst.AppID == 0 {
 			return fmt.Errorf("app %q: instances[%d]: app_id is required", appName, i)
 		}
-		hasInline := inst.PrivateKey != ""
-		hasPath := inst.PrivateKeyPath != ""
-		if !hasInline && !hasPath {
-			return fmt.Errorf("app %q: instance %s: private_key or private_key_path is required", appName, label)
-		}
-		if hasInline && hasPath {
-			return fmt.Errorf("app %q: instance %s: private_key and private_key_path are mutually exclusive", appName, label)
+		if err := validateKeySource(fmt.Sprintf("app %q: instance %s", appName, label), inst.PrivateKey, inst.PrivateKeyPath, inst.Signer); err != nil {
+			return err
 		}
 		if inst.Name != "" {
 			if len(inst.Name) > 100 {
@@ -675,6 +691,88 @@ func validateInstances(appName string, instances []AppInstanceConfig) error {
 		nameSeen[effectiveName] = label
 	}
 	return nil
+}
+
+// validateKeySource checks that exactly one of private_key, private_key_path
+// and signer gives an App its key, and that a signer names a known provider
+// and a key. prefix names the app, or the app and instance, in the error.
+// The key identifier's syntax belongs to its provider and is checked when the
+// server opens the key, still before it takes traffic.
+func validateKeySource(prefix, privateKey, privateKeyPath string, sc SignerConfig) error {
+	var set []string
+	if privateKey != "" {
+		set = append(set, "private_key")
+	}
+	if privateKeyPath != "" {
+		set = append(set, "private_key_path")
+	}
+	if sc.IsSet() {
+		set = append(set, "signer")
+	}
+	switch {
+	case len(set) == 0:
+		return fmt.Errorf("%s: one of private_key, private_key_path or signer is required", prefix)
+	case len(set) > 1:
+		return fmt.Errorf("%s: %s are mutually exclusive", prefix, strings.Join(set, " and "))
+	}
+	if !sc.IsSet() {
+		return nil
+	}
+	providers := signer.Providers()
+	if sc.Provider == "" {
+		return fmt.Errorf("%s: signer.provider is required (one of %s)", prefix, strings.Join(providers, ", "))
+	}
+	if !slices.Contains(providers, sc.Provider) {
+		return fmt.Errorf("%s: signer.provider must be one of %s (got %q)", prefix, strings.Join(providers, ", "), sc.Provider)
+	}
+	if sc.KeyID == "" {
+		return fmt.Errorf("%s: signer.key_id is required", prefix)
+	}
+	return nil
+}
+
+// validateOneKeySourceKind enforces that a broker either signs every App JWT
+// with a key held by a key management service, or holds a PEM for every App
+// instance. With a mix, "this broker holds no private key" stops being one
+// fact an operator can check, and nothing may fall back from one kind to the
+// other (ADR github-sts/0018).
+func (s *Settings) validateOneKeySourceKind() error {
+	type source struct{ app, instance, field string }
+	var signers, pems []source
+	add := func(app, instance string, appID int64, privateKey string, sc SignerConfig) {
+		if instance == "" {
+			instance = strconv.FormatInt(appID, 10)
+		}
+		switch {
+		case sc.IsSet():
+			signers = append(signers, source{app, instance, "signer"})
+		case privateKey != "":
+			pems = append(pems, source{app, instance, "private_key"})
+		default:
+			pems = append(pems, source{app, instance, "private_key_path"})
+		}
+	}
+	for name, app := range s.Apps {
+		if len(app.Instances) == 0 {
+			add(name, "", app.AppID, app.PrivateKey, app.Signer)
+			continue
+		}
+		for _, inst := range app.Instances {
+			add(name, inst.Name, inst.AppID, inst.PrivateKey, inst.Signer)
+		}
+	}
+	if len(signers) == 0 || len(pems) == 0 {
+		return nil
+	}
+	first := func(list []source) source {
+		slices.SortFunc(list, func(a, b source) int {
+			return strings.Compare(a.app+"\x00"+a.instance, b.app+"\x00"+b.instance)
+		})
+		return list[0]
+	}
+	v, p := first(signers), first(pems)
+	return fmt.Errorf("every app instance must use signer, or every one private_key or private_key_path, never a mix: app %q instance %q uses %s, app %q instance %q uses %s",
+		v.app, v.instance, v.field, p.app, p.instance, p.field)
 }
 
 func (s *Settings) validateBundles() error {
@@ -1000,6 +1098,7 @@ func (s *Settings) normalizeInstances() {
 				AppID:          app.AppID,
 				PrivateKey:     app.PrivateKey,
 				PrivateKeyPath: app.PrivateKeyPath,
+				Signer:         app.Signer,
 			}}
 		}
 		for i := range app.Instances {
@@ -1021,13 +1120,17 @@ func (s *Settings) normalizeInstances() {
 }
 
 // parsePrivateKeys parses PEM-encoded private keys for every instance of
-// every app. Must run after normalizeInstances, which guarantees Instances
-// is populated for every app regardless of whether it was configured via
-// the legacy flat fields or the instances: list.
+// every app that holds one. Must run after normalizeInstances, which
+// guarantees Instances is populated for every app regardless of whether it
+// was configured via the legacy flat fields or the instances: list. An
+// instance with a signer has no key to parse: its key stays in the vault.
 func (s *Settings) parsePrivateKeys() error {
 	for name, app := range s.Apps {
 		for i := range app.Instances {
 			inst := &app.Instances[i]
+			if inst.Signer.IsSet() {
+				continue
+			}
 
 			var pemData []byte
 			if inst.PrivateKey != "" {
@@ -1233,6 +1336,12 @@ func applyEnvOverrides(cfg *Settings) error {
 		if v := os.Getenv("GITHUBSTS_APP_" + upper + "_PRIVATE_KEY_PATH"); v != "" {
 			app.PrivateKeyPath = v
 		}
+		if v := os.Getenv("GITHUBSTS_APP_" + upper + "_SIGNER_PROVIDER"); v != "" {
+			app.Signer.Provider = v
+		}
+		if v := os.Getenv("GITHUBSTS_APP_" + upper + "_SIGNER_KEY_ID"); v != "" {
+			app.Signer.KeyID = v
+		}
 		if v := os.Getenv("GITHUBSTS_APP_" + upper + "_ORG_POLICY_REPO"); v != "" {
 			app.OrgPolicyRepo = v
 		}
@@ -1252,14 +1361,16 @@ func applyEnvOverrides(cfg *Settings) error {
 
 		// Indexed instance overrides: GITHUBSTS_APP_{NAME}_INSTANCE_{N}_*,
 		// 1-based and contiguous — stop at the first index where none of the
-		// four fields is set.
+		// six fields is set.
 		for i := 1; ; i++ {
 			prefix := fmt.Sprintf("GITHUBSTS_APP_%s_INSTANCE_%d_", upper, i)
 			appIDStr := os.Getenv(prefix + "APP_ID")
 			privKey := os.Getenv(prefix + "PRIVATE_KEY")
 			privKeyPath := os.Getenv(prefix + "PRIVATE_KEY_PATH")
+			signerProvider := os.Getenv(prefix + "SIGNER_PROVIDER")
+			signerKeyID := os.Getenv(prefix + "SIGNER_KEY_ID")
 			instName := os.Getenv(prefix + "NAME")
-			if appIDStr == "" && privKey == "" && privKeyPath == "" && instName == "" {
+			if appIDStr == "" && privKey == "" && privKeyPath == "" && signerProvider == "" && signerKeyID == "" && instName == "" {
 				break
 			}
 			for len(app.Instances) < i {
@@ -1278,6 +1389,12 @@ func applyEnvOverrides(cfg *Settings) error {
 			}
 			if privKeyPath != "" {
 				inst.PrivateKeyPath = privKeyPath
+			}
+			if signerProvider != "" {
+				inst.Signer.Provider = signerProvider
+			}
+			if signerKeyID != "" {
+				inst.Signer.KeyID = signerKeyID
 			}
 			if instName != "" {
 				inst.Name = instName

@@ -11,7 +11,7 @@ github-sts is built on five security principles:
 
 ### 1. Zero stored credentials
 
-github-sts never stores OIDC tokens, GitHub PATs, or long-lived credentials. The only secret it holds is the GitHub App private key, which is mounted from a secret store (Kubernetes Secret, Vault, cloud KMS).
+github-sts never stores OIDC tokens, GitHub PATs, or long-lived credentials. The only secret it can hold is the GitHub App private key, mounted from a secret store (Kubernetes Secret, Vault). With a [signer]({{< relref "/reference/configuration#signer" >}}) it holds none: the key stays in Azure Key Vault, and github-sts only receives signatures of the App JWT.
 
 ### 2. Least privilege
 
@@ -71,14 +71,14 @@ Trust policies match the workload identity through `subject` or `subject_pattern
 | **Expired token acceptance** | JWT expiry (`exp`) and issued-at (`iat`) are required and validated; `nbf` is checked when present |
 | **Issuer spoofing** | `kid` must match a key from the discovered JWKS; JWKS host must be the issuer host or in `trusted_jwks_hosts` |
 | **Privilege escalation** | Trust policies define exact permissions per workload; no blanket fallback |
-| **Secret exfiltration** | No long-lived secrets stored; private keys mounted read-only from secret stores |
+| **Secret exfiltration** | No long-lived secrets stored; private keys mounted read-only from secret stores, or kept in a key vault with a signer so that the process never holds them |
 | **Denial of service** | Per-IP rate limiting, bounded request body sizes, and a JWKS cache capped at 100 entries |
 
 ### Threats not mitigated
 
 | Threat | Reason | Recommended control |
 |---|---|---|
-| **GitHub App private key compromise** | If the private key is leaked, an attacker can mint arbitrary tokens | Rotate keys, use short-lived certificates, monitor `githubsts_github_tokens_issued_total` for anomalies |
+| **GitHub App private key compromise** | If the private key is leaked, an attacker can mint arbitrary tokens | Keep the key in a key vault with a signer, so it cannot leak from github-sts; rotate keys; monitor `githubsts_github_tokens_issued_total` for anomalies |
 | **Network eavesdropping** | github-sts listens on plain HTTP unless native TLS is enabled | Terminate TLS at ingress/Gateway, or enable native TLS/mTLS for standalone or Gateway→backend re-encryption |
 | **OIDC issuer compromise** | If the issuer is compromised, it can mint valid tokens | Use `allowed_issuers` restrictively; monitor `githubsts_oidc_validation_errors_total` |
 | **Redis compromise (JTI backend)** | An attacker with Redis access can clear the JTI cache | Use Redis ACLs, TLS, and network policies |
@@ -88,7 +88,7 @@ Trust policies match the workload identity through `subject` or `subject_pattern
 - [ ] `oidc.allowed_issuers` is set to explicit issuer URLs
 - [ ] `oidc.required_audience` is set to a deployment-specific value
 - [ ] `jti.backend` is `redis` for multi-replica deployments
-- [ ] GitHub App private keys are mounted from a secret store, not baked into images
+- [ ] GitHub App private keys are kept in a key vault with a signer, or mounted from a secret store, never baked into images
 - [ ] `/health` and `/ready` are wired to liveness/readiness probes
 - [ ] `/metrics` is scraped by Prometheus
 - [ ] Audit log is forwarded to SIEM

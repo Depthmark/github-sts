@@ -40,7 +40,7 @@ func spanAttribute(span sdktrace.ReadOnlySpan, key string) string {
 
 func TestAppJWTSpansDistinguishSigningFromCacheHits(t *testing.T) {
 	provider, recorder := githubTraceRecorder(t)
-	p := NewAppTokenProvider("test-app", "app-2", 12345, generateTestKey(t), "https://api.github.com", nil)
+	p := NewAppTokenProvider(newTestCredential(t, "test-app", "app-2", 12345, generateTestKey(t)), "https://api.github.com", nil)
 
 	ctx, root := provider.Tracer("test").Start(context.Background(), "root")
 	if _, err := p.GenerateAppJWT(ctx); err != nil {
@@ -85,7 +85,7 @@ func TestPolicyToken422HasPurposeAndSafeErrorType(t *testing.T) {
 	defer srv.Close()
 
 	client := &http.Client{Transport: otelhttp.NewTransport(http.DefaultTransport)}
-	p := NewAppTokenProvider("test-actions-app", "app-2", 12345, generateTestKey(t), srv.URL, client)
+	p := NewAppTokenProvider(newTestCredential(t, "test-actions-app", "app-2", 12345, generateTestKey(t)), srv.URL, client)
 	ctx, root := provider.Tracer("test").Start(context.Background(), "sts.policy.load")
 	_, err := p.GetInstallationToken(ctx, "myorg/policies", map[string]string{"contents": "read"}, nil, "policy_loader")
 	root.End()

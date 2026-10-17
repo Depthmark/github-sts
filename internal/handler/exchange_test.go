@@ -23,6 +23,7 @@ import (
 	"github.com/depthmark/github-sts/internal/github"
 	"github.com/depthmark/github-sts/internal/oidc"
 	"github.com/depthmark/github-sts/internal/policy"
+	"github.com/depthmark/github-sts/internal/signer"
 	"github.com/golang-jwt/jwt/v5"
 )
 
@@ -955,7 +956,7 @@ func TestExchange_TwoInstancePool_FailsOverAndAttributesInstance(t *testing.T) {
 		}
 		return github.PoolMember{
 			Instance: instance,
-			Provider: github.NewAppTokenProvider("checkout", instance, 1, key, apiURL, nil),
+			Provider: github.NewAppTokenProvider(github.NewAppCredentialSource("checkout", instance, 1, signer.NewLocal(key)), apiURL, nil),
 		}
 	}
 	// Ring index 1 (the first candidate a fresh pool's cursor lands on) is

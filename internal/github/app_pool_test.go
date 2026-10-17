@@ -35,7 +35,7 @@ func newMockMember(t *testing.T, instance, apiURL string) PoolMember {
 	key := generateTestKey(t)
 	return PoolMember{
 		Instance: instance,
-		Provider: NewAppTokenProvider("checkout", instance, 1, key, apiURL, nil),
+		Provider: NewAppTokenProvider(newTestCredential(t, "checkout", instance, 1, key), apiURL, nil),
 	}
 }
 
@@ -542,7 +542,7 @@ func TestAppPool_PoolOfOne_EquivalentToDirectProvider(t *testing.T) {
 		defer srv.Close()
 
 		key := generateTestKey(t)
-		provider := NewAppTokenProvider("checkout", "checkout", 1, key, srv.URL, nil)
+		provider := NewAppTokenProvider(newTestCredential(t, "checkout", "checkout", 1, key), srv.URL, nil)
 		directToken, directErr := provider.GetInstallationToken(context.Background(), "myorg", nil, nil, "test")
 		if directErr != nil {
 			t.Fatalf("direct call: unexpected error: %v", directErr)
@@ -566,13 +566,13 @@ func TestAppPool_PoolOfOne_EquivalentToDirectProvider(t *testing.T) {
 		defer srv.Close()
 
 		key := generateTestKey(t)
-		directProvider := NewAppTokenProvider("checkout", "checkout", 1, key, srv.URL, nil)
+		directProvider := NewAppTokenProvider(newTestCredential(t, "checkout", "checkout", 1, key), srv.URL, nil)
 		_, directErr := directProvider.GetInstallationToken(context.Background(), "myorg", nil, nil, "test")
 		if directErr == nil {
 			t.Fatal("direct call: expected an error")
 		}
 
-		poolProvider := NewAppTokenProvider("checkout", "checkout", 1, key, srv.URL, nil)
+		poolProvider := NewAppTokenProvider(newTestCredential(t, "checkout", "checkout", 1, key), srv.URL, nil)
 		pool := NewAppPool("checkout", []PoolMember{{Instance: "checkout", Provider: poolProvider}}, "round_robin", 0, 1, nil)
 		_, poolInstance, poolErr := pool.GetInstallationToken(context.Background(), "myorg", nil, nil, "test")
 		if poolErr == nil {

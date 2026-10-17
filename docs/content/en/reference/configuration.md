@@ -73,9 +73,9 @@ By default, github-sts round-robins across a pool's instances, skips any instanc
 
 Rules:
 
-- `instances` and the flat `app_id` / `private_key` / `private_key_path` fields are mutually exclusive on one app. A flat-form app is treated as a pool of one.
+- `instances` and the flat `app_id` / `private_key` / `private_key_path` / `signer` fields are mutually exclusive on one app. A flat-form app is treated as a pool of one.
 - `rotation` is only meaningful on a pooled app (`instances` set): setting it on a flat-form app is a validation error, since it would otherwise be YAML that silently did nothing.
-- Every instance needs `app_id` and exactly one of `private_key` / `private_key_path`.
+- Every instance needs `app_id` and exactly one of `private_key` / `private_key_path` / `signer` (see [Keeping the App key in a key vault](#signer)).
 - `app_id` must be unique **within** one app's pool. The same `app_id` reused across two different logical apps' pools is allowed (they already share a rate-limit bucket by construction) but logs a startup warning, since it's more often a copy-paste mistake than an intentional setup.
 - `name` is optional and defaults to `app_id` (stringified). Because it becomes a Prometheus label value, it is limited to 100 characters from `[a-zA-Z0-9._/-]`.
 - `rotation.strategy` is `round_robin` (default) or `rate_limit_aware`. With `rate_limit_aware`, each request moves to the back of the order any member whose installation for the requested organization is known to be below `rotation.min_remaining_pct`, or out of requests, in a rate limit window that has not reset yet. The member is not removed: it is still tried when every other member fails. Each time a request passes it over without trying it, `githubsts_app_pool_selection_total{outcome="skipped_rate_limited"}` counts it. When every member is low, or nothing is known, the order is plain round robin.
@@ -84,6 +84,47 @@ Rules:
 - `rotation.max_attempts` defaults to `min(len(instances), 3)` when unset or `0`.
 
 **Operational requirement:** every instance in a pool must be installed with identical permissions and repository access. github-sts treats pool members as interchangeable; it does not currently verify that they actually are, so a misconfigured instance surfaces only as an intermittent 422 or reachability failure on whichever fraction of requests happen to land on it.
+
+## Keeping the App key in a key vault {#signer}
+
+An App instance can name a key held by a key management service instead of a PEM. github-sts then never holds the private key: it sends the vault a SHA-256 digest and receives the signature of the App JWT. Azure Key Vault, including Managed HSM, is the supported provider.
+
+```yaml
+apps:
+  default:
+    app_id: 123456
+    signer:
+      provider: azure
+      key_id: https://myvault.vault.azure.net/keys/github-app-default
+```
+
+The same `signer` block goes on a pool instance, in place of `private_key` or `private_key_path`.
+
+Rules:
+
+- `private_key`, `private_key_path` and `signer` are mutually exclusive, and each instance needs exactly one of them.
+- A broker uses one kind of key source: every instance has a `signer`, or every instance has a PEM. A mix stops the broker at startup, and nothing falls back from one kind to the other.
+- `key_id` is the key's identifier as Azure prints it, `https://<vault>.vault.azure.net/keys/<name>`, optionally followed by `/<version>`. Without a version, github-sts signs with the key's current version, so importing a new version into the vault rotates the key without a configuration change.
+- github-sts signs a first App JWT at startup and refuses to start when the key cannot sign: a wrong identifier, a missing role, an unreachable vault or an unnamed credential is reported before the broker takes traffic.
+- After startup, github-sts asks the vault for one signature per App instance every 9 minutes, shared by exchanges and the background pollers. A vault outage stops exchanges once the cached App JWT expires; a pool fails over to an instance whose key still signs.
+
+**Authenticating to Azure.** github-sts uses exactly one credential type, named in the Azure SDK variable `AZURE_TOKEN_CREDENTIALS`, and refuses to start when the variable is unset or names any other type:
+
+| Value | Credential | Variables it reads |
+|---|---|---|
+| `WorkloadIdentityCredential` | A Kubernetes service account token federated with Microsoft Entra ID (recommended) | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_FEDERATED_TOKEN_FILE` |
+| `ManagedIdentityCredential` | The managed identity of the Azure host | `AZURE_CLIENT_ID` for a user-assigned identity |
+| `EnvironmentCredential` | A client secret or certificate, for a cluster that cannot federate yet | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, and `AZURE_CLIENT_SECRET` or `AZURE_CLIENT_CERTIFICATE_PATH` |
+
+No Azure credential is written in the github-sts configuration, and `az login` is not accepted. The identity needs the `sign` permission on the key and nothing else: a custom role holding only `Microsoft.KeyVault/vaults/keys/sign/action`, assigned on the key, is the narrowest grant. The vault's firewall must admit the address the broker calls from.
+
+**Importing the key.** GitHub generates App private keys, so the PEM is imported into the vault once and then deleted. Limiting the key's operations to `sign` means no role can use it for anything else:
+
+```bash
+az keyvault key import --vault-name myvault --name github-app-default \
+  --pem-file github-app.pem --ops sign
+rm github-app.pem
+```
 
 ## Native TLS and mTLS
 

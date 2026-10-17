@@ -70,9 +70,9 @@ Par défaut, github-sts fait tourner les instances d'un pool en round-robin, éc
 
 Règles :
 
-- `instances` et les champs plats `app_id` / `private_key` / `private_key_path` sont mutuellement exclusifs sur une App. Une App en forme plate est traitée comme un pool d'une instance.
+- `instances` et les champs plats `app_id` / `private_key` / `private_key_path` / `signer` sont mutuellement exclusifs sur une App. Une App en forme plate est traitée comme un pool d'une instance.
 - `rotation` n'a de sens que sur une App poolée (`instances` défini) : le définir sur une App en forme plate est une erreur de validation, car cela serait autrement du YAML sans aucun effet.
-- Chaque instance nécessite `app_id` et exactement un des deux champs `private_key` / `private_key_path`.
+- Chaque instance nécessite `app_id` et exactement un des champs `private_key` / `private_key_path` / `signer` (voir [Garder la clé de l'App dans un coffre de clés](#signer)).
 - `app_id` doit être unique **au sein** du pool d'une App. Le même `app_id` réutilisé entre les pools de deux Apps logiques différentes est autorisé (elles partagent déjà un quota de limite de débit par construction) mais journalise un avertissement au démarrage, car c'est plus souvent un copier-coller erroné qu'une configuration intentionnelle.
 - `name` est optionnel et vaut par défaut `app_id` (converti en chaîne). Comme il devient une valeur d'étiquette Prometheus, il est limité à 100 caractères parmi `[a-zA-Z0-9._/-]`.
 - `rotation.strategy` vaut `round_robin` (défaut) ou `rate_limit_aware`. Avec `rate_limit_aware`, chaque requête place en fin d'ordre tout membre dont l'installation pour l'organisation demandée est connue comme étant sous `rotation.min_remaining_pct`, ou sans requête restante, dans une fenêtre de limite de débit pas encore réinitialisée. Le membre n'est pas retiré : il est encore tenté quand tous les autres membres échouent. Chaque fois qu'une requête le passe sans le tenter, `githubsts_app_pool_selection_total{outcome="skipped_rate_limited"}` le compte. Quand tous les membres sont bas, ou que rien n'est connu, l'ordre est un simple round-robin.
@@ -81,6 +81,47 @@ Règles :
 - `rotation.max_attempts` vaut par défaut `min(len(instances), 3)` lorsqu'il est omis ou à `0`.
 
 **Exigence opérationnelle :** chaque instance d'un pool doit être installée avec des autorisations et un accès aux dépôts identiques. github-sts traite les membres du pool comme interchangeables ; il ne vérifie pas actuellement qu'ils le sont réellement, donc une instance mal configurée ne se manifeste que par un 422 intermittent ou un échec d'accessibilité, sur la fraction des requêtes qui tombent dessus.
+
+## Garder la clé de l'App dans un coffre de clés {#signer}
+
+Une instance d'App peut désigner une clé détenue par un service de gestion de clés au lieu d'un PEM. github-sts ne détient alors jamais la clé privée : il envoie au coffre un condensé SHA-256 et reçoit la signature du JWT de l'App. Azure Key Vault, y compris Managed HSM, est le fournisseur pris en charge.
+
+```yaml
+apps:
+  default:
+    app_id: 123456
+    signer:
+      provider: azure
+      key_id: https://myvault.vault.azure.net/keys/github-app-default
+```
+
+Le même bloc `signer` se place sur une instance de pool, à la place de `private_key` ou de `private_key_path`.
+
+Règles :
+
+- `private_key`, `private_key_path` et `signer` sont mutuellement exclusifs, et chaque instance en exige exactement un.
+- Un broker utilise une seule sorte de source de clé : chaque instance a un `signer`, ou chaque instance a un PEM. Un mélange arrête le broker au démarrage, et rien ne bascule d'une sorte à l'autre.
+- `key_id` est l'identifiant de la clé tel qu'Azure l'affiche, `https://<vault>.vault.azure.net/keys/<name>`, éventuellement suivi de `/<version>`. Sans version, github-sts signe avec la version courante de la clé : importer une nouvelle version dans le coffre fait donc tourner la clé sans changer la configuration.
+- github-sts signe un premier JWT d'App au démarrage et refuse de démarrer si la clé ne peut pas signer : un identifiant erroné, un rôle manquant, un coffre injoignable ou un crédentiel non désigné est signalé avant que le broker ne reçoive du trafic.
+- Après le démarrage, github-sts demande au coffre une signature par instance d'App toutes les 9 minutes, partagée par les échanges et les sondeurs en arrière-plan. Une panne du coffre arrête les échanges dès que le JWT d'App en cache expire ; un pool bascule vers une instance dont la clé signe encore.
+
+**S'authentifier auprès d'Azure.** github-sts utilise exactement un type de crédentiel, désigné dans la variable du SDK Azure `AZURE_TOKEN_CREDENTIALS`, et refuse de démarrer si la variable est absente ou désigne un autre type :
+
+| Valeur | Crédentiel | Variables lues |
+|---|---|---|
+| `WorkloadIdentityCredential` | Un jeton de compte de service Kubernetes fédéré avec Microsoft Entra ID (recommandé) | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_FEDERATED_TOKEN_FILE` |
+| `ManagedIdentityCredential` | L'identité managée de l'hôte Azure | `AZURE_CLIENT_ID` pour une identité affectée par l'utilisateur |
+| `EnvironmentCredential` | Un secret client ou un certificat, pour un cluster qui ne peut pas encore se fédérer | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, et `AZURE_CLIENT_SECRET` ou `AZURE_CLIENT_CERTIFICATE_PATH` |
+
+Aucun crédentiel Azure n'est écrit dans la configuration de github-sts, et `az login` n'est pas accepté. L'identité a besoin de la permission `sign` sur la clé et de rien d'autre : un rôle personnalisé qui ne contient que `Microsoft.KeyVault/vaults/keys/sign/action`, attribué sur la clé, est l'octroi le plus étroit. Le pare-feu du coffre doit admettre l'adresse depuis laquelle le broker l'appelle.
+
+**Importer la clé.** GitHub génère les clés privées des Apps : le PEM est donc importé une fois dans le coffre, puis supprimé. Limiter les opérations de la clé à `sign` empêche tout rôle de l'utiliser à autre chose :
+
+```bash
+az keyvault key import --vault-name myvault --name github-app-default \
+  --pem-file github-app.pem --ops sign
+rm github-app.pem
+```
 
 ## TLS natif et mTLS
 

@@ -5,7 +5,7 @@ weight: 3
 translationKey: environment-variables
 ---
 
-All variables use the `GITHUBSTS_` prefix. Per-app variables follow `GITHUBSTS_APP_{NAME}_{FIELD}`.
+All variables use the `GITHUBSTS_` prefix. Per-app variables follow `GITHUBSTS_APP_{NAME}_{FIELD}`. The one exception is `AZURE_TOKEN_CREDENTIALS`, read by the Azure SDK when an App key is held in Azure Key Vault (see [GitHub App settings](#github-app-settings)).
 
 ## Server settings
 
@@ -30,22 +30,28 @@ All variables use the `GITHUBSTS_` prefix. Per-app variables follow `GITHUBSTS_A
 | Variable | Default | Description |
 |---|---|---|
 | `GITHUBSTS_APP_{NAME}_APP_ID` | *required* | GitHub App numeric ID |
-| `GITHUBSTS_APP_{NAME}_PRIVATE_KEY` | *required* | PEM string (mutually exclusive with `_PATH`) |
+| `GITHUBSTS_APP_{NAME}_PRIVATE_KEY` | n/a | PEM string. Each instance needs exactly one key source: this, `_PRIVATE_KEY_PATH`, or `_SIGNER_PROVIDER` with `_SIGNER_KEY_ID` |
 | `GITHUBSTS_APP_{NAME}_PRIVATE_KEY_PATH` | n/a | Path to PEM file |
+| `GITHUBSTS_APP_{NAME}_SIGNER_PROVIDER` | n/a | Key management service holding the App key: `azure` (see [Configuration]({{< relref "/reference/configuration#signer" >}})) |
+| `GITHUBSTS_APP_{NAME}_SIGNER_KEY_ID` | n/a | The key's identifier in that service, for Azure `https://<vault>.vault.azure.net/keys/<name>[/<version>]` |
 | `GITHUBSTS_APP_{NAME}_ORG_POLICY_REPO` | n/a | Central policy repository for repository-scoped requests (e.g. `.github`) |
 | `GITHUBSTS_APP_{NAME}_POLICY_RESOLUTION` | `org_first` | Resolution mode: `org_first`, `repo_first` (deprecated), or `org_only` |
 | `GITHUBSTS_APP_{NAME}_ROTATION_STRATEGY` | `round_robin` | Pool selection strategy: `round_robin` or `rate_limit_aware` (see [Configuration]({{< relref "/reference/configuration#app-pools-multi-instance-rate-limit-rotation" >}})) |
 | `GITHUBSTS_APP_{NAME}_ROTATION_MIN_REMAINING_PCT` | `0` | `rate_limit_aware` only: a member known to be below this remaining percentage is tried after the others |
 | `GITHUBSTS_APP_{NAME}_ROTATION_MAX_ATTEMPTS` | pool size, capped at `3` | Bound failover fan-out per request |
 
-Individual pool instances (`apps.<name>.instances[N]` in YAML) can also be set or overridden per-instance, 1-based and contiguous: the loader stops at the first index `N` where none of the four variables below is set.
+Individual pool instances (`apps.<name>.instances[N]` in YAML) can also be set or overridden per-instance, 1-based and contiguous: the loader stops at the first index `N` where none of the six variables below is set.
 
 | Variable | Default | Description |
 |---|---|---|
 | `GITHUBSTS_APP_{NAME}_INSTANCE_{N}_APP_ID` | — | GitHub App numeric ID for pool instance `N` |
 | `GITHUBSTS_APP_{NAME}_INSTANCE_{N}_PRIVATE_KEY` | — | PEM string for pool instance `N` (mutually exclusive with `_PATH`) |
 | `GITHUBSTS_APP_{NAME}_INSTANCE_{N}_PRIVATE_KEY_PATH` | — | Path to PEM file for pool instance `N` |
+| `GITHUBSTS_APP_{NAME}_INSTANCE_{N}_SIGNER_PROVIDER` | — | Key management service holding the key of pool instance `N`: `azure` |
+| `GITHUBSTS_APP_{NAME}_INSTANCE_{N}_SIGNER_KEY_ID` | — | The key's identifier in that service, for pool instance `N` |
 | `GITHUBSTS_APP_{NAME}_INSTANCE_{N}_NAME` | `app_id` (stringified) | Metrics/audit label for pool instance `N` |
+
+With `signer.provider: azure`, github-sts also requires `AZURE_TOKEN_CREDENTIALS`, which names the one credential type it authenticates to Azure with: `WorkloadIdentityCredential`, `ManagedIdentityCredential` or `EnvironmentCredential`. That credential then reads its own `AZURE_*` variables. See [Configuration]({{< relref "/reference/configuration#signer" >}}).
 
 ## Policy & security settings
 
@@ -98,7 +104,7 @@ Individual pool instances (`apps.<name>.instances[N]` in YAML) can also be set o
 
 ## Security notes
 
-- **Private keys:** Prefer `GITHUBSTS_APP_{NAME}_PRIVATE_KEY_PATH` over `_PRIVATE_KEY`. Environment variables appear in process listings and debug endpoints. Mount keys as files from a secret store.
+- **Private keys:** Prefer `GITHUBSTS_APP_{NAME}_PRIVATE_KEY_PATH` over `_PRIVATE_KEY`. Environment variables appear in process listings and debug endpoints. Mount keys as files from a secret store. Better still, keep the key in a key vault with `_SIGNER_PROVIDER` and `_SIGNER_KEY_ID`: the broker then never holds it.
 - **Audience:** Set `GITHUBSTS_OIDC_REQUIRED_AUDIENCE` in production. This is defense-in-depth on top of the per-policy `audience:` field.
 - **JTI backend:** Use `redis` for multi-replica deployments. The `memory` backend is per-instance and does not prevent cross-replica replay.
 - **Issuer allowlist:** `GITHUBSTS_OIDC_ALLOWED_ISSUERS` is required. An empty list is a hard validation error, not an "accept any issuer" fallback.

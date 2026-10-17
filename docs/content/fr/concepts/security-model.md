@@ -12,7 +12,7 @@ github-sts repose sur cinq principes de sécurité :
 
 ### 1. Zéro crédentiel stocké
 
-github-sts ne stocke jamais de jetons OIDC, de PAT GitHub ni de crédentiels à longue durée de vie. Le seul secret qu'il détient est la clé privée de la GitHub App, montée depuis un magasin de secrets (Kubernetes Secret, Vault, cloud KMS).
+github-sts ne stocke jamais de jetons OIDC, de PAT GitHub ni de crédentiels à longue durée de vie. Le seul secret qu'il peut détenir est la clé privée de la GitHub App, montée depuis un magasin de secrets (Kubernetes Secret, Vault). Avec un [signer]({{< relref "/reference/configuration#signer" >}}), il n'en détient aucun : la clé reste dans Azure Key Vault, et github-sts ne reçoit que les signatures du JWT de l'App.
 
 ### 2. Privilège minimal
 
@@ -74,14 +74,14 @@ Les politiques de confiance font correspondre l'identité de la charge de travai
 | **Acceptation de jeton expiré** | L'expiration JWT (`exp`) et l'émission (`iat`) sont requises et validées ; `nbf` est vérifié lorsqu'il est présent |
 | **Usurpation d'émetteur** | Le `kid` doit correspondre à une clé du JWKS découvert ; l'hôte JWKS doit être l'hôte de l'émetteur ou figurer dans `trusted_jwks_hosts` |
 | **Élévation de privilèges** | Les politiques de confiance définissent des autorisations exactes par charge de travail ; pas de repli global |
-| **Exfiltration de secrets** | Aucun secret à longue durée stocké ; clés privées montées en lecture seule depuis des magasins de secrets |
+| **Exfiltration de secrets** | Aucun secret à longue durée stocké ; clés privées montées en lecture seule depuis des magasins de secrets, ou gardées dans un coffre de clés avec un signer pour que le processus ne les détienne jamais |
 | **Déni de service** | Limitation de débit par IP, tailles de corps de requête bornées et un cache JWKS plafonné à 100 entrées |
 
 ### Menaces non atténuées
 
 | Menace | Raison | Contrôle recommandé |
 |---|---|---|
-| **Compromission de la clé privée de la GitHub App** | Si la clé privée fuit, un attaquant peut émettre des jetons arbitraires | Renouvelez les clés, utilisez des certificats à courte durée de vie, surveillez `githubsts_github_tokens_issued_total` pour les anomalies |
+| **Compromission de la clé privée de la GitHub App** | Si la clé privée fuit, un attaquant peut émettre des jetons arbitraires | Gardez la clé dans un coffre de clés avec un signer, pour qu'elle ne puisse pas fuir de github-sts ; renouvelez les clés ; surveillez `githubsts_github_tokens_issued_total` pour les anomalies |
 | **Écoute réseau** | github-sts écoute sur HTTP simple sauf si le TLS natif est activé | Terminez le TLS à l'ingress/Gateway, ou activez le TLS/mTLS natif pour les déploiements autonomes ou le re-chiffrement Gateway→backend |
 | **Compromission de l'émetteur OIDC** | Si l'émetteur est compromis, il peut émettre des jetons valides | Utilisez `allowed_issuers` de façon restrictive ; surveillez `githubsts_oidc_validation_errors_total` |
 | **Compromission de Redis (backend JTI)** | Un attaquant avec accès à Redis peut vider le cache JTI | Utilisez des ACL Redis, TLS et des politiques réseau |
@@ -91,7 +91,7 @@ Les politiques de confiance font correspondre l'identité de la charge de travai
 - [ ] `oidc.allowed_issuers` est défini avec des URL d'émetteurs explicites
 - [ ] `oidc.required_audience` est défini avec une valeur spécifique au déploiement
 - [ ] `jti.backend` est `redis` pour les déploiements multi-réplicas
-- [ ] Les clés privées de la GitHub App sont montées depuis un magasin de secrets, pas intégrées aux images
+- [ ] Les clés privées de la GitHub App sont gardées dans un coffre de clés avec un signer, ou montées depuis un magasin de secrets, jamais intégrées aux images
 - [ ] `/health` et `/ready` sont reliés aux sondes de vivacité/préparation
 - [ ] `/metrics` est collecté par Prometheus
 - [ ] Le journal d'audit est transmis au SIEM
