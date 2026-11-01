@@ -290,7 +290,7 @@ cloud_identities:
     azure:
       tenant_id: "` + testTenantID + `"
 `,
-			want: []string{"cloud_identities.vault-one", "azure.client_id is required"},
+			want: []string{"cloud_identities.vault-one.azure.client_id is required"},
 		},
 		{
 			name: "an Azure identity with no tenant ID",
@@ -307,7 +307,7 @@ cloud_identities:
     azure:
       client_id: "` + testClientA + `"
 `,
-			want: []string{"cloud_identities.vault-one", "azure.tenant_id is required"},
+			want: []string{"cloud_identities.vault-one.azure.tenant_id is required"},
 		},
 		{
 			name: "an identity name with a space",
@@ -325,7 +325,61 @@ cloud_identities:
       client_id: "` + testClientA + `"
       tenant_id: "` + testTenantID + `"
 `,
-			want: []string{`cloud_identities.vault one`, "the name must be"},
+			want: []string{`cloud_identities.vault one: name contains invalid characters`},
+		},
+		{
+			name: "an identity name over the length limit",
+			apps: `
+  default:
+    app_id: 1
+    signer:
+      cloud_identity: "` + strings.Repeat("v", 101) + `"
+      key_id: "` + testKeyID + `"
+`,
+			extra: `
+cloud_identities:
+  "` + strings.Repeat("v", 101) + `":
+    azure:
+      client_id: "` + testClientA + `"
+      tenant_id: "` + testTenantID + `"
+`,
+			want: []string{"name exceeds maximum length of 100"},
+		},
+		{
+			name: "a client ID that is not a GUID",
+			apps: `
+  default:
+    app_id: 1
+    signer:
+      cloud_identity: vault-one
+      key_id: "` + testKeyID + `"
+`,
+			extra: `
+cloud_identities:
+  vault-one:
+    azure:
+      client_id: "id-github-sts-dev"
+      tenant_id: "` + testTenantID + `"
+`,
+			want: []string{`cloud_identities.vault-one.azure.client_id "id-github-sts-dev" is not a GUID`, "client ID of the user-assigned managed identity"},
+		},
+		{
+			name: "a tenant ID that is not a GUID",
+			apps: `
+  default:
+    app_id: 1
+    signer:
+      cloud_identity: vault-one
+      key_id: "` + testKeyID + `"
+`,
+			extra: `
+cloud_identities:
+  vault-one:
+    azure:
+      client_id: "` + testClientA + `"
+      tenant_id: "stsexample.onmicrosoft.com"
+`,
+			want: []string{`cloud_identities.vault-one.azure.tenant_id "stsexample.onmicrosoft.com" is not a GUID`},
 		},
 		{
 			name: "flat signer beside instances",
@@ -385,6 +439,98 @@ cloud_identities:
 			for _, want := range tt.want {
 				if !strings.Contains(err.Error(), want) {
 					t.Errorf("error %q does not contain %q", err, want)
+				}
+			}
+		})
+	}
+}
+
+// TestLoad_CloudIdentityGUIDInAnyCase checks that both IDs are accepted in
+// upper case too, as Azure prints them in some places.
+func TestLoad_CloudIdentityGUIDInAnyCase(t *testing.T) {
+	cfg, err := Load(writeTestConfig(t, signerYAML(`
+  default:
+    app_id: 1
+    signer:
+      cloud_identity: vault-one
+      key_id: "`+testKeyID+`"
+`, `
+cloud_identities:
+  vault-one:
+    azure:
+      client_id: "`+strings.ToUpper(testClientA)+`"
+      tenant_id: "AAAAAAAA-0000-4000-8000-0000000000FF"
+`)))
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if got := cfg.CloudIdentities["vault-one"].Azure.TenantID; got != "AAAAAAAA-0000-4000-8000-0000000000FF" {
+		t.Errorf("tenant_id = %q, want it kept as written", got)
+	}
+}
+
+// TestLoad_CloudIdentityErrorsAreStable loads configurations with two
+// mistakes of one kind many times, and expects the one first in name order
+// every time: Go walks maps in a random order.
+func TestLoad_CloudIdentityErrorsAreStable(t *testing.T) {
+	tests := []struct {
+		name  string
+		apps  string
+		extra string
+		want  string
+	}{
+		{
+			name: "two identities with a bad client ID",
+			apps: `
+  release:
+    app_id: 1
+    signer:
+      cloud_identity: b-vault
+      key_id: "` + testKeyID + `"
+  deploy:
+    app_id: 2
+    signer:
+      cloud_identity: a-vault
+      key_id: "` + testKeyID + `"
+`,
+			extra: `
+cloud_identities:
+  b-vault:
+    azure:
+      client_id: "id-b"
+      tenant_id: "` + testTenantID + `"
+  a-vault:
+    azure:
+      client_id: "id-a"
+      tenant_id: "` + testTenantID + `"
+`,
+			want: "cloud_identities.a-vault.azure.client_id",
+		},
+		{
+			name: "two apps naming an undefined identity",
+			apps: `
+  beta:
+    app_id: 1
+    signer:
+      cloud_identity: missing-b
+      key_id: "` + testKeyID + `"
+  alpha:
+    app_id: 2
+    signer:
+      cloud_identity: missing-a
+      key_id: "` + testKeyID + `"
+`,
+			extra: oneIdentity,
+			want:  `app "alpha": signer.cloud_identity "missing-a"`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeTestConfig(t, signerYAML(tt.apps, tt.extra))
+			for i := range 20 {
+				_, err := Load(path)
+				if err == nil || !strings.Contains(err.Error(), tt.want) {
+					t.Fatalf("load %d: error %v, want one containing %q", i, err, tt.want)
 				}
 			}
 		})

@@ -25,12 +25,22 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// instanceNamePattern restricts an instance's optional name to the same safe
-// character set as handler.safeFieldPattern (internal/handler/exchange.go),
-// since instance names become Prometheus label values. Duplicated here
-// rather than importing internal/handler from internal/config, which would
-// be an unusual upward layering dependency for one regex literal.
-var instanceNamePattern = regexp.MustCompile(`^[a-zA-Z0-9._/\-]+$`)
+// namePattern restricts the name of a pool instance or a cloud identity to the
+// same safe character set as handler.safeFieldPattern
+// (internal/handler/exchange.go), since instance names become Prometheus
+// label values and identity names appear in logs. Duplicated here rather than
+// importing internal/handler from internal/config, which would be an unusual
+// upward layering dependency for one regex literal.
+var namePattern = regexp.MustCompile(`^[a-zA-Z0-9._/\-]+$`)
+
+// maxNameLen caps the name of a pool instance or a cloud identity.
+const maxNameLen = 100
+
+// guidPattern matches a Microsoft Entra client or tenant ID, in any case. The
+// rule repeats the one in internal/signer/azure, which checks it again when it
+// opens a key: internal/config does not import the one package that links the
+// Azure SDK (ADR github-sts/0018, point 3).
+var guidPattern = regexp.MustCompile(`^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$`)
 
 // Settings is the top-level configuration struct.
 type Settings struct {
@@ -704,11 +714,8 @@ func validateInstances(appName string, instances []AppInstanceConfig) error {
 			return err
 		}
 		if inst.Name != "" {
-			if len(inst.Name) > 100 {
-				return fmt.Errorf("app %q: instance %s: name exceeds maximum length of 100", appName, label)
-			}
-			if !instanceNamePattern.MatchString(inst.Name) {
-				return fmt.Errorf("app %q: instance %s: name contains invalid characters", appName, label)
+			if err := validateName(fmt.Sprintf("app %q: instance %s", appName, label), inst.Name); err != nil {
+				return err
 			}
 		}
 		if prev, dup := seen[inst.AppID]; dup {
@@ -767,30 +774,59 @@ func validateKeySource(prefix, privateKey, privateKeyPath string, sc SignerConfi
 	return nil
 }
 
-// validateCloudIdentities checks that every cloud identity sets exactly one
-// cloud with all of its fields, that every signer names one that exists, and
-// that every one is named by a signer. An identity no key signs as is either
-// a typo on the signer's side or a grant nobody uses; both are refused rather
-// than ignored.
+// validateName checks the name of a pool instance or a cloud identity against
+// maxNameLen and namePattern. prefix names what is named, in the error.
+func validateName(prefix, name string) error {
+	if len(name) > maxNameLen {
+		return fmt.Errorf("%s: name exceeds maximum length of %d", prefix, maxNameLen)
+	}
+	if !namePattern.MatchString(name) {
+		return fmt.Errorf("%s: name contains invalid characters", prefix)
+	}
+	return nil
+}
+
+// validateEntraID checks that value, the setting at path, is a Microsoft
+// Entra ID: present and a GUID. what says which ID it is, in the error.
+func validateEntraID(path, value, what string) error {
+	if value == "" {
+		return fmt.Errorf("%s is required: %s", path, what)
+	}
+	if !guidPattern.MatchString(value) {
+		return fmt.Errorf("%s %q is not a GUID: it must be %s", path, value, what)
+	}
+	return nil
+}
+
+// validateCloudIdentities checks that every cloud identity has a valid name
+// and sets exactly one cloud with all of its fields, that every signer names
+// one that exists, and that every one is named by a signer. An identity no key
+// signs as is either a typo on the signer's side or a grant nobody uses; both
+// are refused rather than ignored. Identities and apps are walked in name
+// order, so a configuration with several mistakes reports the same one on
+// every start.
 func (s *Settings) validateCloudIdentities() error {
 	names := make([]string, 0, len(s.CloudIdentities))
-	for name, ci := range s.CloudIdentities {
+	for name := range s.CloudIdentities {
 		names = append(names, name)
-		prefix := fmt.Sprintf("cloud_identities.%s", name)
-		if len(name) > 100 || !instanceNamePattern.MatchString(name) {
-			return fmt.Errorf("%s: the name must be 1 to 100 letters, digits, '.', '_', '/' or '-'", prefix)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		ci := s.CloudIdentities[name]
+		prefix := "cloud_identities." + name
+		if err := validateName(prefix, name); err != nil {
+			return err
 		}
 		if ci.Azure == nil {
 			return fmt.Errorf("%s: azure is required, the one cloud github-sts signs in", prefix)
 		}
-		if ci.Azure.ClientID == "" {
-			return fmt.Errorf("%s: azure.client_id is required: the client ID of the user-assigned managed identity", prefix)
+		if err := validateEntraID(prefix+".azure.client_id", ci.Azure.ClientID, "the client ID of the user-assigned managed identity"); err != nil {
+			return err
 		}
-		if ci.Azure.TenantID == "" {
-			return fmt.Errorf("%s: azure.tenant_id is required: the tenant ID of the user-assigned managed identity", prefix)
+		if err := validateEntraID(prefix+".azure.tenant_id", ci.Azure.TenantID, "the tenant ID of the user-assigned managed identity"); err != nil {
+			return err
 		}
 	}
-	sort.Strings(names)
 
 	used := make(map[string]bool, len(s.CloudIdentities))
 	check := func(prefix string, sc SignerConfig) error {
@@ -806,7 +842,13 @@ func (s *Settings) validateCloudIdentities() error {
 		used[sc.CloudIdentity] = true
 		return nil
 	}
-	for name, app := range s.Apps {
+	appNames := make([]string, 0, len(s.Apps))
+	for name := range s.Apps {
+		appNames = append(appNames, name)
+	}
+	sort.Strings(appNames)
+	for _, name := range appNames {
+		app := s.Apps[name]
 		if len(app.Instances) == 0 {
 			if err := check(fmt.Sprintf("app %q", name), app.Signer); err != nil {
 				return err
