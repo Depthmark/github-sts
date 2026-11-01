@@ -48,10 +48,3 @@ func TestLocal_SignRS256_RejectsWrongDigestSize(t *testing.T) {
 		})
 	}
 }
-
-func TestProviders_ListsAzure(t *testing.T) {
-	got := Providers()
-	if len(got) != 1 || got[0] != ProviderAzure {
-		t.Fatalf("Providers() = %v, want [%s]", got, ProviderAzure)
-	}
-}

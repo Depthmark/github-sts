@@ -34,18 +34,24 @@ var instanceNamePattern = regexp.MustCompile(`^[a-zA-Z0-9._/\-]+$`)
 
 // Settings is the top-level configuration struct.
 type Settings struct {
-	Server            ServerConfig         `yaml:"server"`
-	Apps              map[string]AppConfig `yaml:"apps"`
-	OIDC              OIDCConfig           `yaml:"oidc"`
-	JTI               JTIConfig            `yaml:"jti"`
-	Policy            PolicyConfig         `yaml:"policy"`
-	BundleEnforcement string               `yaml:"bundle_enforcement"`
-	Bundles           []BundleConfig       `yaml:"bundles"`
-	Audit             AuditConfig          `yaml:"audit"`
-	Health            HealthConfig         `yaml:"health"`
-	Metrics           MetricsConfig        `yaml:"metrics"`
-	Tracing           TracingConfig        `yaml:"tracing"`
-	RateLimit         RateLimitConfig      `yaml:"rate_limit"`
+	Server ServerConfig         `yaml:"server"`
+	Apps   map[string]AppConfig `yaml:"apps"`
+	OIDC   OIDCConfig           `yaml:"oidc"`
+
+	// CloudIdentities are the identities the broker signs App JWTs as in a
+	// key management service, by name. YAML only: an environment variable
+	// form would be unreadable (ADR github-sts/0020).
+	CloudIdentities map[string]CloudIdentityConfig `yaml:"cloud_identities"`
+
+	JTI               JTIConfig       `yaml:"jti"`
+	Policy            PolicyConfig    `yaml:"policy"`
+	BundleEnforcement string          `yaml:"bundle_enforcement"`
+	Bundles           []BundleConfig  `yaml:"bundles"`
+	Audit             AuditConfig     `yaml:"audit"`
+	Health            HealthConfig    `yaml:"health"`
+	Metrics           MetricsConfig   `yaml:"metrics"`
+	Tracing           TracingConfig   `yaml:"tracing"`
+	RateLimit         RateLimitConfig `yaml:"rate_limit"`
 }
 
 // ServerConfig holds HTTP server settings.
@@ -170,17 +176,46 @@ type AppInstanceConfig struct {
 	ParsedKey *rsa.PrivateKey `yaml:"-"`
 }
 
-// SignerConfig names a GitHub App key held by a key management service. The
-// same two fields describe every provider: KeyID is the one string each
-// service uses to name a key (for Azure, the key's URL in the vault).
+// SignerConfig names a GitHub App key held by a key management service, and
+// the cloud identity that signs with it. The same two fields describe every
+// cloud: CloudIdentity names an entry of cloud_identities, whose cloud picks
+// the provider, and KeyID is the one string that cloud uses to name a key (for
+// Azure, the key's URL in the vault). The key identifier's syntax is the
+// provider's, checked when the server opens the key (ADR github-sts/0020).
 type SignerConfig struct {
-	Provider string `yaml:"provider"`
-	KeyID    string `yaml:"key_id"`
+	CloudIdentity string `yaml:"cloud_identity"`
+	KeyID         string `yaml:"key_id"`
 }
 
 // IsSet reports whether any signer field is set.
 func (c SignerConfig) IsSet() bool {
-	return c.Provider != "" || c.KeyID != ""
+	return c.CloudIdentity != "" || c.KeyID != ""
+}
+
+// CloudIdentityConfig is one identity the broker authenticates to a cloud as,
+// defined once under cloud_identities and named by every signer that signs
+// as it. Exactly one cloud's block is set; Azure is the only cloud so far.
+// The broker always authenticates by workload identity: it exchanges its
+// Kubernetes service account token for this identity (ADR github-sts/0020).
+type CloudIdentityConfig struct {
+	Azure *AzureIdentityConfig `yaml:"azure"`
+}
+
+// Provider returns the signer provider this identity authenticates to.
+func (c CloudIdentityConfig) Provider() string {
+	if c.Azure != nil {
+		return signer.ProviderAzure
+	}
+	return ""
+}
+
+// AzureIdentityConfig is a Microsoft Entra identity, a user-assigned managed
+// identity whose federated credential trusts the broker's service account.
+// The fields carry the names Azure gives that resource's properties. Both are
+// GUIDs, checked when the server opens a key that signs as the identity.
+type AzureIdentityConfig struct {
+	ClientID string `yaml:"client_id"`
+	TenantID string `yaml:"tenant_id"`
 }
 
 // RotationConfig controls how AppPool selects among a logical app's pooled
@@ -553,6 +588,10 @@ func (s *Settings) Validate() error {
 		return err
 	}
 
+	if err := s.validateCloudIdentities(); err != nil {
+		return err
+	}
+
 	if s.JTI.Backend == "redis" && s.RedisURL() == "" {
 		return fmt.Errorf("jti.redis_url is required when backend is redis")
 	}
@@ -694,10 +733,11 @@ func validateInstances(appName string, instances []AppInstanceConfig) error {
 }
 
 // validateKeySource checks that exactly one of private_key, private_key_path
-// and signer gives an App its key, and that a signer names a known provider
+// and signer gives an App its key, and that a signer names a cloud identity
 // and a key. prefix names the app, or the app and instance, in the error.
-// The key identifier's syntax belongs to its provider and is checked when the
-// server opens the key, still before it takes traffic.
+// That the identity exists is validateCloudIdentities' check. The key
+// identifier's syntax belongs to its provider and is checked when the server
+// opens the key, still before it takes traffic.
 func validateKeySource(prefix, privateKey, privateKeyPath string, sc SignerConfig) error {
 	var set []string
 	if privateKey != "" {
@@ -718,15 +758,75 @@ func validateKeySource(prefix, privateKey, privateKeyPath string, sc SignerConfi
 	if !sc.IsSet() {
 		return nil
 	}
-	providers := signer.Providers()
-	if sc.Provider == "" {
-		return fmt.Errorf("%s: signer.provider is required (one of %s)", prefix, strings.Join(providers, ", "))
-	}
-	if !slices.Contains(providers, sc.Provider) {
-		return fmt.Errorf("%s: signer.provider must be one of %s (got %q)", prefix, strings.Join(providers, ", "), sc.Provider)
+	if sc.CloudIdentity == "" {
+		return fmt.Errorf("%s: signer.cloud_identity is required: the name of the cloud_identities entry that signs with this key", prefix)
 	}
 	if sc.KeyID == "" {
 		return fmt.Errorf("%s: signer.key_id is required", prefix)
+	}
+	return nil
+}
+
+// validateCloudIdentities checks that every cloud identity sets exactly one
+// cloud with all of its fields, that every signer names one that exists, and
+// that every one is named by a signer. An identity no key signs as is either
+// a typo on the signer's side or a grant nobody uses; both are refused rather
+// than ignored.
+func (s *Settings) validateCloudIdentities() error {
+	names := make([]string, 0, len(s.CloudIdentities))
+	for name, ci := range s.CloudIdentities {
+		names = append(names, name)
+		prefix := fmt.Sprintf("cloud_identities.%s", name)
+		if len(name) > 100 || !instanceNamePattern.MatchString(name) {
+			return fmt.Errorf("%s: the name must be 1 to 100 letters, digits, '.', '_', '/' or '-'", prefix)
+		}
+		if ci.Azure == nil {
+			return fmt.Errorf("%s: azure is required, the one cloud github-sts signs in", prefix)
+		}
+		if ci.Azure.ClientID == "" {
+			return fmt.Errorf("%s: azure.client_id is required: the client ID of the user-assigned managed identity", prefix)
+		}
+		if ci.Azure.TenantID == "" {
+			return fmt.Errorf("%s: azure.tenant_id is required: the tenant ID of the user-assigned managed identity", prefix)
+		}
+	}
+	sort.Strings(names)
+
+	used := make(map[string]bool, len(s.CloudIdentities))
+	check := func(prefix string, sc SignerConfig) error {
+		if !sc.IsSet() {
+			return nil
+		}
+		if _, ok := s.CloudIdentities[sc.CloudIdentity]; !ok {
+			if len(names) == 0 {
+				return fmt.Errorf("%s: signer.cloud_identity %q is not defined: cloud_identities is empty", prefix, sc.CloudIdentity)
+			}
+			return fmt.Errorf("%s: signer.cloud_identity %q is not defined in cloud_identities (defined: %s)", prefix, sc.CloudIdentity, strings.Join(names, ", "))
+		}
+		used[sc.CloudIdentity] = true
+		return nil
+	}
+	for name, app := range s.Apps {
+		if len(app.Instances) == 0 {
+			if err := check(fmt.Sprintf("app %q", name), app.Signer); err != nil {
+				return err
+			}
+			continue
+		}
+		for i, inst := range app.Instances {
+			label := inst.Name
+			if label == "" {
+				label = fmt.Sprintf("#%d", i)
+			}
+			if err := check(fmt.Sprintf("app %q: instance %s", name, label), inst.Signer); err != nil {
+				return err
+			}
+		}
+	}
+	for _, name := range names {
+		if !used[name] {
+			return fmt.Errorf("cloud_identities.%s: no signer names this identity: remove it, or set signer.cloud_identity on the keys that sign as it", name)
+		}
 	}
 	return nil
 }
@@ -1336,8 +1436,8 @@ func applyEnvOverrides(cfg *Settings) error {
 		if v := os.Getenv("GITHUBSTS_APP_" + upper + "_PRIVATE_KEY_PATH"); v != "" {
 			app.PrivateKeyPath = v
 		}
-		if v := os.Getenv("GITHUBSTS_APP_" + upper + "_SIGNER_PROVIDER"); v != "" {
-			app.Signer.Provider = v
+		if v := os.Getenv("GITHUBSTS_APP_" + upper + "_SIGNER_CLOUD_IDENTITY"); v != "" {
+			app.Signer.CloudIdentity = v
 		}
 		if v := os.Getenv("GITHUBSTS_APP_" + upper + "_SIGNER_KEY_ID"); v != "" {
 			app.Signer.KeyID = v
@@ -1367,10 +1467,10 @@ func applyEnvOverrides(cfg *Settings) error {
 			appIDStr := os.Getenv(prefix + "APP_ID")
 			privKey := os.Getenv(prefix + "PRIVATE_KEY")
 			privKeyPath := os.Getenv(prefix + "PRIVATE_KEY_PATH")
-			signerProvider := os.Getenv(prefix + "SIGNER_PROVIDER")
+			signerCloudIdentity := os.Getenv(prefix + "SIGNER_CLOUD_IDENTITY")
 			signerKeyID := os.Getenv(prefix + "SIGNER_KEY_ID")
 			instName := os.Getenv(prefix + "NAME")
-			if appIDStr == "" && privKey == "" && privKeyPath == "" && signerProvider == "" && signerKeyID == "" && instName == "" {
+			if appIDStr == "" && privKey == "" && privKeyPath == "" && signerCloudIdentity == "" && signerKeyID == "" && instName == "" {
 				break
 			}
 			for len(app.Instances) < i {
@@ -1390,8 +1490,8 @@ func applyEnvOverrides(cfg *Settings) error {
 			if privKeyPath != "" {
 				inst.PrivateKeyPath = privKeyPath
 			}
-			if signerProvider != "" {
-				inst.Signer.Provider = signerProvider
+			if signerCloudIdentity != "" {
+				inst.Signer.CloudIdentity = signerCloudIdentity
 			}
 			if signerKeyID != "" {
 				inst.Signer.KeyID = signerKeyID

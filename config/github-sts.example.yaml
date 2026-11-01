@@ -39,6 +39,18 @@ server:
     #   - TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256
     reload_interval: 0s             # Hot-reload interval (e.g. "1h"). 0 = disabled; requires cert_file/key_file.
 
+# Cloud identities (optional) — only with signer keys below. Each entry is a
+# user-assigned managed identity whose federated credential trusts the pod's
+# service account; a signer names it to sign App JWTs in Azure Key Vault.
+# github-sts authenticates by workload identity only: it exchanges the token
+# at AZURE_FEDERATED_TOKEN_FILE, which the Helm chart sets. YAML only. See the
+# Configuration reference, "Keeping the App key in a key vault".
+# cloud_identities:
+#   vault-one:
+#     azure:
+#       client_id: "00000000-0000-0000-0000-000000000001"
+#       tenant_id: "00000000-0000-0000-0000-000000000002"
+
 # GitHub Apps — define one or more apps
 # Each app has its own credentials and maps to a policy subdirectory:
 #   {base_path}/{app_name}/{identity}.sts.yaml
@@ -53,13 +65,11 @@ apps:
     # … or as a file path (mutually exclusive with private_key)
     # private_key_path: "/etc/github-sts/keys/default.pem"
     # … or keep the key in Azure Key Vault, so github-sts never holds it
-    # (mutually exclusive with both). Requires AZURE_TOKEN_CREDENTIALS to name
-    # the Azure credential type, WorkloadIdentityCredential recommended. A
-    # broker never mixes vault keys and PEMs: every app instance then needs a
-    # signer. See the Configuration reference, "Keeping the App key in a key
-    # vault".
+    # (mutually exclusive with both). cloud_identity names the cloud_identities
+    # entry above that signs with the key. A broker never mixes vault keys and
+    # PEMs: every app instance then needs a signer.
     # signer:
-    #   provider: azure
+    #   cloud_identity: vault-one
     #   key_id: "https://myvault.vault.azure.net/keys/github-app-default"
 
     # For org-level scopes (scope="myorg"), set org_policy_repo to the

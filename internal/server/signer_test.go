@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -17,7 +18,11 @@ import (
 	"github.com/depthmark/github-sts/internal/signer/azure"
 )
 
-const testVaultKeyID = "https://example.vault.azure.net/keys/checkout-1"
+const (
+	testVaultKeyID = "https://example.vault.azure.net/keys/checkout-1"
+	testClientID   = "11111111-1111-1111-1111-111111111111"
+	testTenantID   = "33333333-3333-3333-3333-333333333333"
+)
 
 func settingsWithApps(apps map[string]config.AppConfig) *config.Settings {
 	return &config.Settings{
@@ -32,13 +37,22 @@ func settingsWithApps(apps map[string]config.AppConfig) *config.Settings {
 }
 
 func vaultInstanceSettings() *config.Settings {
-	return settingsWithApps(map[string]config.AppConfig{
+	cfg := settingsWithApps(map[string]config.AppConfig{
 		"checkout": {Instances: []config.AppInstanceConfig{{
 			Name:   "checkout-1",
 			AppID:  1,
-			Signer: config.SignerConfig{Provider: signer.ProviderAzure, KeyID: testVaultKeyID},
+			Signer: config.SignerConfig{CloudIdentity: "vault-one", KeyID: testVaultKeyID},
 		}}},
 	})
+	cfg.CloudIdentities = testIdentities(testClientID, testTenantID)
+	return cfg
+}
+
+// testIdentities defines the one cloud identity vault-one.
+func testIdentities(clientID, tenantID string) map[string]config.CloudIdentityConfig {
+	return map[string]config.CloudIdentityConfig{
+		"vault-one": {Azure: &config.AzureIdentityConfig{ClientID: clientID, TenantID: tenantID}},
+	}
 }
 
 func discardLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
@@ -122,7 +136,7 @@ func TestNewServer_RefusesToStart(t *testing.T) {
 }
 
 func TestKeyOpener_OpensAPrivateKeyInProcess(t *testing.T) {
-	key, err := newKeyOpener()(config.AppInstanceConfig{AppID: 1, ParsedKey: newTestRSAKey(t)})
+	key, err := newKeyOpener(nil)(config.AppInstanceConfig{AppID: 1, ParsedKey: newTestRSAKey(t)})
 	if err != nil {
 		t.Fatalf("opening a PEM-backed instance: %v", err)
 	}
@@ -131,58 +145,80 @@ func TestKeyOpener_OpensAPrivateKeyInProcess(t *testing.T) {
 	}
 }
 
-func TestKeyOpener_HandlesEveryProvider(t *testing.T) {
-	unsetCredentialType(t)
-	for _, provider := range signer.Providers() {
-		t.Run(provider, func(t *testing.T) {
-			_, err := newKeyOpener()(config.AppInstanceConfig{
-				AppID:  1,
-				Signer: config.SignerConfig{Provider: provider, KeyID: testVaultKeyID},
-			})
-			if err != nil && strings.Contains(err.Error(), "is not supported") {
-				t.Fatalf("provider %q is accepted by configuration but not opened by the server: %v", provider, err)
-			}
-		})
+// TestKeyOpener_OpensAnAzureIdentity opens a vault key as the identity its
+// signer names. Opening contacts no cloud: the token file is read and
+// exchanged at the first signature.
+func TestKeyOpener_OpensAnAzureIdentity(t *testing.T) {
+	t.Setenv(azure.FederatedTokenFileEnv, writeTokenFile(t))
+	key, err := newKeyOpener(testIdentities(testClientID, testTenantID))(config.AppInstanceConfig{
+		AppID:  1,
+		Signer: config.SignerConfig{CloudIdentity: "vault-one", KeyID: testVaultKeyID},
+	})
+	if err != nil {
+		t.Fatalf("opening a vault key: %v", err)
+	}
+	if _, ok := key.(*azure.Key); !ok {
+		t.Fatalf("key = %T, want *azure.Key", key)
 	}
 }
 
 func TestKeyOpener_AzureRejected(t *testing.T) {
 	tests := []struct {
-		name           string
-		credentialType string
-		keyID          string
-		want           string
+		name      string
+		tokenFile bool
+		identity  string
+		clientID  string
+		tenantID  string
+		keyID     string
+		want      string
 	}{
-		{name: "no named credential", credentialType: "", keyID: testVaultKeyID, want: azure.TokenCredentialsEnv},
-		{name: "a refused credential", credentialType: "AzureCLICredential", keyID: testVaultKeyID, want: azure.TokenCredentialsEnv},
-		{name: "a secret, not a key", credentialType: "WorkloadIdentityCredential", keyID: "https://example.vault.azure.net/secrets/checkout-1", want: "key_id"},
-		{name: "plain http", credentialType: "WorkloadIdentityCredential", keyID: "http://example.vault.azure.net/keys/checkout-1", want: "https"},
+		{name: "no federated token file", clientID: testClientID, tenantID: testTenantID, keyID: testVaultKeyID, want: azure.FederatedTokenFileEnv},
+		{name: "a secret, not a key", tokenFile: true, clientID: testClientID, tenantID: testTenantID, keyID: "https://example.vault.azure.net/secrets/checkout-1", want: "key_id"},
+		{name: "plain http", tokenFile: true, clientID: testClientID, tenantID: testTenantID, keyID: "http://example.vault.azure.net/keys/checkout-1", want: "https"},
+		{name: "an identity by name, not client ID", tokenFile: true, clientID: "id-github-sts-dev", tenantID: testTenantID, keyID: testVaultKeyID, want: "client ID"},
+		{name: "a tenant by domain, not ID", tokenFile: true, clientID: testClientID, tenantID: "stsexample.onmicrosoft.com", keyID: testVaultKeyID, want: "tenant ID"},
+		{name: "an identity Load would refuse", tokenFile: true, identity: "vault-two", keyID: testVaultKeyID, want: `"vault-two" names no cloud`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if tt.credentialType == "" {
-				unsetCredentialType(t)
+			if tt.tokenFile {
+				t.Setenv(azure.FederatedTokenFileEnv, writeTokenFile(t))
 			} else {
-				t.Setenv(azure.TokenCredentialsEnv, tt.credentialType)
+				unsetTokenFile(t)
 			}
-			_, err := newKeyOpener()(config.AppInstanceConfig{
+			identity := tt.identity
+			if identity == "" {
+				identity = "vault-one"
+			}
+			_, err := newKeyOpener(testIdentities(tt.clientID, tt.tenantID))(config.AppInstanceConfig{
 				AppID:  1,
-				Signer: config.SignerConfig{Provider: signer.ProviderAzure, KeyID: tt.keyID},
+				Signer: config.SignerConfig{CloudIdentity: identity, KeyID: tt.keyID},
 			})
 			if err == nil {
 				t.Fatal("opening succeeded, want an error")
 			}
-			if !strings.Contains(err.Error(), "signer:") || !strings.Contains(err.Error(), tt.want) {
-				t.Fatalf("error %q, want it to start with signer: and contain %q", err, tt.want)
+			if !strings.HasPrefix(err.Error(), "signer") || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error %q, want it to start with signer and contain %q", err, tt.want)
 			}
 		})
 	}
 }
 
-func unsetCredentialType(t *testing.T) {
+// writeTokenFile writes a stand-in projected service account token. Nothing
+// reads it before a signature, and no test signs against Azure.
+func writeTokenFile(t *testing.T) string {
 	t.Helper()
-	t.Setenv(azure.TokenCredentialsEnv, "")
-	if err := os.Unsetenv(azure.TokenCredentialsEnv); err != nil {
-		t.Fatalf("unsetting %s: %v", azure.TokenCredentialsEnv, err)
+	path := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(path, []byte("not-a-real-token"), 0o600); err != nil {
+		t.Fatalf("writing token file: %v", err)
+	}
+	return path
+}
+
+func unsetTokenFile(t *testing.T) {
+	t.Helper()
+	t.Setenv(azure.FederatedTokenFileEnv, "")
+	if err := os.Unsetenv(azure.FederatedTokenFileEnv); err != nil {
+		t.Fatalf("unsetting %s: %v", azure.FederatedTokenFileEnv, err)
 	}
 }

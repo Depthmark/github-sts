@@ -20,14 +20,9 @@ import (
 	"fmt"
 )
 
-// ProviderAzure names Azure Key Vault (and Managed HSM) in
-// apps.<name>.signer.provider.
+// ProviderAzure names Azure Key Vault (and Managed HSM), the provider of a
+// cloud_identities entry with an azure block.
 const ProviderAzure = "azure"
-
-// Providers returns every provider name apps.<name>.signer.provider accepts.
-func Providers() []string {
-	return []string{ProviderAzure}
-}
 
 // Key signs with a GitHub App private key that its holder may not be able to
 // read. GitHub accepts only RS256 for an App JWT, so that is the one

@@ -69,7 +69,7 @@ type Server struct {
 
 // New creates a new Server with all services initialized.
 func New(cfg *config.Settings, slogger *slog.Logger) (*Server, error) {
-	return newServer(cfg, slogger, newKeyOpener())
+	return newServer(cfg, slogger, newKeyOpener(cfg.CloudIdentities))
 }
 
 func newServer(cfg *config.Settings, slogger *slog.Logger, openKey keyOpener) (*Server, error) {
@@ -404,15 +404,18 @@ type appInstance struct {
 type keyOpener func(inst config.AppInstanceConfig) (signer.Key, error)
 
 // newKeyOpener opens an in-process key from the parsed PEM, and a vault key
-// through one provider per cloud. The provider is built on first use, so a
-// broker with no vault key never builds an Azure credential.
-func newKeyOpener() keyOpener {
+// through one provider per cloud, signing as the cloud identity the signer
+// names. The provider is built on first use, so a broker with no vault key
+// never builds an Azure credential. Load has already checked that every
+// signer names a defined identity.
+func newKeyOpener(identities map[string]config.CloudIdentityConfig) keyOpener {
 	var azureProvider *azure.Provider
 	return func(inst config.AppInstanceConfig) (signer.Key, error) {
 		if !inst.Signer.IsSet() {
 			return signer.NewLocal(inst.ParsedKey), nil
 		}
-		switch inst.Signer.Provider {
+		identity := identities[inst.Signer.CloudIdentity]
+		switch identity.Provider() {
 		case signer.ProviderAzure:
 			if azureProvider == nil {
 				p, err := azure.NewProvider()
@@ -421,22 +424,22 @@ func newKeyOpener() keyOpener {
 				}
 				azureProvider = p
 			}
-			key, err := azureProvider.Key(inst.Signer.KeyID)
+			key, err := azureProvider.Key(inst.Signer.KeyID, identity.Azure.ClientID, identity.Azure.TenantID)
 			if err != nil {
-				return nil, fmt.Errorf("signer: %w", err)
+				return nil, fmt.Errorf("signer: cloud identity %q: %w", inst.Signer.CloudIdentity, err)
 			}
 			return key, nil
 		default:
-			return nil, fmt.Errorf("signer.provider %q is not supported", inst.Signer.Provider)
+			return nil, fmt.Errorf("signer.cloud_identity %q names no cloud github-sts can sign in", inst.Signer.CloudIdentity)
 		}
 	}
 }
 
 // openAppCredentials opens every App instance's key and signs a first App
 // JWT with it. A key that cannot sign (a wrong key identifier, a missing
-// role, an unreachable vault, an unnamed Azure credential) stops the server
-// here, before it takes traffic, rather than failing every exchange later
-// (configuration/2).
+// role, an unreachable vault, an identity that does not trust the pod's
+// token) stops the server here, before it takes traffic, rather than failing
+// every exchange later (configuration/2).
 func openAppCredentials(cfg *config.Settings, slogger *slog.Logger, openKey keyOpener) (map[appInstance]*github.AppCredentialSource, error) {
 	credentials := make(map[appInstance]*github.AppCredentialSource)
 	for name, app := range cfg.Apps {
@@ -456,7 +459,9 @@ func openAppCredentials(cfg *config.Settings, slogger *slog.Logger, openKey keyO
 
 			if inst.Signer.IsSet() {
 				slogger.Info("github app key opened", "app", name, "instance", inst.Name,
-					"key_source", "signer", "signer_provider", inst.Signer.Provider, "signer_key_id", inst.Signer.KeyID)
+					"key_source", "signer", "signer_cloud_identity", inst.Signer.CloudIdentity,
+					"signer_provider", cfg.CloudIdentities[inst.Signer.CloudIdentity].Provider(),
+					"signer_key_id", inst.Signer.KeyID)
 			} else {
 				slogger.Info("github app key opened", "app", name, "instance", inst.Name, "key_source", "private_key")
 			}

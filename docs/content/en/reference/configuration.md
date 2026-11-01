@@ -87,38 +87,53 @@ Rules:
 
 ## Keeping the App key in a key vault {#signer}
 
-An App instance can name a key held by a key management service instead of a PEM. github-sts then never holds the private key: it sends the vault a SHA-256 digest and receives the signature of the App JWT. Azure Key Vault, including Managed HSM, is the supported provider.
+Keep the App private key out of github-sts: name a key held in Azure Key Vault, or Managed HSM, instead of a PEM. github-sts sends the vault a SHA-256 digest and receives the signature of the App JWT, so the key never enters the process. Each key signs as a cloud identity that you define once under `cloud_identities` and name from its `signer`.
 
 ```yaml
-apps:
-  default:
-    app_id: 123456
-    signer:
-      provider: azure
-      key_id: https://myvault.vault.azure.net/keys/github-app-default
-```
+cloud_identities:
+  vault-one:
+    azure:
+      client_id: 00000000-0000-0000-0000-000000000001
+      tenant_id: 00000000-0000-0000-0000-000000000003
+  vault-two:
+    azure:
+      client_id: 00000000-0000-0000-0000-000000000002
+      tenant_id: 00000000-0000-0000-0000-000000000003
 
-The same `signer` block goes on a pool instance, in place of `private_key` or `private_key_path`.
+apps:
+  checkout:
+    app_id: 111111
+    signer:
+      cloud_identity: vault-one
+      key_id: https://vault-one.vault.azure.net/keys/checkout
+  settings:
+    instances:
+      - app_id: 222222
+        signer:
+          cloud_identity: vault-two
+          key_id: https://vault-two.vault.azure.net/keys/settings
+```
 
 Rules:
 
-- `private_key`, `private_key_path` and `signer` are mutually exclusive, and each instance needs exactly one of them.
+- `private_key`, `private_key_path` and `signer` are mutually exclusive, and each instance needs exactly one of them. The same `signer` block goes on a flat app or on a pool instance.
 - A broker uses one kind of key source: every instance has a `signer`, or every instance has a PEM. A mix stops the broker at startup, and nothing falls back from one kind to the other.
+- `signer.cloud_identity` names an entry of `cloud_identities`, and that identity's cloud picks the provider. A name that is not defined, or an identity that no `signer` names, stops the broker at startup.
 - `key_id` is the key's identifier as Azure prints it, `https://<vault>.vault.azure.net/keys/<name>`, optionally followed by `/<version>`. Without a version, github-sts signs with the key's current version, so importing a new version into the vault rotates the key without a configuration change.
-- github-sts signs a first App JWT at startup and refuses to start when the key cannot sign: a wrong identifier, a missing role, an unreachable vault or an unnamed credential is reported before the broker takes traffic.
+- github-sts signs a first App JWT at startup and refuses to start when a key cannot sign, so it reports a wrong identifier, a missing role, an unreachable vault or an identity that does not trust the pod's token before it takes traffic.
 - After startup, github-sts asks the vault for one signature per App instance every 9 minutes, shared by exchanges and the background pollers. A vault outage stops exchanges once the cached App JWT expires; a pool fails over to an instance whose key still signs.
 
-**Authenticating to Azure.** github-sts uses exactly one credential type, named in the Azure SDK variable `AZURE_TOKEN_CREDENTIALS`, and refuses to start when the variable is unset or names any other type:
+**Cloud identities.** Each entry under `cloud_identities` is one user-assigned managed identity. `azure.client_id` and `azure.tenant_id` are both required, and both are GUIDs: the client ID and tenant ID the identity's Azure resource shows. Every key names its identity, so github-sts has no default identity and ignores `AZURE_CLIENT_ID` and `AZURE_TENANT_ID`. `cloud_identities` is set in YAML only; a `signer` can also be set through [environment variables]({{< relref "/reference/environment-variables#github-app-settings" >}}).
 
-| Value | Credential | Variables it reads |
-|---|---|---|
-| `WorkloadIdentityCredential` | A Kubernetes service account token federated with Microsoft Entra ID (recommended) | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_FEDERATED_TOKEN_FILE` |
-| `ManagedIdentityCredential` | The managed identity of the Azure host | `AZURE_CLIENT_ID` for a user-assigned identity |
-| `EnvironmentCredential` | A client secret or certificate, for a cluster that cannot federate yet | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, and `AZURE_CLIENT_SECRET` or `AZURE_CLIENT_CERTIFICATE_PATH` |
+**Authenticating to Azure.** github-sts authenticates by workload identity and nothing else, so no Azure secret exists: it exchanges the pod's projected Kubernetes service account token for each identity. It reads the token's path from `AZURE_FEDERATED_TOKEN_FILE` and refuses to start when that variable is unset. The github-sts Helm chart projects the token and sets the variable; the Azure workload identity webhook does the same for a pod labelled `azure.workload.identity/use: "true"`. For each identity, Azure needs:
 
-No Azure credential is written in the github-sts configuration, and `az login` is not accepted. The identity needs the `sign` permission on the key and nothing else: a custom role holding only `Microsoft.KeyVault/vaults/keys/sign/action`, assigned on the key, is the narrowest grant. The vault's firewall must admit the address the broker calls from.
+1. A federated credential with the cluster's service account issuer, the subject `system:serviceaccount:<namespace>:<service account>` and the audience `api://AzureADTokenExchange`. Several identities can trust the same service account: Microsoft Entra ID exchanges the one token for whichever identity a key names.
+2. The `sign` permission on its own keys and nothing else: a custom role holding only `Microsoft.KeyVault/vaults/keys/sign/action`, assigned on each key.
+3. A vault firewall that admits the address the broker calls from.
 
-**Importing the key.** GitHub generates App private keys, so the PEM is imported into the vault once and then deleted. Limiting the key's operations to `sign` means no role can use it for anything else:
+Microsoft Entra ID must be able to read the cluster's issuer; a broker on a cluster that cannot publish it keeps PEMs. Separate identities split grants and audit logs per vault, but they do not isolate Apps inside one broker: the pod can sign as every identity that trusts its service account. To isolate Apps from each other, run separate brokers with separate service accounts.
+
+**Importing the key.** Import the PEM that GitHub generated into the vault once, then delete it. Limit the key's operations to `sign`, so that no role can use it for anything else:
 
 ```bash
 az keyvault key import --vault-name myvault --name github-app-default \

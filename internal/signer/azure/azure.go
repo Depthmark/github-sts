@@ -4,11 +4,16 @@
 // keys/sign permission on that one key and nothing else
 // (ADR github-sts/0018, point 5).
 //
-// The broker authenticates with exactly one credential type, named by the
-// operator in AZURE_TOKEN_CREDENTIALS, and there is no chain to fall back
-// through (ADR github-sts/0019). That variable belongs to the Azure SDK and is
-// read here rather than through a GITHUBSTS_ setting: ADR 0019 records the
-// exception to configuration/1.
+// The broker authenticates by workload identity and nothing else
+// (ADR github-sts/0020). Every key names the identity it signs as, a client
+// ID and the tenant that identity lives in, and there is no default identity.
+// The pod has one federated token, a projected Kubernetes service account
+// token whose path is in AZURE_FEDERATED_TOKEN_FILE, and Microsoft Entra ID
+// exchanges it for any identity whose federated credential trusts the pod's
+// service account: the client ID and tenant sent with the exchange decide
+// which one. That variable belongs to the Azure SDK and the workload identity
+// webhook, and is read here rather than through a GITHUBSTS_ setting: ADR 0020
+// records the exception to configuration/1.
 //
 // This package is the only importer of the Azure SDK in github-sts.
 package azure
@@ -34,21 +39,11 @@ import (
 	"github.com/depthmark/github-sts/internal/signer"
 )
 
-// TokenCredentialsEnv is the Azure SDK variable that names the one credential
-// type the broker authenticates with.
-const TokenCredentialsEnv = "AZURE_TOKEN_CREDENTIALS"
-
-// allowedCredentialTypes are the values of TokenCredentialsEnv that ADR 0019
-// accepts. Federation (workload identity, managed identity) is preferred; a
-// client secret or certificate (EnvironmentCredential) is accepted for a
-// cluster that cannot publish its issuer yet. The SDK's "dev" and "prod"
-// groups, az login and the full default chain are refused, because each
-// leaves the credential in use to whatever happens to be present.
-var allowedCredentialTypes = []string{
-	"WorkloadIdentityCredential",
-	"ManagedIdentityCredential",
-	"EnvironmentCredential",
-}
+// FederatedTokenFileEnv is the Azure SDK variable that holds the path of the
+// projected service account token the broker exchanges for each identity.
+// The github-sts chart sets it, and so does the Azure workload identity
+// webhook.
+const FederatedTokenFileEnv = "AZURE_FEDERATED_TOKEN_FILE"
 
 const (
 	// signTryTimeout bounds one HTTP attempt. A Key Vault sign normally
@@ -73,7 +68,37 @@ const (
 var (
 	keyNamePattern    = regexp.MustCompile(`^[0-9A-Za-z-]{1,127}$`)
 	keyVersionPattern = regexp.MustCompile(`^[0-9A-Za-z]{1,64}$`)
+	guidPattern       = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 )
+
+// Identity is the Microsoft Entra identity a key signs as: a user-assigned
+// managed identity whose federated credential trusts the broker's service
+// account.
+type Identity struct {
+	// ClientID is the identity's client ID.
+	ClientID string
+	// TenantID is the tenant the identity lives in.
+	TenantID string
+}
+
+// String names the identity for logs and errors.
+func (id Identity) String() string {
+	return id.ClientID + " in tenant " + id.TenantID
+}
+
+// ParseIdentity checks the identity a key signs as. Both values are required
+// GUIDs, compared without regard to case, so the result is lower case: two
+// spellings of one identity share one credential.
+func ParseIdentity(clientID, tenantID string) (Identity, error) {
+	id := Identity{ClientID: strings.ToLower(clientID), TenantID: strings.ToLower(tenantID)}
+	if !guidPattern.MatchString(id.ClientID) {
+		return Identity{}, fmt.Errorf("azure.client_id %q must be the client ID of a user-assigned managed identity, a GUID", clientID)
+	}
+	if !guidPattern.MatchString(id.TenantID) {
+		return Identity{}, fmt.Errorf("azure.tenant_id %q must be a Microsoft Entra tenant ID, a GUID", tenantID)
+	}
+	return id, nil
+}
 
 // KeyID identifies one key in a vault, as the Azure portal and CLI print it:
 // https://<vault>.vault.azure.net/keys/<name>[/<version>].
@@ -132,103 +157,125 @@ func ParseKeyID(raw string) (KeyID, error) {
 	return id, nil
 }
 
-// CheckCredentialType verifies that TokenCredentialsEnv names one of the
-// credential types ADR 0019 accepts.
-func CheckCredentialType() error {
-	value, ok := os.LookupEnv(TokenCredentialsEnv)
-	value = strings.TrimSpace(value)
-	if !ok || value == "" {
-		return fmt.Errorf("%s must name the credential type the broker authenticates to Azure with: one of %s",
-			TokenCredentialsEnv, strings.Join(allowedCredentialTypes, ", "))
-	}
-	for _, allowed := range allowedCredentialTypes {
-		if strings.EqualFold(value, allowed) {
-			return nil
-		}
-	}
-	return fmt.Errorf("%s must be one of %s (got %q)",
-		TokenCredentialsEnv, strings.Join(allowedCredentialTypes, ", "), value)
-}
-
 // signClient is the one Key Vault operation this package uses, so tests can
 // replace the vault.
 type signClient interface {
 	Sign(ctx context.Context, name, version string, parameters azkeys.SignParameters, options *azkeys.SignOptions) (azkeys.SignResponse, error)
 }
 
-// Provider opens Keys in any vault the broker's Azure identity can reach. It
-// holds one credential, so every key shares one token cache, and one client
-// per vault.
+// credentialFunc builds the credential for one identity.
+type credentialFunc func(id Identity) (azcore.TokenCredential, error)
+
+// Provider opens Keys in any vault the broker's Azure identities can reach.
+// It holds one credential per identity, so the keys of one identity share one
+// token cache, and one client per vault and identity.
 type Provider struct {
-	cred    azcore.TokenCredential
-	options azkeys.ClientOptions
+	newCredential credentialFunc
+	options       azkeys.ClientOptions
 
 	mu      sync.Mutex
-	clients map[string]signClient // by vault URL, guarded by mu
+	creds   map[Identity]azcore.TokenCredential // guarded by mu
+	clients map[clientKey]signClient            // guarded by mu
 }
 
-// NewProvider builds a Provider that authenticates with the credential type
-// named in TokenCredentialsEnv. Nothing is sent to Azure yet: a missing
-// federated token file or a wrong client ID surfaces at the first signature,
-// which the server makes at startup.
+type clientKey struct {
+	vaultURL string
+	identity Identity
+}
+
+// NewProvider builds a Provider that exchanges the token in
+// FederatedTokenFileEnv for each identity a key names. It builds no
+// credential yet: each is built when the first key of its identity is opened.
+// Nothing is sent to Azure either: an unreadable token file or an identity
+// whose federated credential does not trust the pod surfaces at the first
+// signature, which the server makes at startup.
 func NewProvider() (*Provider, error) {
-	if err := CheckCredentialType(); err != nil {
-		return nil, err
+	tokenFile := strings.TrimSpace(os.Getenv(FederatedTokenFileEnv))
+	if tokenFile == "" {
+		return nil, fmt.Errorf("%s must hold the path of a service account token projected for audience api://AzureADTokenExchange: the github-sts chart sets it, and so does the Azure workload identity webhook",
+			FederatedTokenFileEnv)
 	}
-	// RequireAzureTokenCredentials makes the SDK refuse to build its default
-	// chain, so the value checked above is the only credential tried.
-	cred, err := azidentity.NewDefaultAzureCredential(&azidentity.DefaultAzureCredentialOptions{
-		RequireAzureTokenCredentials: true,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("building the Azure credential: %w", err)
-	}
-	return newProvider(cred, azkeys.ClientOptions{}), nil
+	return newProvider(workloadIdentity(tokenFile), azkeys.ClientOptions{}), nil
 }
 
-func newProvider(cred azcore.TokenCredential, options azkeys.ClientOptions) *Provider {
+// workloadIdentity builds, for each identity, a workload identity credential
+// that exchanges the token in tokenFile for that identity in its tenant.
+// Every option is set, so no AZURE_CLIENT_ID or AZURE_TENANT_ID from the
+// environment can stand in for the identity the key names.
+func workloadIdentity(tokenFile string) credentialFunc {
+	return func(id Identity) (azcore.TokenCredential, error) {
+		return azidentity.NewWorkloadIdentityCredential(&azidentity.WorkloadIdentityCredentialOptions{
+			ClientID:      id.ClientID,
+			TenantID:      id.TenantID,
+			TokenFilePath: tokenFile,
+		})
+	}
+}
+
+func newProvider(newCredential credentialFunc, options azkeys.ClientOptions) *Provider {
 	options.Retry = policy.RetryOptions{
 		MaxRetries:    signMaxRetries,
 		TryTimeout:    signTryTimeout,
 		RetryDelay:    signRetryDelay,
 		MaxRetryDelay: signMaxRetryDelay,
 	}
-	return &Provider{cred: cred, options: options, clients: make(map[string]signClient)}
+	return &Provider{
+		newCredential: newCredential,
+		options:       options,
+		creds:         make(map[Identity]azcore.TokenCredential),
+		clients:       make(map[clientKey]signClient),
+	}
 }
 
-// Key returns the Key that keyID names. It validates the identifier and
-// builds the vault client, but does not contact the vault.
-func (p *Provider) Key(keyID string) (*Key, error) {
+// Key returns the Key that keyID names, signing as the identity that clientID
+// and tenantID name. It validates all three, builds the credential and the
+// vault client, but does not contact Azure.
+func (p *Provider) Key(keyID, clientID, tenantID string) (*Key, error) {
 	id, err := ParseKeyID(keyID)
 	if err != nil {
 		return nil, err
 	}
-	client, err := p.client(id.VaultURL)
+	identity, err := ParseIdentity(clientID, tenantID)
 	if err != nil {
 		return nil, err
 	}
-	return &Key{id: id, client: client}, nil
+	client, err := p.client(id.VaultURL, identity)
+	if err != nil {
+		return nil, err
+	}
+	return &Key{id: id, identity: identity, client: client}, nil
 }
 
-func (p *Provider) client(vaultURL string) (signClient, error) {
+func (p *Provider) client(vaultURL string, identity Identity) (signClient, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if c, ok := p.clients[vaultURL]; ok {
+	key := clientKey{vaultURL: vaultURL, identity: identity}
+	if c, ok := p.clients[key]; ok {
 		return c, nil
 	}
+	cred, ok := p.creds[identity]
+	if !ok {
+		var err error
+		cred, err = p.newCredential(identity)
+		if err != nil {
+			return nil, fmt.Errorf("building the Azure credential for identity %s: %w", identity, err)
+		}
+		p.creds[identity] = cred
+	}
 	options := p.options
-	c, err := azkeys.NewClient(vaultURL, p.cred, &options)
+	c, err := azkeys.NewClient(vaultURL, cred, &options)
 	if err != nil {
 		return nil, fmt.Errorf("building the Key Vault client for %s: %w", vaultURL, err)
 	}
-	p.clients[vaultURL] = c
+	p.clients[key] = c
 	return c, nil
 }
 
-// Key signs with one key in a vault.
+// Key signs with one key in a vault, as one identity.
 type Key struct {
-	id     KeyID
-	client signClient
+	id       KeyID
+	identity Identity
+	client   signClient
 }
 
 var _ signer.Key = (*Key)(nil)
@@ -249,12 +296,17 @@ func (k *Key) SignRS256(ctx context.Context, digest []byte) ([]byte, error) {
 		Value:     digest,
 	}, nil)
 	if err != nil {
-		return nil, newSignError(k.id, err)
+		return nil, newSignError(k.subject(), err)
 	}
 	if len(resp.Result) == 0 {
-		return nil, fmt.Errorf("azure key vault: signing with %s returned no signature", k.id)
+		return nil, fmt.Errorf("azure key vault: signing with %s returned no signature", k.subject())
 	}
 	return resp.Result, nil
+}
+
+// subject names the key and the identity it signs as, for error messages.
+func (k *Key) subject() string {
+	return fmt.Sprintf("%s as identity %s", k.id, k.identity)
 }
 
 // signError is a signature Key Vault refused or could not produce. Its
@@ -262,22 +314,22 @@ func (k *Key) SignRS256(ctx context.Context, digest []byte) ([]byte, error) {
 // and message, and what usually causes it. It never carries a token or the
 // digest. Unwrap keeps the SDK's error for errors.As.
 type signError struct {
-	keyID   KeyID
+	subject string
 	status  int
 	code    string
 	message string
 	err     error
 }
 
-func newSignError(id KeyID, err error) error {
+func newSignError(subject string, err error) error {
 	var respErr *azcore.ResponseError
 	if !errors.As(err, &respErr) {
 		// No response: a network failure, a timeout, or a credential that
 		// could not get a token. The SDK's message says which.
-		return fmt.Errorf("azure key vault: signing with %s: %w", id, err)
+		return fmt.Errorf("azure key vault: signing with %s: %w", subject, err)
 	}
 	return &signError{
-		keyID:   id,
+		subject: subject,
 		status:  respErr.StatusCode,
 		code:    respErr.ErrorCode,
 		message: serviceMessage(respErr),
@@ -287,7 +339,7 @@ func newSignError(id KeyID, err error) error {
 
 func (e *signError) Error() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "azure key vault: signing with %s: HTTP %d", e.keyID, e.status)
+	fmt.Fprintf(&b, "azure key vault: signing with %s: HTTP %d", e.subject, e.status)
 	if e.code != "" {
 		fmt.Fprintf(&b, " %s", e.code)
 	}
@@ -307,9 +359,9 @@ func statusHint(status int) string {
 	case 400:
 		return "the key cannot sign RS256: it is not an RSA key, it is disabled, or sign is not among its operations"
 	case 401:
-		return "Azure did not accept the broker's credential"
+		return "Key Vault did not accept the identity's token"
 	case 403:
-		return "the broker's identity lacks the sign permission on this key, or the vault firewall refuses its address"
+		return "the identity lacks the sign permission on this key, or the vault firewall refuses the broker's address"
 	case 404:
 		return "the key or the key version does not exist"
 	case 429:

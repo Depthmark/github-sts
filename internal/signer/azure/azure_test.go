@@ -109,57 +109,34 @@ func TestKeyID_StringRoundTrips(t *testing.T) {
 	}
 }
 
-func TestCheckCredentialType(t *testing.T) {
-	tests := []struct {
-		name    string
-		value   *string
-		wantErr string
-	}{
-		{name: "unset", value: nil, wantErr: "must name the credential type"},
-		{name: "empty", value: ptr(""), wantErr: "must name the credential type"},
-		{name: "workload identity", value: ptr("WorkloadIdentityCredential")},
-		{name: "managed identity", value: ptr("ManagedIdentityCredential")},
-		{name: "client secret or certificate", value: ptr("EnvironmentCredential")},
-		{name: "case does not matter", value: ptr("workloadidentitycredential")},
-		{name: "dev group", value: ptr("dev"), wantErr: `(got "dev")`},
-		{name: "prod group", value: ptr("prod"), wantErr: `(got "prod")`},
-		{name: "az login", value: ptr("AzureCLICredential"), wantErr: `(got "AzureCLICredential")`},
+func TestNewProvider_NeedsTheFederatedTokenFile(t *testing.T) {
+	for _, value := range []*string{nil, ptr(""), ptr("  ")} {
+		setTokenFile(t, value)
+		if _, err := NewProvider(); err == nil || !strings.Contains(err.Error(), FederatedTokenFileEnv) {
+			t.Fatalf("NewProvider with %s %v: error = %v, want one naming the variable", FederatedTokenFileEnv, value, err)
+		}
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			setCredentialType(t, tt.value)
-			err := CheckCredentialType()
-			if tt.wantErr == "" {
-				if err != nil {
-					t.Fatalf("CheckCredentialType: %v", err)
-				}
-				return
-			}
-			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-				t.Fatalf("error = %v, want one containing %q", err, tt.wantErr)
-			}
-			if !strings.Contains(err.Error(), TokenCredentialsEnv) {
-				t.Fatalf("error = %v, want it to name %s", err, TokenCredentialsEnv)
-			}
-		})
+	setTokenFile(t, ptr("/var/run/secrets/github-sts-azure/token"))
+	if _, err := NewProvider(); err != nil {
+		t.Fatalf("NewProvider: %v", err)
 	}
 }
 
-func TestNewProvider_RefusesAnUnnamedCredential(t *testing.T) {
-	setCredentialType(t, nil)
-	if _, err := NewProvider(); err == nil {
-		t.Fatal("NewProvider succeeded without " + TokenCredentialsEnv)
-	}
-}
+const (
+	identityA   = "11111111-1111-1111-1111-111111111111"
+	identityB   = "22222222-2222-2222-2222-222222222222"
+	tenantT     = "33333333-3333-3333-3333-333333333333"
+	otherTenant = "44444444-4444-4444-4444-444444444444"
+)
 
 func TestProvider_OneClientPerVault(t *testing.T) {
-	p := newProvider(staticCredential{}, azkeys.ClientOptions{})
+	p := newProvider(fixedCredential(staticCredential{}), azkeys.ClientOptions{})
 	for _, keyID := range []string{
 		"https://one.vault.azure.net/keys/dev",
 		"https://one.vault.azure.net/keys/production",
 		"https://two.vault.azure.net/keys/dev",
 	} {
-		if _, err := p.Key(keyID); err != nil {
+		if _, err := p.Key(keyID, identityA, tenantT); err != nil {
 			t.Fatalf("Key(%q): %v", keyID, err)
 		}
 	}
@@ -168,9 +145,130 @@ func TestProvider_OneClientPerVault(t *testing.T) {
 	}
 }
 
+func TestParseIdentity(t *testing.T) {
+	accepted := []struct {
+		clientID, tenantID string
+		want               Identity
+	}{
+		{identityA, tenantT, Identity{ClientID: identityA, TenantID: tenantT}},
+		{"AAAAAAAA-0000-4000-8000-0000000000FF", "BBBBBBBB-0000-4000-8000-0000000000FF",
+			Identity{ClientID: "aaaaaaaa-0000-4000-8000-0000000000ff", TenantID: "bbbbbbbb-0000-4000-8000-0000000000ff"}},
+	}
+	for _, tt := range accepted {
+		got, err := ParseIdentity(tt.clientID, tt.tenantID)
+		if err != nil || got != tt.want {
+			t.Errorf("ParseIdentity(%q, %q) = %+v, %v; want %+v", tt.clientID, tt.tenantID, got, err, tt.want)
+		}
+	}
+	rejected := []struct {
+		clientID, tenantID, want string
+	}{
+		{"id-github-sts-dev", tenantT, "client ID"},
+		{"11111111111111111111111111111111", tenantT, "client ID"},
+		{"{11111111-1111-1111-1111-111111111111}", tenantT, "client ID"},
+		{" 11111111-1111-1111-1111-111111111111", tenantT, "client ID"},
+		{"", tenantT, "client ID"},
+		{identityA, "contoso.onmicrosoft.com", "tenant ID, a GUID"},
+		{identityA, "", "tenant ID, a GUID"},
+	}
+	for _, tt := range rejected {
+		if _, err := ParseIdentity(tt.clientID, tt.tenantID); err == nil || !strings.Contains(err.Error(), tt.want) {
+			t.Errorf("ParseIdentity(%q, %q) error = %v, want one containing %q", tt.clientID, tt.tenantID, err, tt.want)
+		}
+	}
+}
+
+// TestProvider_OneCredentialPerIdentity checks that the keys of one identity
+// share its credential, whatever the vault and however its GUIDs are spelt,
+// that the same client ID in another tenant is another identity, and that
+// each vault and identity gets its own client.
+func TestProvider_OneCredentialPerIdentity(t *testing.T) {
+	built := map[Identity]int{}
+	p := newProvider(func(id Identity) (azcore.TokenCredential, error) {
+		built[id]++
+		return staticCredential{}, nil
+	}, azkeys.ClientOptions{})
+	for _, k := range []struct{ keyID, clientID, tenantID string }{
+		{"https://one.vault.azure.net/keys/a", identityA, tenantT},
+		{"https://two.vault.azure.net/keys/b", identityA, tenantT},
+		{"https://two.vault.azure.net/keys/c", strings.ToUpper(identityA), tenantT},
+		{"https://two.vault.azure.net/keys/d", identityB, tenantT},
+		{"https://three.vault.azure.net/keys/e", identityA, otherTenant},
+		{"https://three.vault.azure.net/keys/f", identityA, strings.ToUpper(otherTenant)},
+	} {
+		if _, err := p.Key(k.keyID, k.clientID, k.tenantID); err != nil {
+			t.Fatalf("Key(%q, %q, %q): %v", k.keyID, k.clientID, k.tenantID, err)
+		}
+	}
+	want := []Identity{{ClientID: identityA, TenantID: tenantT}, {ClientID: identityB, TenantID: tenantT}, {ClientID: identityA, TenantID: otherTenant}}
+	if len(built) != len(want) {
+		t.Fatalf("credentials built = %v, want one each for %v", built, want)
+	}
+	for _, id := range want {
+		if built[id] != 1 {
+			t.Errorf("credentials built for %v = %d, want 1", id, built[id])
+		}
+	}
+	if got := len(p.clients); got != 4 {
+		t.Errorf("clients = %d, want 4 (one per vault and identity)", got)
+	}
+}
+
+func TestProvider_KeyRejectsAnInvalidIdentity(t *testing.T) {
+	p := newProvider(fixedCredential(staticCredential{}), azkeys.ClientOptions{})
+	for _, id := range []struct{ clientID, tenantID string }{
+		{"id-github-sts-dev", tenantT},
+		{"", tenantT},
+		{identityA, ""},
+	} {
+		if _, err := p.Key("https://example.vault.azure.net/keys/github-app", id.clientID, id.tenantID); err == nil {
+			t.Errorf("Key accepted identity %q in tenant %q", id.clientID, id.tenantID)
+		}
+	}
+	if len(p.creds) != 0 {
+		t.Errorf("credentials = %d, want none built for a refused identity", len(p.creds))
+	}
+}
+
+func TestProvider_NamesTheIdentityWhoseCredentialFailed(t *testing.T) {
+	p := newProvider(func(Identity) (azcore.TokenCredential, error) {
+		return nil, errors.New("no token file")
+	}, azkeys.ClientOptions{})
+	_, err := p.Key("https://example.vault.azure.net/keys/github-app", identityA, tenantT)
+	if err == nil || !strings.Contains(err.Error(), identityA+" in tenant "+tenantT) || !strings.Contains(err.Error(), "no token file") {
+		t.Fatalf("error = %v, want it to name the identity and its tenant and keep the cause", err)
+	}
+}
+
+// TestWorkloadIdentity_TakesNothingFromTheEnvironment builds a credential
+// with every Azure variable unset. The SDK cannot build a workload identity
+// credential from the environment alone, so success shows that the client ID,
+// the tenant and the token file all come from github-sts.
+func TestWorkloadIdentity_TakesNothingFromTheEnvironment(t *testing.T) {
+	unsetEnv(t, "AZURE_CLIENT_ID")
+	unsetEnv(t, "AZURE_TENANT_ID")
+	unsetEnv(t, FederatedTokenFileEnv)
+	if _, err := workloadIdentity("/var/run/secrets/github-sts-azure/token")(Identity{ClientID: identityA, TenantID: tenantT}); err != nil {
+		t.Fatalf("workload identity %s in tenant %s: %v", identityA, tenantT, err)
+	}
+}
+
+func TestKey_SignRS256_NamesItsIdentity(t *testing.T) {
+	k := &Key{
+		id:       KeyID{VaultURL: "https://example.vault.azure.net", Name: "github-app"},
+		identity: Identity{ClientID: identityA, TenantID: tenantT},
+		client:   &fakeSignClient{err: vaultError(http.StatusForbidden, "Forbidden", "Caller is not authorized to perform action on resource.")},
+	}
+	digest := sha256.Sum256([]byte("header.claims"))
+	_, err := k.SignRS256(context.Background(), digest[:])
+	if want := "as identity " + identityA + " in tenant " + tenantT; err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("error = %v, want one containing %q", err, want)
+	}
+}
+
 func TestProvider_KeyRejectsAnInvalidIdentifier(t *testing.T) {
-	p := newProvider(staticCredential{}, azkeys.ClientOptions{})
-	if _, err := p.Key("https://example.vault.azure.net/secrets/github-app"); err == nil {
+	p := newProvider(fixedCredential(staticCredential{}), azkeys.ClientOptions{})
+	if _, err := p.Key("https://example.vault.azure.net/secrets/github-app", identityA, tenantT); err == nil {
 		t.Fatal("Key accepted a secret identifier")
 	}
 }
@@ -290,11 +388,11 @@ func TestKey_SignRS256_AgainstAFakeVault(t *testing.T) {
 	defer srv.Close()
 
 	cred := &recordingCredential{token: "test-access-token"}
-	p := newProvider(cred, azkeys.ClientOptions{
+	p := newProvider(fixedCredential(cred), azkeys.ClientOptions{
 		ClientOptions:                        azcore.ClientOptions{Transport: srv.Client()},
 		DisableChallengeResourceVerification: true,
 	})
-	k, err := p.Key(srv.URL + "/keys/github-app/v1")
+	k, err := p.Key(srv.URL+"/keys/github-app/v1", identityA, tenantT)
 	if err != nil {
 		t.Fatalf("Key: %v", err)
 	}
@@ -318,16 +416,64 @@ func TestKey_SignRS256_AgainstAFakeVault(t *testing.T) {
 	}
 }
 
-func setCredentialType(t *testing.T, value *string) {
+// TestKey_SignRS256_AsItsIdentity checks against the fake vault that two keys
+// in one vault, naming two identities, each get their token from their own
+// identity's credential.
+func TestKey_SignRS256_AsItsIdentity(t *testing.T) {
+	appKey := newRSAKey(t)
+	vault := &fakeVault{t: t, key: appKey}
+	srv := httptest.NewTLSServer(vault)
+	defer srv.Close()
+
+	creds := map[Identity]*recordingCredential{}
+	p := newProvider(func(id Identity) (azcore.TokenCredential, error) {
+		c := &recordingCredential{token: "token-for-" + id.ClientID}
+		creds[id] = c
+		return c, nil
+	}, azkeys.ClientOptions{
+		ClientOptions:                        azcore.ClientOptions{Transport: srv.Client()},
+		DisableChallengeResourceVerification: true,
+	})
+	if _, err := p.Key(srv.URL+"/keys/github-app-a/v1", identityA, tenantT); err != nil {
+		t.Fatalf("Key as %s: %v", identityA, err)
+	}
+	k, err := p.Key(srv.URL+"/keys/github-app/v1", identityB, tenantT)
+	if err != nil {
+		t.Fatalf("Key as %s: %v", identityB, err)
+	}
+	digest := sha256.Sum256([]byte("header.claims"))
+	if _, err := k.SignRS256(context.Background(), digest[:]); err != nil {
+		t.Fatalf("SignRS256: %v", err)
+	}
+	if c := creds[Identity{ClientID: identityA, TenantID: tenantT}]; c == nil || len(c.scopes) != 0 {
+		t.Errorf("identity %s's credential was asked for a token for a key of %s", identityA, identityB)
+	}
+	if c := creds[Identity{ClientID: identityB, TenantID: tenantT}]; c == nil || len(c.scopes) == 0 {
+		t.Errorf("identity %s's credential was not asked for a token", identityB)
+	}
+}
+
+// fixedCredential builds the same credential for every identity.
+func fixedCredential(cred azcore.TokenCredential) credentialFunc {
+	return func(Identity) (azcore.TokenCredential, error) { return cred, nil }
+}
+
+func unsetEnv(t *testing.T, name string) {
 	t.Helper()
-	t.Setenv(TokenCredentialsEnv, "")
+	t.Setenv(name, "")
+	if err := os.Unsetenv(name); err != nil {
+		t.Fatalf("unsetting %s: %v", name, err)
+	}
+}
+
+// setTokenFile sets FederatedTokenFileEnv to value, or unsets it for nil.
+func setTokenFile(t *testing.T, value *string) {
+	t.Helper()
 	if value == nil {
-		if err := os.Unsetenv(TokenCredentialsEnv); err != nil {
-			t.Fatalf("unsetting %s: %v", TokenCredentialsEnv, err)
-		}
+		unsetEnv(t, FederatedTokenFileEnv)
 		return
 	}
-	t.Setenv(TokenCredentialsEnv, *value)
+	t.Setenv(FederatedTokenFileEnv, *value)
 }
 
 func ptr(s string) *string { return &s }
