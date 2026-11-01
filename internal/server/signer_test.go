@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -159,6 +160,40 @@ func TestKeyOpener_OpensAnAzureIdentity(t *testing.T) {
 	}
 	if _, ok := key.(*azure.Key); !ok {
 		t.Fatalf("key = %T, want *azure.Key", key)
+	}
+}
+
+// TestKeyOpener_OpensEveryCloud sets each cloud block of CloudIdentityConfig
+// in turn and checks that Provider() names it and that newKeyOpener has a
+// provider for it. A cloud added to the configuration but not to the opener
+// (AWS or Google Cloud, ADR github-sts/0020) fails here rather than at the
+// first startup that uses it. The block's fields stay empty: only which
+// provider opens the key is under test, not whether it can sign.
+func TestKeyOpener_OpensEveryCloud(t *testing.T) {
+	t.Setenv(azure.FederatedTokenFileEnv, writeTokenFile(t))
+	clouds := reflect.TypeFor[config.CloudIdentityConfig]()
+	if clouds.NumField() == 0 {
+		t.Fatal("CloudIdentityConfig has no cloud block")
+	}
+	for i := range clouds.NumField() {
+		field := clouds.Field(i)
+		t.Run(field.Name, func(t *testing.T) {
+			if field.Type.Kind() != reflect.Pointer || field.Type.Elem().Kind() != reflect.Struct {
+				t.Fatalf("CloudIdentityConfig.%s is a %s, want a pointer to the cloud's block", field.Name, field.Type)
+			}
+			var identity config.CloudIdentityConfig
+			reflect.ValueOf(&identity).Elem().Field(i).Set(reflect.New(field.Type.Elem()))
+			if identity.Provider() == "" {
+				t.Fatalf("Provider() is empty with only %s set: it does not know this cloud", field.Name)
+			}
+			_, err := newKeyOpener(map[string]config.CloudIdentityConfig{"vault-one": identity})(config.AppInstanceConfig{
+				AppID:  1,
+				Signer: config.SignerConfig{CloudIdentity: "vault-one", KeyID: testVaultKeyID},
+			})
+			if errors.Is(err, errNoCloud) {
+				t.Fatalf("newKeyOpener has no provider for %s (provider %q): %v", field.Name, identity.Provider(), err)
+			}
+		})
 	}
 }
 

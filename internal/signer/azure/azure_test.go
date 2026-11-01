@@ -113,15 +113,27 @@ func TestKeyID_StringRoundTrips(t *testing.T) {
 }
 
 func TestNewProvider_NeedsTheFederatedTokenFile(t *testing.T) {
-	for _, value := range []*string{nil, ptr(""), ptr("  ")} {
-		setTokenFile(t, value)
-		if _, err := NewProvider(); err == nil || !strings.Contains(err.Error(), FederatedTokenFileEnv) {
-			t.Fatalf("NewProvider with %s %v: error = %v, want one naming the variable", FederatedTokenFileEnv, value, err)
-		}
+	tests := []struct {
+		name    string
+		value   *string
+		wantErr bool
+	}{
+		{name: "unset", value: nil, wantErr: true},
+		{name: "empty", value: ptr(""), wantErr: true},
+		{name: "only spaces", value: ptr("  "), wantErr: true},
+		{name: "a path", value: ptr("/var/run/secrets/github-sts-azure/token")},
 	}
-	setTokenFile(t, ptr("/var/run/secrets/github-sts-azure/token"))
-	if _, err := NewProvider(); err != nil {
-		t.Fatalf("NewProvider: %v", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setTokenFile(t, tt.value)
+			_, err := NewProvider()
+			switch {
+			case tt.wantErr && (err == nil || !strings.Contains(err.Error(), FederatedTokenFileEnv)):
+				t.Fatalf("NewProvider: error = %v, want one naming %s", err, FederatedTokenFileEnv)
+			case !tt.wantErr && err != nil:
+				t.Fatalf("NewProvider: %v", err)
+			}
+		})
 	}
 }
 
@@ -148,36 +160,49 @@ func TestProvider_OneClientPerVault(t *testing.T) {
 	}
 }
 
-func TestParseIdentity(t *testing.T) {
-	accepted := []struct {
+func TestParseIdentity_Accepted(t *testing.T) {
+	tests := []struct {
+		name               string
 		clientID, tenantID string
 		want               Identity
 	}{
-		{identityA, tenantT, Identity{ClientID: identityA, TenantID: tenantT}},
-		{"AAAAAAAA-0000-4000-8000-0000000000FF", "BBBBBBBB-0000-4000-8000-0000000000FF",
-			Identity{ClientID: "aaaaaaaa-0000-4000-8000-0000000000ff", TenantID: "bbbbbbbb-0000-4000-8000-0000000000ff"}},
+		{name: "lower case", clientID: identityA, tenantID: tenantT, want: Identity{ClientID: identityA, TenantID: tenantT}},
+		{
+			name:     "upper case is lowered",
+			clientID: "AAAAAAAA-0000-4000-8000-0000000000FF",
+			tenantID: "BBBBBBBB-0000-4000-8000-0000000000FF",
+			want:     Identity{ClientID: "aaaaaaaa-0000-4000-8000-0000000000ff", TenantID: "bbbbbbbb-0000-4000-8000-0000000000ff"},
+		},
 	}
-	for _, tt := range accepted {
-		got, err := ParseIdentity(tt.clientID, tt.tenantID)
-		if err != nil || got != tt.want {
-			t.Errorf("ParseIdentity(%q, %q) = %+v, %v; want %+v", tt.clientID, tt.tenantID, got, err, tt.want)
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseIdentity(tt.clientID, tt.tenantID)
+			if err != nil || got != tt.want {
+				t.Fatalf("ParseIdentity(%q, %q) = %+v, %v; want %+v", tt.clientID, tt.tenantID, got, err, tt.want)
+			}
+		})
 	}
-	rejected := []struct {
+}
+
+func TestParseIdentity_Rejected(t *testing.T) {
+	tests := []struct {
+		name                     string
 		clientID, tenantID, want string
 	}{
-		{"id-github-sts-dev", tenantT, "client ID"},
-		{"11111111111111111111111111111111", tenantT, "client ID"},
-		{"{11111111-1111-1111-1111-111111111111}", tenantT, "client ID"},
-		{" 11111111-1111-1111-1111-111111111111", tenantT, "client ID"},
-		{"", tenantT, "client ID"},
-		{identityA, "contoso.onmicrosoft.com", "tenant ID, a GUID"},
-		{identityA, "", "tenant ID, a GUID"},
+		{name: "an identity's name", clientID: "id-github-sts-dev", tenantID: tenantT, want: "client ID"},
+		{name: "a GUID without dashes", clientID: "11111111111111111111111111111111", tenantID: tenantT, want: "client ID"},
+		{name: "a GUID in braces", clientID: "{11111111-1111-1111-1111-111111111111}", tenantID: tenantT, want: "client ID"},
+		{name: "a leading space", clientID: " 11111111-1111-1111-1111-111111111111", tenantID: tenantT, want: "client ID"},
+		{name: "no client ID", clientID: "", tenantID: tenantT, want: "client ID"},
+		{name: "a tenant's domain", clientID: identityA, tenantID: "contoso.onmicrosoft.com", want: "tenant ID, a GUID"},
+		{name: "no tenant ID", clientID: identityA, tenantID: "", want: "tenant ID, a GUID"},
 	}
-	for _, tt := range rejected {
-		if _, err := ParseIdentity(tt.clientID, tt.tenantID); err == nil || !strings.Contains(err.Error(), tt.want) {
-			t.Errorf("ParseIdentity(%q, %q) error = %v, want one containing %q", tt.clientID, tt.tenantID, err, tt.want)
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := ParseIdentity(tt.clientID, tt.tenantID); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("ParseIdentity(%q, %q) error = %v, want one containing %q", tt.clientID, tt.tenantID, err, tt.want)
+			}
+		})
 	}
 }
 
@@ -218,18 +243,24 @@ func TestProvider_OneCredentialPerIdentity(t *testing.T) {
 }
 
 func TestProvider_KeyRejectsAnInvalidIdentity(t *testing.T) {
-	p := newProvider(fixedCredential(staticCredential{}), azkeys.ClientOptions{})
-	for _, id := range []struct{ clientID, tenantID string }{
-		{"id-github-sts-dev", tenantT},
-		{"", tenantT},
-		{identityA, ""},
-	} {
-		if _, err := p.Key("https://example.vault.azure.net/keys/github-app", id.clientID, id.tenantID); err == nil {
-			t.Errorf("Key accepted identity %q in tenant %q", id.clientID, id.tenantID)
-		}
+	tests := []struct {
+		name               string
+		clientID, tenantID string
+	}{
+		{name: "an identity's name", clientID: "id-github-sts-dev", tenantID: tenantT},
+		{name: "no client ID", clientID: "", tenantID: tenantT},
+		{name: "no tenant ID", clientID: identityA, tenantID: ""},
 	}
-	if len(p.creds) != 0 {
-		t.Errorf("credentials = %d, want none built for a refused identity", len(p.creds))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := newProvider(fixedCredential(staticCredential{}), azkeys.ClientOptions{})
+			if _, err := p.Key("https://example.vault.azure.net/keys/github-app", tt.clientID, tt.tenantID); err == nil {
+				t.Fatalf("Key accepted identity %q in tenant %q", tt.clientID, tt.tenantID)
+			}
+			if len(p.creds) != 0 || len(p.clients) != 0 {
+				t.Errorf("credentials = %d, clients = %d, want none built for a refused identity", len(p.creds), len(p.clients))
+			}
+		})
 	}
 }
 

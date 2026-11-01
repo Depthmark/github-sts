@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -399,6 +400,11 @@ type appInstance struct {
 	instance string
 }
 
+// errNoCloud is the opener's refusal of a cloud identity whose cloud it has
+// no provider for. Load accepts only clouds the opener knows, so reaching it
+// means the two have drifted apart.
+var errNoCloud = errors.New("names no cloud github-sts can sign in")
+
 // keyOpener returns the signer.Key for one App instance. New uses
 // newKeyOpener; tests substitute their own so that no test reaches a cloud.
 type keyOpener func(inst config.AppInstanceConfig) (signer.Key, error)
@@ -430,7 +436,7 @@ func newKeyOpener(identities map[string]config.CloudIdentityConfig) keyOpener {
 			}
 			return key, nil
 		default:
-			return nil, fmt.Errorf("signer.cloud_identity %q names no cloud github-sts can sign in", inst.Signer.CloudIdentity)
+			return nil, fmt.Errorf("signer.cloud_identity %q %w", inst.Signer.CloudIdentity, errNoCloud)
 		}
 	}
 }
