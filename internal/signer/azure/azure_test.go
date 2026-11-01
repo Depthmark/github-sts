@@ -15,14 +15,17 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/cloud"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/runtime"
+	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/Azure/azure-sdk-for-go/sdk/security/keyvault/azkeys"
 
 	"github.com/depthmark/github-sts/internal/signer"
@@ -240,16 +243,84 @@ func TestProvider_NamesTheIdentityWhoseCredentialFailed(t *testing.T) {
 	}
 }
 
-// TestWorkloadIdentity_TakesNothingFromTheEnvironment builds a credential
-// with every Azure variable unset. The SDK cannot build a workload identity
-// credential from the environment alone, so success shows that the client ID,
-// the tenant and the token file all come from github-sts.
-func TestWorkloadIdentity_TakesNothingFromTheEnvironment(t *testing.T) {
+// TestWorkloadIdentity_BuildsWithNoAzureVariable builds a credential with
+// every Azure variable unset: the SDK cannot build one from the environment
+// alone, so github-sts supplies everything it needs.
+func TestWorkloadIdentity_BuildsWithNoAzureVariable(t *testing.T) {
 	unsetEnv(t, "AZURE_CLIENT_ID")
 	unsetEnv(t, "AZURE_TENANT_ID")
 	unsetEnv(t, FederatedTokenFileEnv)
-	if _, err := workloadIdentity("/var/run/secrets/github-sts-azure/token")(Identity{ClientID: identityA, TenantID: tenantT}); err != nil {
+	build := workloadIdentity(azidentity.WorkloadIdentityCredentialOptions{TokenFilePath: "/var/run/secrets/github-sts-azure/token"})
+	if _, err := build(Identity{ClientID: identityA, TenantID: tenantT}); err != nil {
 		t.Fatalf("workload identity %s in tenant %s: %v", identityA, tenantT, err)
+	}
+}
+
+// TestWorkloadIdentity_ConfiguredIdentityWinsOverTheEnvironment sets the
+// variables the Azure workload identity webhook injects to another identity,
+// tenant and token file, and checks against a fake Microsoft Entra ID that
+// the token exchange still names the configured client ID and tenant and
+// presents the configured token (ADR github-sts/0020: no default identity).
+func TestWorkloadIdentity_ConfiguredIdentityWinsOverTheEnvironment(t *testing.T) {
+	t.Setenv("AZURE_CLIENT_ID", identityB)
+	t.Setenv("AZURE_TENANT_ID", otherTenant)
+	t.Setenv(FederatedTokenFileEnv, filepath.Join(t.TempDir(), "webhook-token"))
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tokenFile, []byte("projected-service-account-token"), 0o600); err != nil {
+		t.Fatalf("writing the token file: %v", err)
+	}
+
+	entra := &fakeEntra{t: t}
+	srv := httptest.NewTLSServer(entra)
+	defer srv.Close()
+	entra.base = srv.URL
+
+	build := workloadIdentity(azidentity.WorkloadIdentityCredentialOptions{
+		ClientOptions: azcore.ClientOptions{
+			Cloud:     cloud.Configuration{ActiveDirectoryAuthorityHost: srv.URL + "/"},
+			Transport: srv.Client(),
+		},
+		DisableInstanceDiscovery: true,
+		TokenFilePath:            tokenFile,
+	})
+	cred, err := build(Identity{ClientID: identityA, TenantID: tenantT})
+	if err != nil {
+		t.Fatalf("building the credential: %v", err)
+	}
+	if _, err := cred.GetToken(context.Background(), policy.TokenRequestOptions{Scopes: []string{"https://vault.azure.net/.default"}}); err != nil {
+		t.Fatalf("GetToken: %v", err)
+	}
+
+	entra.mu.Lock()
+	defer entra.mu.Unlock()
+	if entra.exchanges != 1 {
+		t.Fatalf("token exchanges = %d, want 1", entra.exchanges)
+	}
+	if entra.tenant != tenantT {
+		t.Errorf("exchanged in tenant %q, want the configured %q, not AZURE_TENANT_ID", entra.tenant, tenantT)
+	}
+	if got := entra.form.Get("client_id"); got != identityA {
+		t.Errorf("client_id = %q, want the configured %q, not AZURE_CLIENT_ID", got, identityA)
+	}
+	if got := entra.form.Get("client_assertion"); got != "projected-service-account-token" {
+		t.Errorf("client_assertion = %q, want the configured token file's content, not AZURE_FEDERATED_TOKEN_FILE's", got)
+	}
+}
+
+// TestProvider_CachesNothingWhenTheClientFails checks that a Key whose vault
+// client cannot be built leaves neither its credential nor a client behind,
+// so every cached credential has a client.
+func TestProvider_CachesNothingWhenTheClientFails(t *testing.T) {
+	p := newProvider(fixedCredential(staticCredential{}), azkeys.ClientOptions{})
+	p.newClient = func(string, azcore.TokenCredential, *azkeys.ClientOptions) (signClient, error) {
+		return nil, errors.New("no client for this vault")
+	}
+	_, err := p.Key("https://example.vault.azure.net/keys/github-app", identityA, tenantT)
+	if err == nil || !strings.Contains(err.Error(), "no client for this vault") {
+		t.Fatalf("error = %v, want the client's failure", err)
+	}
+	if len(p.creds) != 0 || len(p.clients) != 0 {
+		t.Errorf("credentials = %d, clients = %d, want none after a failed Key", len(p.creds), len(p.clients))
 	}
 }
 
@@ -546,6 +617,51 @@ func (c *recordingCredential) GetToken(_ context.Context, opts policy.TokenReque
 	defer c.mu.Unlock()
 	c.scopes = append(c.scopes, opts.Scopes...)
 	return azcore.AccessToken{Token: c.token, ExpiresOn: time.Now().Add(time.Hour)}, nil
+}
+
+// fakeEntra answers like Microsoft Entra ID for one client credentials
+// exchange: the tenant's OpenID configuration, then the token endpoint, whose
+// tenant and form it records.
+type fakeEntra struct {
+	t    *testing.T
+	base string // the server's URL, set once it listens
+
+	mu        sync.Mutex
+	exchanges int
+	tenant    string
+	form      url.Values
+}
+
+func (e *fakeEntra) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	switch {
+	case len(parts) == 4 && parts[1] == "v2.0" && parts[3] == "openid-configuration":
+		tenantURL := e.base + "/" + parts[0]
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"authorization_endpoint": tenantURL + "/oauth2/v2.0/authorize",
+			"token_endpoint":         tenantURL + "/oauth2/v2.0/token",
+			"issuer":                 tenantURL + "/v2.0",
+		})
+	case len(parts) == 4 && parts[1] == "oauth2" && parts[3] == "token" && r.Method == http.MethodPost:
+		if err := r.ParseForm(); err != nil {
+			e.t.Errorf("fake Entra ID: parsing the token request: %v", err)
+		}
+		e.mu.Lock()
+		e.exchanges++
+		e.tenant = parts[0]
+		e.form = r.PostForm
+		e.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"token_type":   "Bearer",
+			"expires_in":   3600,
+			"access_token": "test-access-token",
+		})
+	default:
+		e.t.Errorf("fake Entra ID: unexpected %s %s", r.Method, r.URL.Path)
+		http.NotFound(w, r)
+	}
 }
 
 // fakeVault answers like Key Vault: an unauthenticated request gets the

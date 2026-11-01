@@ -537,6 +537,66 @@ cloud_identities:
 	}
 }
 
+// TestLoad_InstanceAndIdentityNamesShareOneRule runs the same names through
+// a pool instance and a cloud identity: both accept and refuse exactly the
+// same ones, up to and past maxNameLen, so neither rule can drift alone.
+func TestLoad_InstanceAndIdentityNamesShareOneRule(t *testing.T) {
+	keyPath := writeTestKey(t)
+	tests := []struct {
+		name    string
+		value   string
+		wantErr string
+	}{
+		{name: "the longest name", value: strings.Repeat("v", maxNameLen)},
+		{name: "one character too long", value: strings.Repeat("v", maxNameLen+1), wantErr: "name exceeds maximum length of 100"},
+		{name: "every allowed character", value: "Vault.v1/a_b-9"},
+		{name: "a space", value: "vault one", wantErr: "name contains invalid characters"},
+		{name: "a colon", value: "vault:one", wantErr: "name contains invalid characters"},
+	}
+	forms := []struct {
+		name string
+		yaml func(value string) string
+	}{
+		{name: "instance", yaml: func(value string) string {
+			return signerYAML(`
+  checkout:
+    instances:
+      - name: "` + value + `"
+        app_id: 1
+        private_key_path: "` + keyPath + `"
+`)
+		}},
+		{name: "identity", yaml: func(value string) string {
+			return signerYAML(`
+  default:
+    app_id: 1
+    signer:
+      cloud_identity: "`+value+`"
+      key_id: "`+testKeyID+`"
+`, `
+cloud_identities:
+  "`+value+`":
+    azure:
+      client_id: "`+testClientA+`"
+      tenant_id: "`+testTenantID+`"
+`)
+		}},
+	}
+	for _, tt := range tests {
+		for _, form := range forms {
+			t.Run(tt.name+"/"+form.name, func(t *testing.T) {
+				_, err := Load(writeTestConfig(t, form.yaml(tt.value)))
+				switch {
+				case tt.wantErr == "" && err != nil:
+					t.Fatalf("Load() error: %v, want the name accepted", err)
+				case tt.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErr)):
+					t.Fatalf("Load() error: %v, want one containing %q", err, tt.wantErr)
+				}
+			})
+		}
+	}
+}
+
 // TestLoad_SignerFromEnvironment checks that a signer can be set from the
 // environment, naming an identity the YAML defines: cloud_identities itself
 // has no environment form (ADR github-sts/0020).

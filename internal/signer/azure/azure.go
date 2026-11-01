@@ -166,11 +166,24 @@ type signClient interface {
 // credentialFunc builds the credential for one identity.
 type credentialFunc func(id Identity) (azcore.TokenCredential, error)
 
+// clientFunc builds the Key Vault client of one vault, authenticated by cred.
+type clientFunc func(vaultURL string, cred azcore.TokenCredential, options *azkeys.ClientOptions) (signClient, error)
+
+// newKeyVaultClient is the clientFunc of a running broker.
+func newKeyVaultClient(vaultURL string, cred azcore.TokenCredential, options *azkeys.ClientOptions) (signClient, error) {
+	c, err := azkeys.NewClient(vaultURL, cred, options)
+	if err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
 // Provider opens Keys in any vault the broker's Azure identities can reach.
 // It holds one credential per identity, so the keys of one identity share one
 // token cache, and one client per vault and identity.
 type Provider struct {
 	newCredential credentialFunc
+	newClient     clientFunc
 	options       azkeys.ClientOptions
 
 	mu      sync.Mutex
@@ -195,20 +208,21 @@ func NewProvider() (*Provider, error) {
 		return nil, fmt.Errorf("%s must hold the path of a service account token projected for audience api://AzureADTokenExchange: the github-sts chart sets it, and so does the Azure workload identity webhook",
 			FederatedTokenFileEnv)
 	}
-	return newProvider(workloadIdentity(tokenFile), azkeys.ClientOptions{}), nil
+	return newProvider(workloadIdentity(azidentity.WorkloadIdentityCredentialOptions{TokenFilePath: tokenFile}), azkeys.ClientOptions{}), nil
 }
 
 // workloadIdentity builds, for each identity, a workload identity credential
-// that exchanges the token in tokenFile for that identity in its tenant.
-// Every option is set, so no AZURE_CLIENT_ID or AZURE_TENANT_ID from the
-// environment can stand in for the identity the key names.
-func workloadIdentity(tokenFile string) credentialFunc {
+// from base that exchanges the token in base.TokenFilePath for that identity
+// in its tenant. The client ID, the tenant and the token file are all set, so
+// no AZURE_CLIENT_ID, AZURE_TENANT_ID or AZURE_FEDERATED_TOKEN_FILE the
+// webhook injects can stand in for the identity the key names. base carries
+// nothing else in a running broker; tests point it at a fake Entra ID.
+func workloadIdentity(base azidentity.WorkloadIdentityCredentialOptions) credentialFunc {
 	return func(id Identity) (azcore.TokenCredential, error) {
-		return azidentity.NewWorkloadIdentityCredential(&azidentity.WorkloadIdentityCredentialOptions{
-			ClientID:      id.ClientID,
-			TenantID:      id.TenantID,
-			TokenFilePath: tokenFile,
-		})
+		options := base
+		options.ClientID = id.ClientID
+		options.TenantID = id.TenantID
+		return azidentity.NewWorkloadIdentityCredential(&options)
 	}
 }
 
@@ -221,6 +235,7 @@ func newProvider(newCredential credentialFunc, options azkeys.ClientOptions) *Pr
 	}
 	return &Provider{
 		newCredential: newCredential,
+		newClient:     newKeyVaultClient,
 		options:       options,
 		creds:         make(map[Identity]azcore.TokenCredential),
 		clients:       make(map[clientKey]signClient),
@@ -253,19 +268,23 @@ func (p *Provider) client(vaultURL string, identity Identity) (signClient, error
 	if c, ok := p.clients[key]; ok {
 		return c, nil
 	}
-	cred, ok := p.creds[identity]
-	if !ok {
+	cred, cached := p.creds[identity]
+	if !cached {
 		var err error
 		cred, err = p.newCredential(identity)
 		if err != nil {
 			return nil, fmt.Errorf("building the Azure credential for identity %s: %w", identity, err)
 		}
-		p.creds[identity] = cred
 	}
 	options := p.options
-	c, err := azkeys.NewClient(vaultURL, cred, &options)
+	c, err := p.newClient(vaultURL, cred, &options)
 	if err != nil {
 		return nil, fmt.Errorf("building the Key Vault client for %s: %w", vaultURL, err)
+	}
+	// Both are kept only once both exist, so every cached credential has a
+	// client and a failed Key leaves nothing behind.
+	if !cached {
+		p.creds[identity] = cred
 	}
 	p.clients[key] = c
 	return c, nil
