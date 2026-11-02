@@ -26,6 +26,18 @@ type SecurityPosture struct {
 	RequireImmutableSubjectClaims bool   `json:"require_immutable_subject_claims"`
 	BundleEnforcement             string `json:"bundle_enforcement"`
 	YAMLOnlyAuthorizationPossible bool   `json:"yaml_only_authorization_possible"`
+
+	// RequireImmutableSubjectClaims above describes GitHub.com Actions only;
+	// GitHubIssuers carries the same answer for each declared issuer.
+	GitHubIssuers []GitHubIssuerPosture `json:"github_issuers,omitempty"`
+}
+
+// GitHubIssuerPosture reports one issuer from oidc.github_issuers. The Apps it
+// reaches stay out of health output, which can be unauthenticated.
+type GitHubIssuerPosture struct {
+	Issuer                        string `json:"issuer"`
+	Instance                      string `json:"instance"`
+	RequireImmutableSubjectClaims bool   `json:"require_immutable_subject_claims"`
 }
 
 // HealthHandler returns a handler for the liveness probe.

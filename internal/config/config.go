@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/depthmark/github-sts/internal/bundle"
+	"github.com/depthmark/github-sts/internal/oidc"
 	"github.com/depthmark/github-sts/internal/policy"
 	"github.com/depthmark/github-sts/internal/signer"
 	"github.com/depthmark/github-sts/internal/yamlstrict"
@@ -255,6 +256,11 @@ type OIDCConfig struct {
 	// still required when this legacy-format escape hatch is false.
 	RequireImmutableSubjectClaims bool `yaml:"require_immutable_subject_claims"`
 
+	// GitHubIssuers declares extra GitHub issuers. Each one gets the identity
+	// contract of GitHub.com Actions with an immutable subject always required,
+	// and reaches only the Apps it lists.
+	GitHubIssuers []GitHubIssuerConfig `yaml:"github_issuers"`
+
 	// TrustedJWKSHosts pins additional `jwks_uri` hosts per issuer for
 	// providers that publish JWKS on a different host than the issuer
 	// (e.g., Google: accounts.google.com → www.googleapis.com). Default
@@ -265,6 +271,12 @@ type OIDCConfig struct {
 	// per-policy audience checks. Defense-in-depth against a permissive or
 	// misconfigured policy file leaking cross-RP token acceptance.
 	RequiredAudience string `yaml:"required_audience"`
+}
+
+// GitHubIssuerConfig declares one GitHub issuer and the Apps it may reach.
+type GitHubIssuerConfig struct {
+	Issuer string   `yaml:"issuer"`
+	Apps   []string `yaml:"apps"`
 }
 
 // JTIConfig holds JTI replay prevention settings.
@@ -650,6 +662,9 @@ func (s *Settings) Validate() error {
 
 	if len(s.OIDC.AllowedIssuers) == 0 {
 		return fmt.Errorf("oidc.allowed_issuers must contain at least one issuer")
+	}
+	if err := s.validateGitHubIssuers(); err != nil {
+		return err
 	}
 
 	if s.RateLimit.Enabled {
@@ -1084,6 +1099,32 @@ func isPinnedOCIRef(ref string) bool {
 	return true
 }
 
+// validateGitHubIssuers refuses any declared issuer github-sts cannot apply the
+// GitHub.com identity contract to, or that would reach an App by accident.
+func (s *Settings) validateGitHubIssuers() error {
+	seen := make(map[string]struct{}, len(s.OIDC.GitHubIssuers))
+	for i, declared := range s.OIDC.GitHubIssuers {
+		prefix := fmt.Sprintf("oidc.github_issuers[%d]", i)
+		if _, ok := oidc.GitHubIssuerInstance(declared.Issuer); !ok {
+			return fmt.Errorf("%s.issuer must be %s/<enterprise-slug> (got %q)", prefix, oidc.GitHubActionsIssuer, declared.Issuer)
+		}
+		if _, ok := seen[declared.Issuer]; ok {
+			return fmt.Errorf("%s.issuer duplicates an earlier issuer (got %q)", prefix, declared.Issuer)
+		}
+		seen[declared.Issuer] = struct{}{}
+		if !slices.Contains(s.OIDC.AllowedIssuers, declared.Issuer) {
+			return fmt.Errorf("%s.issuer must also be listed in oidc.allowed_issuers (got %q)", prefix, declared.Issuer)
+		}
+		if len(declared.Apps) == 0 {
+			return fmt.Errorf("%s.apps must list at least one app", prefix)
+		}
+		if err := s.validateBundleApps(prefix, declared.Apps); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *Settings) validateBundleApps(prefix string, apps []string) error {
 	seen := make(map[string]struct{}, len(apps))
 	for _, app := range apps {
@@ -1209,6 +1250,17 @@ func (s *Settings) AllowedIssuers() []string {
 // RequiredAudience returns the server-wide required audience (empty if unset).
 func (s *Settings) RequiredAudience() string {
 	return s.OIDC.RequiredAudience
+}
+
+// GitHubIssuers returns the declared GitHub issuers. Call it on validated
+// settings, where every issuer has a known instance.
+func (s *Settings) GitHubIssuers() []oidc.GitHubIssuer {
+	issuers := make([]oidc.GitHubIssuer, 0, len(s.OIDC.GitHubIssuers))
+	for _, declared := range s.OIDC.GitHubIssuers {
+		instance, _ := oidc.GitHubIssuerInstance(declared.Issuer)
+		issuers = append(issuers, oidc.GitHubIssuer{Issuer: declared.Issuer, Instance: instance, Apps: declared.Apps})
+	}
+	return issuers
 }
 
 // RequireImmutableSubjectClaims reports whether GitHub.com Actions subjects

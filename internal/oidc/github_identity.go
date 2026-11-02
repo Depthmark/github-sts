@@ -2,6 +2,8 @@ package oidc
 
 import (
 	"fmt"
+	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -10,8 +12,40 @@ import (
 // support GitHub.com's immutable subject format.
 const GitHubActionsIssuer = "https://token.actions.githubusercontent.com"
 
+// GitHubDotComInstance names the GitHub instance whose numeric IDs GitHub.com
+// Actions tokens carry. IDs are unique per instance only.
+const GitHubDotComInstance = "github.com"
+
+// githubEnterpriseIssuerPattern matches the issuer of a GitHub.com enterprise
+// that set include_enterprise_slug: GitHubActionsIssuer followed by one slug.
+var githubEnterpriseIssuerPattern = regexp.MustCompile(`^https://token\.actions\.githubusercontent\.com/[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$`)
+
+// GitHubIssuer is one extra GitHub issuer declared by the operator and enabled
+// for a bounded list of Apps.
+type GitHubIssuer struct {
+	Issuer string
+	// Instance is the GitHub instance the issuer's numeric IDs come from.
+	Instance string
+	Apps     []string
+}
+
+// EnabledFor reports whether the issuer's tokens may reach app.
+func (i GitHubIssuer) EnabledFor(app string) bool {
+	return slices.Contains(i.Apps, app)
+}
+
+// GitHubIssuerInstance returns the GitHub instance of an issuer an operator may
+// declare. It reports false for every other issuer, including
+// GitHubActionsIssuer, which needs no declaration.
+func GitHubIssuerInstance(issuer string) (string, bool) {
+	if githubEnterpriseIssuerPattern.MatchString(issuer) {
+		return GitHubDotComInstance, true
+	}
+	return "", false
+}
+
 // GitHubIdentity is the canonical repository identity carried by a verified
-// GitHub.com Actions token.
+// GitHub Actions token.
 type GitHubIdentity struct {
 	Issuer            string
 	Subject           string
@@ -63,7 +97,22 @@ func ParseGitHubIdentity(claims Claims, requireImmutableSubject bool) (*GitHubId
 	if issuer != GitHubActionsIssuer {
 		return nil, nil
 	}
+	return parseGitHubIdentity(claims, issuer, requireImmutableSubject)
+}
 
+// ParseDeclaredGitHubIdentity validates repository identity claims for a token
+// from a declared issuer. It applies the checks of ParseGitHubIdentity with an
+// immutable sub always required: the legacy switch belongs to GitHub.com Actions
+// and never relaxes a declared issuer.
+func ParseDeclaredGitHubIdentity(claims Claims, declared GitHubIssuer) (*GitHubIdentity, error) {
+	issuer, _ := claims["iss"].(string)
+	if issuer != declared.Issuer {
+		return nil, githubIdentityError(GitHubIdentityClaimMismatch, "iss")
+	}
+	return parseGitHubIdentity(claims, issuer, true)
+}
+
+func parseGitHubIdentity(claims Claims, issuer string, requireImmutableSubject bool) (*GitHubIdentity, error) {
 	subject, err := requiredGitHubStringClaim(claims, "sub")
 	if err != nil {
 		return nil, err

@@ -163,7 +163,7 @@ flowchart TD
 | 4 | Signature et revendications : `kid` correspond à une clé JWKS, signature RS256 valide, `exp` et `iat` requises (`nbf` vérifié lorsqu'il est présent) | `oidc_invalid` |
 | 5 | Audience au niveau du serveur : `aud` correspond à `oidc.required_audience` (si défini) | `audience_mismatch` |
 | 6 | Rejeu JTI : `jti` non consommé dans la fenêtre `jti.ttl` | `replay_detected` |
-| 7 | Résolution d'App : `?app=` correspond à une App configurée | `app_unknown` |
+| 7 | Résolution d'App : `?app=` correspond à une App configurée, et un jeton d'un émetteur déclaré peut atteindre cette App | `app_unknown`, `issuer_not_enabled` |
 | 8 | Recherche de politique : fichier `.sts.yaml` trouvé dans le dépôt ou le dépôt de politiques d'organisation | `policy_not_found` |
 | 9 | Audience de politique : `aud` du jeton correspond à `audience:` de la politique | `audience_mismatch` |
 | 10 | Évaluation des revendications : `subject`/`subject_pattern` et `claim_pattern` correspondent | `policy_denied` |

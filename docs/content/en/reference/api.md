@@ -115,6 +115,7 @@ Error responses share this shape:
 | `403` | `github_identity_invalid` | GitHub.com source identity is missing immutable ID claims, has contradictory repository claims, or uses a legacy `sub` while immutable subjects are required. Check repository OIDC settings and the audit reason at `trace_id`. |
 | `403` | `audience_mismatch` | Token's `aud` does not match the policy's `audience:`. Pass the right value to `core.getIDToken(<audience>)` or update the policy. |
 | `403` | `app_unknown` | `?app=` does not match a configured app. Check spelling or omit when only one app is configured. |
+| `403` | `issuer_not_enabled` | The token's issuer is declared in `oidc.github_issuers`, and the requested App is not in its `apps` list. Add the App there or request an App it lists. |
 | `403` | `policy_not_found` | No `.sts.yaml` for this `scope/app/identity`. Verify the file path: `{base_path}/{app}/{identity}.sts.yaml` in the target (or org policy) repo. |
 | `403` | `trust_policy_invalid` | The loaded policy is malformed, lacks a workload selector or required GitHub ID binding, or otherwise violates the policy contract. Fix the target policy; details are in the audit log. |
 | `403` | `policy_denied` | A valid policy did not match the workload or exact immutable source-to-target relationship. Check the audit log line at `trace_id` for the precise mismatch. |
@@ -246,6 +247,10 @@ uses HTTP only for local verification.
 
 Its `security` object reports `require_immutable_subject_claims`,
 `bundle_enforcement`, and `yaml_only_authorization_possible`.
+`require_immutable_subject_claims` describes the default GitHub.com issuer. When
+`oidc.github_issuers` is set, `github_issuers` lists each declared issuer with
+its `instance` and its own `require_immutable_subject_claims`, which is always
+`true`. It leaves out the Apps, because `/health` can be unauthenticated.
 `yaml_only_authorization_possible` is always `false` in required mode. In
 optional mode, it is `true` only when at least one configured App lacks both
 global bundle coverage and App-scoped bundle coverage. This field describes a

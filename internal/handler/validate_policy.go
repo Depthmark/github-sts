@@ -36,9 +36,15 @@ type PolicyDiagnostic struct {
 // PolicyValidationHandler validates/lints trust-policy YAML for editor tooling.
 // It intentionally evaluates only the YAML policy contract; it does not read
 // enterprise Rego bundles or expose exception inventory.
-type PolicyValidationHandler struct{}
+type PolicyValidationHandler struct {
+	declaredGitHubIssuers []string
+}
 
-func NewPolicyValidationHandler() *PolicyValidationHandler { return &PolicyValidationHandler{} }
+// NewPolicyValidationHandler creates the handler. declaredGitHubIssuers lists
+// the issuers from oidc.github_issuers, so the answer matches the broker's.
+func NewPolicyValidationHandler(declaredGitHubIssuers ...string) *PolicyValidationHandler {
+	return &PolicyValidationHandler{declaredGitHubIssuers: declaredGitHubIssuers}
+}
 
 func (h *PolicyValidationHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -50,7 +56,7 @@ func (h *PolicyValidationHandler) ServeHTTP(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error(), Code: CodeBadRequest})
 		return
 	}
-	resp := validatePolicyContent(content)
+	resp := validatePolicyContent(content, h.declaredGitHubIssuers)
 	status := http.StatusOK
 	if !resp.Valid {
 		status = http.StatusUnprocessableEntity
@@ -82,7 +88,7 @@ func readValidationContent(r *http.Request) (string, error) {
 	return string(body), nil
 }
 
-func validatePolicyContent(content string) PolicyValidationResponse {
+func validatePolicyContent(content string, declaredGitHubIssuers []string) PolicyValidationResponse {
 	diagnostics := make([]PolicyDiagnostic, 0)
 	var root yaml.Node
 	if err := yaml.Unmarshal([]byte(content), &root); err != nil {
@@ -102,7 +108,7 @@ func validatePolicyContent(content string) PolicyValidationResponse {
 	}
 	diagnostics = append(diagnostics, lintPolicyShape(doc)...)
 
-	pol, err := policy.ParsePolicy([]byte(content))
+	pol, err := policy.ParsePolicy([]byte(content), declaredGitHubIssuers...)
 	if err != nil {
 		diagnostics = append(diagnostics, PolicyDiagnostic{
 			Severity: "error",

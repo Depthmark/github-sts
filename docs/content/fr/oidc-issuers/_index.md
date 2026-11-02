@@ -78,6 +78,7 @@ Modes d'échec à prévoir :
 | `jwks_uri host "X" is not the issuer host and not in the trusted JWKS host override` | Le JWKS de l'émetteur est sur un autre hôte | Ajoutez l'hôte à `trusted_jwks_hosts`. |
 | `audience mismatch (server required_audience)` | L'`aud` du jeton ne contient pas `oidc.required_audience` | Transmettez la bonne audience au workflow (`core.getIDToken('<value>')`). |
 | `audience check failed` (par politique) | L'`aud` du jeton ne correspond pas au champ `audience:` de la politique | Définissez `audience:` dans `.sts.yaml` pour correspondre au workflow. |
+| `issuer not enabled for app` | L'émetteur du jeton est déclaré dans `oidc.github_issuers`, et l'App demandée ne figure pas dans sa liste `apps` | Ajoutez l'App à cette liste si l'entreprise doit l'atteindre. Consultez [l'émetteur d'entreprise]({{< relref "github-actions#enterprise-issuer" >}}). |
 
 ## Maintenance : détection de la dérive des hôtes JWKS
 
