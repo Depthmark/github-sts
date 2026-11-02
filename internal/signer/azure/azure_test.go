@@ -478,6 +478,71 @@ func TestKey_SignRS256_KeepsTheCauseOfAFailureWithoutResponse(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("error = %v, want it to wrap context.DeadlineExceeded", err)
 	}
+	if strings.Contains(err.Error(), "another tenant") {
+		t.Errorf("error %q carries the tenant hint, want it only for a tenant refusal", err)
+	}
+}
+
+// TestKey_SignRS256_ExplainsAVaultInAnotherTenant drives a real workload
+// identity credential, pinned to its tenant_id, against a fake vault whose
+// challenge names another tenant. azidentity refuses the token request
+// before it reaches Entra ID, and the error must say why in github-sts's
+// terms. The credential points at a fake Entra ID, so even an SDK that stopped
+// refusing would reach no real endpoint; the test would fail on the signature.
+func TestKey_SignRS256_ExplainsAVaultInAnotherTenant(t *testing.T) {
+	vault := &fakeVault{t: t, key: newRSAKey(t), tenant: otherTenant}
+	vaultSrv := httptest.NewTLSServer(vault)
+	defer vaultSrv.Close()
+	entra := &fakeEntra{t: t}
+	entraSrv := httptest.NewTLSServer(entra)
+	defer entraSrv.Close()
+	entra.base = entraSrv.URL
+
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tokenFile, []byte("projected-service-account-token"), 0o600); err != nil {
+		t.Fatalf("writing the token file: %v", err)
+	}
+	p := newProvider(workloadIdentity(azidentity.WorkloadIdentityCredentialOptions{
+		ClientOptions: azcore.ClientOptions{
+			Cloud:     cloud.Configuration{ActiveDirectoryAuthorityHost: entraSrv.URL + "/"},
+			Transport: entraSrv.Client(),
+		},
+		DisableInstanceDiscovery: true,
+		TokenFilePath:            tokenFile,
+	}), azkeys.ClientOptions{
+		ClientOptions:                        azcore.ClientOptions{Transport: vaultSrv.Client()},
+		DisableChallengeResourceVerification: true,
+	})
+	k, err := p.Key(vaultSrv.URL+"/keys/github-app/v1", identityA, tenantT)
+	if err != nil {
+		t.Fatalf("Key: %v", err)
+	}
+
+	digest := sha256.Sum256([]byte("header.claims"))
+	_, err = k.SignRS256(context.Background(), digest[:])
+	if err == nil {
+		t.Fatal("SignRS256 succeeded with a vault in another tenant, want a refusal")
+	}
+	for _, want := range []string{
+		tenantRefusal,
+		otherTenant,
+		"another tenant than the identity's tenant_id " + tenantT,
+		"the vault must be in its identity's tenant",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not contain %q", err, want)
+		}
+	}
+	vault.mu.Lock()
+	defer vault.mu.Unlock()
+	if vault.signs != 0 {
+		t.Errorf("sign requests = %d, want none without a token", vault.signs)
+	}
+	entra.mu.Lock()
+	defer entra.mu.Unlock()
+	if entra.exchanges != 0 {
+		t.Errorf("token exchanges = %d, want the refusal before any", entra.exchanges)
+	}
 }
 
 // TestKey_SignRS256_AgainstAFakeVault drives the real SDK client against a
@@ -700,6 +765,9 @@ func (e *fakeEntra) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 type fakeVault struct {
 	t   *testing.T
 	key *rsa.PrivateKey
+	// tenant is the tenant the challenge names, the vault's own. Empty
+	// names the all-zero tenant.
+	tenant string
 
 	mu        sync.Mutex
 	signs     int
@@ -711,8 +779,12 @@ func (v *fakeVault) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer v.mu.Unlock()
 
 	if r.Header.Get("Authorization") == "" {
+		tenant := v.tenant
+		if tenant == "" {
+			tenant = "00000000-0000-0000-0000-000000000000"
+		}
 		w.Header().Set("WWW-Authenticate",
-			`Bearer authorization="https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000", resource="https://vault.azure.net"`)
+			`Bearer authorization="https://login.microsoftonline.com/`+tenant+`", resource="https://vault.azure.net"`)
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}

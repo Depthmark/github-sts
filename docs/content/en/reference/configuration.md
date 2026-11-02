@@ -120,10 +120,10 @@ Rules:
 - A broker uses one kind of key source: every instance has a `signer`, or every instance has a PEM. A mix stops the broker at startup, and nothing falls back from one kind to the other.
 - `signer.cloud_identity` names an entry of `cloud_identities`, and that identity's cloud picks the provider. A name that is not defined, or an identity that no `signer` names, stops the broker at startup.
 - `key_id` is the key's identifier as Azure prints it, `https://<vault>.vault.azure.net/keys/<name>`, optionally followed by `/<version>`. Without a version, github-sts signs with the key's current version, so importing a new version into the vault rotates the key without a configuration change.
-- github-sts signs a first App JWT at startup and refuses to start when a key cannot sign, so it reports a wrong identifier, a missing role, an unreachable vault or an identity that does not trust the pod's token before it takes traffic.
+- github-sts signs a first App JWT at startup and refuses to start when a key cannot sign, so it reports a wrong identifier, a missing role, an unreachable vault, a vault outside its identity's tenant or an identity that does not trust the pod's token before it takes traffic.
 - After startup, github-sts asks the vault for one signature per App instance every 9 minutes, shared by exchanges and the background pollers. A vault outage stops exchanges once the cached App JWT expires; a pool fails over to an instance whose key still signs.
 
-**Cloud identities.** Each entry under `cloud_identities` is one user-assigned managed identity. `azure.client_id` and `azure.tenant_id` are both required, and both are GUIDs: the client ID and tenant ID the identity's Azure resource shows. Every key names its identity, so github-sts has no default identity and ignores `AZURE_CLIENT_ID` and `AZURE_TENANT_ID`. `cloud_identities` is set in YAML only; a `signer` can also be set through [environment variables]({{< relref "/reference/environment-variables#github-app-settings" >}}).
+**Cloud identities.** Each entry under `cloud_identities` is one user-assigned managed identity. `azure.client_id` and `azure.tenant_id` are both required, and both are GUIDs: the client ID and tenant ID the identity's Azure resource shows. Every key names its identity, so github-sts has no default identity and ignores `AZURE_CLIENT_ID` and `AZURE_TENANT_ID`. A key's vault must be in its identity's `tenant_id`: Key Vault asks for a token in the vault's own tenant, and github-sts requests tokens only in the identity's, so a vault in another tenant stops the broker at startup with an error that says so. For a vault in another tenant, use an identity created in that tenant. `cloud_identities` is set in YAML only; a `signer` can also be set through [environment variables]({{< relref "/reference/environment-variables#github-app-settings" >}}).
 
 **Authenticating to Azure.** github-sts authenticates by workload identity and nothing else, so no Azure secret exists: it exchanges the pod's projected Kubernetes service account token for each identity. It reads the token's path from `AZURE_FEDERATED_TOKEN_FILE` and refuses to start when that variable is unset. The github-sts Helm chart projects the token and sets the variable; the Azure workload identity webhook does the same for a pod labelled `azure.workload.identity/use: "true"`. For each identity, Azure needs:
 
@@ -136,7 +136,7 @@ Microsoft Entra ID must be able to read the cluster's issuer; a broker on a clus
 **Importing the key.** Import the PEM that GitHub generated into the vault once, then delete it. Limit the key's operations to `sign`, so that no role can use it for anything else:
 
 ```bash
-az keyvault key import --vault-name myvault --name github-app-default \
+az keyvault key import --vault-name vault-one --name checkout \
   --pem-file github-app.pem --ops sign
 rm github-app.pem
 ```

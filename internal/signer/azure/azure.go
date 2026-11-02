@@ -315,7 +315,7 @@ func (k *Key) SignRS256(ctx context.Context, digest []byte) ([]byte, error) {
 		Value:     digest,
 	}, nil)
 	if err != nil {
-		return nil, newSignError(k.subject(), err)
+		return nil, newSignError(k.subject(), k.identity.TenantID, err)
 	}
 	if len(resp.Result) == 0 {
 		return nil, fmt.Errorf("azure key vault: signing with %s returned no signature", k.subject())
@@ -327,6 +327,15 @@ func (k *Key) SignRS256(ctx context.Context, digest []byte) ([]byte, error) {
 func (k *Key) subject() string {
 	return fmt.Sprintf("%s as identity %s", k.id, k.identity)
 }
+
+// tenantRefusal is how azidentity words its refusal of a token in a tenant the
+// credential is not configured for. Key Vault's challenge asks for a token in
+// the vault's own tenant, and each identity's credential is pinned to its
+// tenant_id, so a vault in another tenant fails this way, before any request
+// reaches Microsoft Entra ID. azidentity exports no error type for it;
+// TestKey_SignRS256_ExplainsAVaultInAnotherTenant drives a real credential
+// into this refusal and fails if the wording changes.
+const tenantRefusal = "isn't configured to acquire tokens for tenant"
 
 // signError is a signature Key Vault refused or could not produce. Its
 // message is one line naming the key, the HTTP status, Key Vault's error code
@@ -340,11 +349,15 @@ type signError struct {
 	err     error
 }
 
-func newSignError(subject string, err error) error {
+func newSignError(subject, tenantID string, err error) error {
 	var respErr *azcore.ResponseError
 	if !errors.As(err, &respErr) {
 		// No response: a network failure, a timeout, or a credential that
 		// could not get a token. The SDK's message says which.
+		if strings.Contains(err.Error(), tenantRefusal) {
+			return fmt.Errorf("azure key vault: signing with %s: %w (Key Vault asked for a token in another tenant than the identity's tenant_id %s: the vault must be in its identity's tenant)",
+				subject, err, tenantID)
+		}
 		return fmt.Errorf("azure key vault: signing with %s: %w", subject, err)
 	}
 	return &signError{

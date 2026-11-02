@@ -117,10 +117,10 @@ Règles :
 - Un broker utilise une seule sorte de source de clé : chaque instance a un `signer`, ou chaque instance a un PEM. Un mélange arrête le broker au démarrage, et rien ne bascule d'une sorte à l'autre.
 - `signer.cloud_identity` désigne une entrée de `cloud_identities`, et le cloud de cette identité choisit le fournisseur. Un nom qui n'est pas défini, ou une identité qu'aucun `signer` ne désigne, arrête le broker au démarrage.
 - `key_id` est l'identifiant de la clé tel qu'Azure l'affiche, `https://<vault>.vault.azure.net/keys/<name>`, éventuellement suivi de `/<version>`. Sans version, github-sts signe avec la version courante de la clé : importer une nouvelle version dans le coffre effectue donc la rotation de la clé sans changer la configuration.
-- github-sts signe un premier JWT d'App au démarrage et refuse de démarrer si une clé ne peut pas signer : il signale ainsi un identifiant erroné, un rôle manquant, un coffre injoignable ou une identité qui ne fait pas confiance au jeton du pod avant de recevoir du trafic.
+- github-sts signe un premier JWT d'App au démarrage et refuse de démarrer si une clé ne peut pas signer : il signale ainsi un identifiant erroné, un rôle manquant, un coffre injoignable, un coffre hors du locataire de son identité ou une identité qui ne fait pas confiance au jeton du pod avant de recevoir du trafic.
 - Après le démarrage, github-sts demande au coffre une signature par instance d'App toutes les 9 minutes, partagée par les échanges et les sondeurs en arrière-plan. Une panne du coffre arrête les échanges dès que le JWT d'App en cache expire ; un pool bascule vers une instance dont la clé signe encore.
 
-**Identités cloud.** Chaque entrée de `cloud_identities` est une identité managée affectée par l'utilisateur. `azure.client_id` et `azure.tenant_id` sont tous deux obligatoires, et ce sont des GUID : l'ID client et l'ID de locataire qu'affiche la ressource Azure de l'identité. Chaque clé désigne son identité : github-sts n'a donc pas d'identité par défaut et ignore `AZURE_CLIENT_ID` et `AZURE_TENANT_ID`. `cloud_identities` se définit uniquement en YAML ; un `signer` peut aussi se définir par [variables d'environnement]({{< relref "/reference/environment-variables#github-app-settings" >}}).
+**Identités cloud.** Chaque entrée de `cloud_identities` est une identité managée affectée par l'utilisateur. `azure.client_id` et `azure.tenant_id` sont tous deux obligatoires, et ce sont des GUID : l'ID client et l'ID de locataire qu'affiche la ressource Azure de l'identité. Chaque clé désigne son identité : github-sts n'a donc pas d'identité par défaut et ignore `AZURE_CLIENT_ID` et `AZURE_TENANT_ID`. Le coffre d'une clé doit se trouver dans le `tenant_id` de son identité : Key Vault demande un jeton dans le locataire du coffre, et github-sts ne demande de jetons que dans celui de l'identité, si bien qu'un coffre d'un autre locataire arrête le broker au démarrage avec une erreur qui le dit. Pour un coffre d'un autre locataire, utilisez une identité créée dans ce locataire. `cloud_identities` se définit uniquement en YAML ; un `signer` peut aussi se définir par [variables d'environnement]({{< relref "/reference/environment-variables#github-app-settings" >}}).
 
 **S'authentifier auprès d'Azure.** github-sts s'authentifie par identité de charge de travail et rien d'autre, si bien qu'aucun secret Azure n'existe : il échange le jeton projeté du compte de service Kubernetes du pod contre chaque identité. Il lit le chemin du jeton dans `AZURE_FEDERATED_TOKEN_FILE` et refuse de démarrer si cette variable est absente. Le chart Helm de github-sts projette le jeton et définit la variable ; le webhook Azure d'identité de charge de travail fait de même pour un pod étiqueté `azure.workload.identity/use: "true"`. Pour chaque identité, Azure a besoin de :
 
@@ -133,7 +133,7 @@ Microsoft Entra ID doit pouvoir lire l'émetteur du cluster ; un broker sur un c
 **Importer la clé.** Importez une fois dans le coffre le PEM que GitHub a généré, puis supprimez-le. Limitez les opérations de la clé à `sign`, pour qu'aucun rôle ne puisse l'utiliser à autre chose :
 
 ```bash
-az keyvault key import --vault-name myvault --name github-app-default \
+az keyvault key import --vault-name vault-one --name checkout \
   --pem-file github-app.pem --ops sign
 rm github-app.pem
 ```
