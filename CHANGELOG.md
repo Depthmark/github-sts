@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.1.3](https://github.com/Depthmark/github-sts/compare/v0.1.2...v0.1.3) (2026-11-02)
+
+
+### ✨ Features
+
+* add a skill for github-sts admin to create bundle ([#108](https://github.com/Depthmark/github-sts/issues/108)) ([bf9330b](https://github.com/Depthmark/github-sts/commit/bf9330b47de12782c26bb20ba7eccbf001faa797))
+* add a skill to help user create an identity and consume the ser… ([#107](https://github.com/Depthmark/github-sts/issues/107)) ([fd80f69](https://github.com/Depthmark/github-sts/commit/fd80f6936dd75e2731b6e36bd6ee55381d30f95c))
+* sign App JWTs with a key held in Azure Key Vault ([#121](https://github.com/Depthmark/github-sts/issues/121)) ([f2192f5](https://github.com/Depthmark/github-sts/commit/f2192f5ad24dbf7f805b71be22bf7bd0ae27fc30))
+
+
+### 📦 Dependencies
+
+* **deps:** bump github.com/sigstore/sigstore from 1.11.0 to 1.11.1 in the golang-dependencies group ([#115](https://github.com/Depthmark/github-sts/issues/115)) ([e3bf50a](https://github.com/Depthmark/github-sts/commit/e3bf50a93e41bef9a37434280b28225b93ab3aa6))
+* **deps:** bump github/codeql-action/upload-sarif from 4.38.3 to 4.39.0 in the github-actions-dependencies group ([#116](https://github.com/Depthmark/github-sts/issues/116)) ([291cae4](https://github.com/Depthmark/github-sts/commit/291cae4e8d70615c7813102edf0cde67980e60b3))
+* **deps:** bump the docker-dependencies group with 2 updates ([#101](https://github.com/Depthmark/github-sts/issues/101)) ([28eb6a0](https://github.com/Depthmark/github-sts/commit/28eb6a0ab5108b102e0540417037b7b12324f9d3))
+* **deps:** bump the docker-dependencies group with 2 updates ([#110](https://github.com/Depthmark/github-sts/issues/110)) ([fe0fcc3](https://github.com/Depthmark/github-sts/commit/fe0fcc31d2be00721e99b3fbf856585697f66531))
+* **deps:** bump the docker-dependencies group with 2 updates ([#114](https://github.com/Depthmark/github-sts/issues/114)) ([ece0246](https://github.com/Depthmark/github-sts/commit/ece0246c30f8a8daf89f53f4ec1c37dda8916eed))
+* **deps:** bump the docker-dependencies group with 2 updates ([#117](https://github.com/Depthmark/github-sts/issues/117)) ([d7ca85b](https://github.com/Depthmark/github-sts/commit/d7ca85bb39318c787fe8b041589d921027e6ac25))
+* **deps:** bump the github-actions-dependencies group across 1 directory with 2 updates ([#105](https://github.com/Depthmark/github-sts/issues/105)) ([bfe6ca0](https://github.com/Depthmark/github-sts/commit/bfe6ca0c191b77b2d34aac2a50175a02c7f3a3b4))
+* **deps:** bump the github-actions-dependencies group with 2 updates ([#119](https://github.com/Depthmark/github-sts/issues/119)) ([ffcdf42](https://github.com/Depthmark/github-sts/commit/ffcdf426edce00b2cfa27946723979514d5796ab))
+* **deps:** bump the github-actions-dependencies group with 4 updates ([#111](https://github.com/Depthmark/github-sts/issues/111)) ([09d5f28](https://github.com/Depthmark/github-sts/commit/09d5f285f88bb280df0e93666f6a3c30b14b3563))
+* **deps:** bump the golang-dependencies group across 1 directory with 12 updates ([#112](https://github.com/Depthmark/github-sts/issues/112)) ([52d9697](https://github.com/Depthmark/github-sts/commit/52d96979c805de5ef9bd3bc33513f6b1a88bc71f))
+* **deps:** bump the golang-dependencies group across 1 directory with 5 updates ([#123](https://github.com/Depthmark/github-sts/issues/123)) ([490ebeb](https://github.com/Depthmark/github-sts/commit/490ebeb2cce8ee499cc196f4eb418cad4d579894))
+
 ## [0.1.2](https://github.com/Depthmark/github-sts/compare/v0.1.1...v0.1.2) (2026-09-27)
 
 
