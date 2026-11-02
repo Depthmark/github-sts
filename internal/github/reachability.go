@@ -3,7 +3,6 @@ package github
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -11,7 +10,6 @@ import (
 	"time"
 
 	"github.com/depthmark/github-sts/internal/metrics"
-	"github.com/golang-jwt/jwt/v5"
 )
 
 // ReachabilityProber periodically probes GitHub API endpoints to verify
@@ -116,15 +114,9 @@ func (p *ReachabilityProber) probeInstance(ctx context.Context, pi PoolInstanceC
 	appName, instance, cfg := pi.LogicalApp, pi.Instance, pi.AppConfig
 	start := time.Now()
 
-	// Generate App JWT for the probe.
-	now := time.Now()
-	claims := jwt.MapClaims{
-		"iat": now.Add(-60 * time.Second).Unix(),
-		"exp": now.Add(10 * time.Minute).Unix(),
-		"iss": formatAppID(cfg.AppID),
-	}
-	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
-	appJWT, err := tok.SignedString(cfg.PrivateKey)
+	// The probe reuses the instance's cached App JWT. A key that cannot sign
+	// leaves the instance unable to serve, so it is reported as unreachable.
+	appJWT, _, err := cfg.Credential.appJWT(ctx)
 	if err != nil {
 		p.setReachable(appName, instance, false)
 		metrics.GitHubReachabilityFailuresTotal.WithLabelValues(appName, instance, "jwt_error").Inc()
@@ -181,8 +173,4 @@ func classifyNetError(err error) string {
 		return "timeout"
 	}
 	return "connection_error"
-}
-
-func formatAppID(id int64) string {
-	return fmt.Sprintf("%d", id)
 }

@@ -56,7 +56,7 @@ func mintWithGrant(t *testing.T, granted, requested map[string]string) MintedTok
 	srv := divergenceServer(t, granted)
 	defer srv.Close()
 
-	p := NewAppTokenProvider("test-app", "test-instance", 12345, generateTestKey(t), srv.URL, nil)
+	p := NewAppTokenProvider(newTestCredential(t, "test-app", "test-instance", 12345, generateTestKey(t)), srv.URL, nil)
 	minted, _, err := p.GetInstallationTokenForTarget(context.Background(),
 		TargetIdentity{Scope: "myorg/myrepo", RepositoryID: "3001"},
 		PermissionRequest{Ceiling: map[string]string{"contents": "write", "issues": "write"}, Effective: requested},

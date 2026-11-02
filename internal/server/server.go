@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -30,6 +31,8 @@ import (
 	"github.com/depthmark/github-sts/internal/oidc"
 	"github.com/depthmark/github-sts/internal/policy"
 	"github.com/depthmark/github-sts/internal/ratelimit"
+	"github.com/depthmark/github-sts/internal/signer"
+	"github.com/depthmark/github-sts/internal/signer/azure"
 	"github.com/depthmark/github-sts/internal/tracing"
 
 	"github.com/redis/go-redis/v9"
@@ -40,6 +43,12 @@ import (
 )
 
 const traceIDKey = handler.TraceIDKey
+
+// startupSignTimeout bounds the wait for each App instance's first
+// signature at startup. The signature itself is bounded inside
+// github.AppCredentialSource; this only keeps a stuck key from holding the
+// whole startup.
+const startupSignTimeout = 15 * time.Second
 
 // Server is the main HTTP server orchestrator.
 type Server struct {
@@ -61,6 +70,10 @@ type Server struct {
 
 // New creates a new Server with all services initialized.
 func New(cfg *config.Settings, slogger *slog.Logger) (*Server, error) {
+	return newServer(cfg, slogger, newKeyOpener(cfg.CloudIdentities))
+}
+
+func newServer(cfg *config.Settings, slogger *slog.Logger, openKey keyOpener) (*Server, error) {
 	s := &Server{
 		cfg:     cfg,
 		slogger: slogger,
@@ -137,6 +150,15 @@ func New(cfg *config.Settings, slogger *slog.Logger) (*Server, error) {
 
 	apiURL := "https://api.github.com"
 
+	// One credential source per physical App, shared by its provider and by
+	// both background pollers, so a vault-held key is asked for one signature
+	// per cache period whoever needs the JWT. Each source proves it can sign
+	// before the server takes traffic.
+	credentials, err := openAppCredentials(cfg, slogger, openKey)
+	if err != nil {
+		return nil, err
+	}
+
 	// Flatten every app's normalized instances into one list — shared by
 	// the background pollers below, which sweep every physical instance of
 	// every app regardless of pooling, the same way they always have.
@@ -147,8 +169,7 @@ func New(cfg *config.Settings, slogger *slog.Logger) (*Server, error) {
 				LogicalApp: name,
 				Instance:   inst.Name,
 				AppConfig: github.AppConfig{
-					AppID:         inst.AppID,
-					PrivateKey:    inst.ParsedKey,
+					Credential:    credentials[appInstance{app: name, instance: inst.Name}],
 					OrgPolicyRepo: app.OrgPolicyRepo,
 				},
 			})
@@ -194,7 +215,7 @@ func New(cfg *config.Settings, slogger *slog.Logger) (*Server, error) {
 	for name, app := range cfg.Apps {
 		members := make([]github.PoolMember, 0, len(app.Instances))
 		for _, inst := range app.Instances {
-			provider := github.NewAppTokenProvider(name, inst.Name, inst.AppID, inst.ParsedKey, apiURL, githubHTTPClient)
+			provider := github.NewAppTokenProvider(credentials[appInstance{app: name, instance: inst.Name}], apiURL, githubHTTPClient)
 			provider.SetQuotaStore(s.quotaStore)
 			members = append(members, github.PoolMember{Instance: inst.Name, Provider: provider})
 		}
@@ -371,6 +392,98 @@ func New(cfg *config.Settings, slogger *slog.Logger) (*Server, error) {
 	}
 
 	return s, nil
+}
+
+// appInstance identifies one physical GitHub App across every pool.
+type appInstance struct {
+	app      string
+	instance string
+}
+
+// errNoCloud is the opener's refusal of a cloud identity whose cloud it has
+// no provider for. Load accepts only clouds the opener knows, so reaching it
+// means the two have drifted apart.
+var errNoCloud = errors.New("names no cloud github-sts can sign in")
+
+// keyOpener returns the signer.Key for one App instance. New uses
+// newKeyOpener; tests substitute their own so that no test reaches a cloud.
+type keyOpener func(inst config.AppInstanceConfig) (signer.Key, error)
+
+// newKeyOpener opens an in-process key from the parsed PEM, and a vault key
+// through one provider per cloud, signing as the cloud identity the signer
+// names. The provider is built on first use, so a broker with no vault key
+// never builds an Azure credential. Load has already checked that every
+// signer names a defined identity.
+func newKeyOpener(identities map[string]config.CloudIdentityConfig) keyOpener {
+	var azureProvider *azure.Provider
+	return func(inst config.AppInstanceConfig) (signer.Key, error) {
+		if !inst.Signer.IsSet() {
+			return signer.NewLocal(inst.ParsedKey), nil
+		}
+		identity := identities[inst.Signer.CloudIdentity]
+		switch identity.Provider() {
+		case signer.ProviderAzure:
+			if azureProvider == nil {
+				p, err := azure.NewProvider()
+				if err != nil {
+					return nil, fmt.Errorf("signer: %w", err)
+				}
+				azureProvider = p
+			}
+			key, err := azureProvider.Key(inst.Signer.KeyID, identity.Azure.ClientID, identity.Azure.TenantID)
+			if err != nil {
+				return nil, fmt.Errorf("signer: cloud identity %q: %w", inst.Signer.CloudIdentity, err)
+			}
+			return key, nil
+		default:
+			return nil, fmt.Errorf("signer.cloud_identity %q %w", inst.Signer.CloudIdentity, errNoCloud)
+		}
+	}
+}
+
+// openAppCredentials opens every App instance's key and signs a first App
+// JWT with it. A key that cannot sign (a wrong key identifier, a missing
+// role, an unreachable vault, an identity that does not trust the pod's
+// token) stops the server here, before it takes traffic, rather than failing
+// every exchange later (configuration/2).
+func openAppCredentials(cfg *config.Settings, slogger *slog.Logger, openKey keyOpener) (map[appInstance]*github.AppCredentialSource, error) {
+	credentials := make(map[appInstance]*github.AppCredentialSource)
+	for name, app := range cfg.Apps {
+		for _, inst := range app.Instances {
+			key, err := openKey(inst)
+			if err != nil {
+				return nil, fmt.Errorf("app %q instance %q: %w", name, inst.Name, err)
+			}
+			credential := github.NewAppCredentialSource(name, inst.Name, inst.AppID, key)
+
+			ctx, cancel := context.WithTimeout(context.Background(), startupSignTimeout)
+			err = credential.Prime(ctx)
+			cancel()
+			if err != nil {
+				return nil, fmt.Errorf("app %q instance %q: %s cannot sign: %w", name, inst.Name, keyField(inst), err)
+			}
+
+			if inst.Signer.IsSet() {
+				slogger.Info("github app key opened", "app", name, "instance", inst.Name,
+					"key_source", "signer", "signer_cloud_identity", inst.Signer.CloudIdentity,
+					"signer_provider", cfg.CloudIdentities[inst.Signer.CloudIdentity].Provider(),
+					"signer_key_id", inst.Signer.KeyID)
+			} else {
+				slogger.Info("github app key opened", "app", name, "instance", inst.Name, "key_source", "private_key")
+			}
+			credentials[appInstance{app: name, instance: inst.Name}] = credential
+		}
+	}
+	return credentials, nil
+}
+
+// keyField names, for an error message, the configuration that gave an
+// instance its key.
+func keyField(inst config.AppInstanceConfig) string {
+	if inst.Signer.IsSet() {
+		return fmt.Sprintf("signer.key_id %q", inst.Signer.KeyID)
+	}
+	return "the private key"
 }
 
 func yamlOnlyAuthorizationPossible(cfg *config.Settings) bool {

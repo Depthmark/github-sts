@@ -5,7 +5,6 @@ package github
 import (
 	"bytes"
 	"context"
-	"crypto/rsa"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -20,7 +19,6 @@ import (
 	"github.com/depthmark/github-sts/internal/metrics"
 	"github.com/depthmark/github-sts/internal/policy"
 	ststracing "github.com/depthmark/github-sts/internal/tracing"
-	"github.com/golang-jwt/jwt/v5"
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/singleflight"
 )
@@ -30,22 +28,10 @@ import (
 // stale; this TTL ensures the service self-heals without a restart.
 const installationCacheTTL = 15 * time.Minute
 
-// appJWTCacheTTL controls how long the signed App JWT is reused. The JWT
-// itself is valid for 10 minutes; we cache for 9 minutes to leave a
-// 1-minute safety margin. This eliminates redundant RSA signings on the
-// hot path (~1-2ms each) without any security impact — the JWT is an
-// internal server credential that never leaves the service.
-const appJWTCacheTTL = 9 * time.Minute
-
 type cachedInstallation struct {
 	id          int64
 	permissions map[string]string // granted permissions on the installation
 	fetchedAt   time.Time
-}
-
-type cachedJWT struct {
-	token     string
-	expiresAt time.Time
 }
 
 // AppTokenProvider creates permission-scoped GitHub installation tokens
@@ -54,32 +40,31 @@ type AppTokenProvider struct {
 	appName           string // logical app name (e.g. "checkout") — stable across a pool
 	instance          string // this credential's identity within its pool (e.g. "checkout-2" or app_id); equals appName's app_id for a non-pooled app
 	appID             int64
-	privateKey        *rsa.PrivateKey
+	credential        *AppCredentialSource
 	apiURL            string
 	httpClient        *http.Client
 	installationCache map[string]*cachedInstallation // org → entry
 	targetCache       map[string]*cachedTarget       // canonical owner/repository → entry
 	mu                sync.RWMutex
-	jwtCache          cachedJWT
-	jwtMu             sync.Mutex
 	quota             *QuotaStore // nil records nothing; see SetQuotaStore
 	installSF         singleflight.Group
 	targetSF          singleflight.Group
 }
 
-// NewAppTokenProvider creates a server-side AppTokenProvider. instance
-// labels this specific credential (e.g. "checkout-2") for metrics/logs when
-// it's one member of an AppPool; appName stays the logical app name shared
-// by every member of the same pool.
-func NewAppTokenProvider(appName, instance string, appID int64, privateKey *rsa.PrivateKey, apiURL string, httpClient *http.Client) *AppTokenProvider {
+// NewAppTokenProvider creates a server-side AppTokenProvider that
+// authenticates as the App through credential. The credential's app name and
+// instance label everything the provider records: instance identifies this
+// physical App (e.g. "checkout-2") when it's one member of an AppPool, and
+// the app name stays the logical name shared by every member of the pool.
+func NewAppTokenProvider(credential *AppCredentialSource, apiURL string, httpClient *http.Client) *AppTokenProvider {
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 15 * time.Second}
 	}
 	return &AppTokenProvider{
-		appName:           appName,
-		instance:          instance,
-		appID:             appID,
-		privateKey:        privateKey,
+		appName:           credential.appName,
+		instance:          credential.instance,
+		appID:             credential.appID,
+		credential:        credential,
 		apiURL:            apiURL,
 		httpClient:        httpClient,
 		installationCache: make(map[string]*cachedInstallation),
@@ -101,47 +86,17 @@ func (e *TokenMintError) Error() string { return e.Err.Error() }
 func (e *TokenMintError) Unwrap() error { return e.Err }
 
 // GenerateAppJWT returns a short-lived JWT for authenticating as the GitHub
-// App. The signed token is cached for 9 minutes (valid for 10) to avoid
-// redundant RSA signing operations under load.
+// App. The signed token is cached for 9 minutes (valid for 10) by the
+// instance's AppCredentialSource, which the background pollers share.
 func (p *AppTokenProvider) GenerateAppJWT(ctx context.Context) (token string, err error) {
 	ctx, span := ststracing.Tracer().Start(ctx, "github.app_jwt.get",
 		trace.WithAttributes(ststracing.CacheAttributes(p.appName, p.instance, "app_jwt", "")...),
 	)
 	defer func() { endGitHubSpan(span, err) }()
 
-	p.jwtMu.Lock()
-	defer p.jwtMu.Unlock()
-
-	if p.jwtCache.token != "" && time.Now().Before(p.jwtCache.expiresAt) {
-		span.SetAttributes(ststracing.AttrCacheResult.String("hit"))
-		return p.jwtCache.token, nil
-	}
-	span.SetAttributes(ststracing.AttrCacheResult.String("miss"))
-
-	now := time.Now()
-	claims := jwt.MapClaims{
-		"iat": now.Add(-60 * time.Second).Unix(),
-		"exp": now.Add(10 * time.Minute).Unix(),
-		"iss": fmt.Sprintf("%d", p.appID),
-	}
-	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
-	_, signSpan := ststracing.Tracer().Start(ctx, "github.app_jwt.sign",
-		trace.WithAttributes(ststracing.GitHubOperationAttributes(p.appName, p.instance, "sign_app_jwt", "")...),
-	)
-	signed, err := tok.SignedString(p.privateKey)
-	if err != nil {
-		ststracing.MarkError(signSpan, "github_app_jwt_sign_failed")
-		signSpan.End()
-		return "", err
-	}
-	signSpan.SetAttributes(ststracing.StageResult("success"))
-	signSpan.End()
-
-	p.jwtCache = cachedJWT{
-		token:     signed,
-		expiresAt: now.Add(appJWTCacheTTL),
-	}
-	return signed, nil
+	token, cacheResult, err := p.credential.appJWT(ctx)
+	span.SetAttributes(ststracing.AttrCacheResult.String(cacheResult))
+	return token, err
 }
 
 // GetInstallationID resolves the GitHub App installation ID for the given scope.
@@ -229,7 +184,7 @@ func (p *AppTokenProvider) fetchInstallationID(ctx context.Context, org string) 
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		return 0, &TokenMintError{StatusCode: resp.StatusCode, Retryable: true, Err: fmt.Errorf(
 			"github app %q instance %q (app_id: %d) authentication failed for org %q (HTTP %d) — "+
-				"verify the app_id and private_key are correct: %s",
+				"verify the app_id and the App's key (private_key, private_key_path or signer) are correct: %s",
 			p.appName, p.instance, p.appID, org, resp.StatusCode, string(body))}
 	}
 	if resp.StatusCode != http.StatusOK {

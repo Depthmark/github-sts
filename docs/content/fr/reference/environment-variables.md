@@ -6,7 +6,7 @@ translationKey: environment-variables
 translationStatus: pending-review
 ---
 
-Toutes les variables utilisent le préfixe `GITHUBSTS_`. Les variables par App suivent le modèle `GITHUBSTS_APP_{NAME}_{FIELD}`.
+Toutes les variables de github-sts utilisent le préfixe `GITHUBSTS_`. Les variables par App suivent le modèle `GITHUBSTS_APP_{NAME}_{FIELD}`. Une clé d'App détenue dans Azure Key Vault exige aussi `AZURE_FEDERATED_TOKEN_FILE`, une variable du SDK Azure (voir [Paramètres de la GitHub App](#github-app-settings)).
 
 ## Paramètres du serveur
 
@@ -26,27 +26,33 @@ Toutes les variables utilisent le préfixe `GITHUBSTS_`. Les variables par App s
 | `GITHUBSTS_SERVER_TLS_CIPHER_SUITES` | — | Liste de suites de chiffrement TLS 1.2 autorisées, séparées par des virgules (noms IANA). Vide = valeurs par défaut de Go. Ignoré lorsque `min_version` est `1.3`. |
 | `GITHUBSTS_SERVER_TLS_RELOAD_INTERVAL` | `0` | Intervalle de rechargement des certificats (ex. `1h`). `0` désactive le rechargement. Nécessite que le certificat et la clé soient définis. |
 
-## Paramètres de la GitHub App
+## Paramètres de la GitHub App {#github-app-settings}
 
 | Variable | Par défaut | Description |
 |---|---|---|
 | `GITHUBSTS_APP_{NAME}_APP_ID` | *obligatoire* | ID numérique de la GitHub App |
-| `GITHUBSTS_APP_{NAME}_PRIVATE_KEY` | *obligatoire* | Chaîne PEM (mutuellement exclusive avec `_PATH`) |
+| `GITHUBSTS_APP_{NAME}_PRIVATE_KEY` | — | Chaîne PEM. Chaque instance exige exactement une source de clé : celle-ci, `_PRIVATE_KEY_PATH`, ou `_SIGNER_CLOUD_IDENTITY` avec `_SIGNER_KEY_ID` |
 | `GITHUBSTS_APP_{NAME}_PRIVATE_KEY_PATH` | — | Chemin vers le fichier PEM |
+| `GITHUBSTS_APP_{NAME}_SIGNER_CLOUD_IDENTITY` | — | Nom de l'entrée de `cloud_identities` qui signe avec la clé de l'App. L'entrée elle-même se définit uniquement en YAML (voir [Configuration]({{< relref "/reference/configuration#signer" >}})) |
+| `GITHUBSTS_APP_{NAME}_SIGNER_KEY_ID` | — | Identifiant de la clé dans le cloud de cette identité, pour Azure `https://<vault>.vault.azure.net/keys/<name>[/<version>]` |
 | `GITHUBSTS_APP_{NAME}_ORG_POLICY_REPO` | — | Dépôt des politiques d'organisation (par ex. `.github`) |
 | `GITHUBSTS_APP_{NAME}_POLICY_RESOLUTION` | `org_first` | Mode de résolution : `org_first`, `repo_first` (obsolète) ou `org_only` |
 | `GITHUBSTS_APP_{NAME}_ROTATION_STRATEGY` | `round_robin` | Stratégie de sélection du pool : `round_robin` ou `rate_limit_aware` (voir [Configuration]({{< relref "/reference/configuration#pools-dapps-rotation-multi-instances-pour-la-limite-de-débit" >}})) |
 | `GITHUBSTS_APP_{NAME}_ROTATION_MIN_REMAINING_PCT` | `0` | `rate_limit_aware` uniquement : un membre connu comme étant sous ce pourcentage restant est tenté après les autres |
 | `GITHUBSTS_APP_{NAME}_ROTATION_MAX_ATTEMPTS` | taille du pool, plafonnée à `3` | Limite le nombre de bascules par requête |
 
-Chaque instance d'un pool (`apps.<name>.instances[N]` en YAML) peut aussi être définie ou surchargée individuellement, en base 1 et de façon contiguë : le chargeur s'arrête au premier index `N` où aucune des quatre variables ci-dessous n'est définie.
+Chaque instance d'un pool (`apps.<name>.instances[N]` en YAML) peut aussi être définie ou surchargée individuellement, en base 1 et de façon contiguë : le chargeur s'arrête au premier index `N` où aucune des six variables ci-dessous n'est définie.
 
 | Variable | Par défaut | Description |
 |---|---|---|
 | `GITHUBSTS_APP_{NAME}_INSTANCE_{N}_APP_ID` | — | ID numérique de la GitHub App pour l'instance `N` du pool |
-| `GITHUBSTS_APP_{NAME}_INSTANCE_{N}_PRIVATE_KEY` | — | Chaîne PEM pour l'instance `N` du pool (mutuellement exclusive avec `_PATH`) |
+| `GITHUBSTS_APP_{NAME}_INSTANCE_{N}_PRIVATE_KEY` | — | Chaîne PEM pour l'instance `N` du pool. Chaque instance exige exactement une source de clé : celle-ci, `_PRIVATE_KEY_PATH`, ou `_SIGNER_CLOUD_IDENTITY` avec `_SIGNER_KEY_ID` |
 | `GITHUBSTS_APP_{NAME}_INSTANCE_{N}_PRIVATE_KEY_PATH` | — | Chemin vers le fichier PEM pour l'instance `N` du pool |
+| `GITHUBSTS_APP_{NAME}_INSTANCE_{N}_SIGNER_CLOUD_IDENTITY` | — | Nom de l'entrée de `cloud_identities` qui signe avec la clé de l'instance `N` du pool |
+| `GITHUBSTS_APP_{NAME}_INSTANCE_{N}_SIGNER_KEY_ID` | — | Identifiant de la clé dans le cloud de cette identité, pour l'instance `N` du pool |
 | `GITHUBSTS_APP_{NAME}_INSTANCE_{N}_NAME` | `app_id` (converti en chaîne) | Étiquette de métriques/audit pour l'instance `N` du pool |
+
+Avec une clé dans Azure Key Vault, github-sts exige aussi `AZURE_FEDERATED_TOKEN_FILE`, le chemin du jeton projeté du compte de service qu'il échange contre chaque identité, et refuse de démarrer sans elle. Le chart Helm de github-sts la définit, et le webhook Azure d'identité de charge de travail aussi. github-sts ignore `AZURE_CLIENT_ID`, `AZURE_TENANT_ID` et `AZURE_TOKEN_CREDENTIALS` : les ID de chaque identité sont dans `cloud_identities`. Voir [Configuration]({{< relref "/reference/configuration#signer" >}}).
 
 ## Paramètres de politique et de sécurité
 
@@ -97,7 +103,7 @@ Chaque instance d'un pool (`apps.<name>.instances[N]` en YAML) peut aussi être 
 
 ## Notes de sécurité
 
-- **Clés privées :** Préférez `GITHUBSTS_APP_{NAME}_PRIVATE_KEY_PATH` à `_PRIVATE_KEY`. Les variables d'environnement apparaissent dans les listes de processus et les points de terminaison de débogage. Montez les clés comme fichiers depuis un magasin de secrets.
+- **Clés privées :** Préférez `GITHUBSTS_APP_{NAME}_PRIVATE_KEY_PATH` à `_PRIVATE_KEY`. Les variables d'environnement apparaissent dans les listes de processus et les points de terminaison de débogage. Montez les clés comme fichiers depuis un magasin de secrets. Mieux encore, gardez la clé dans un coffre de clés avec `_SIGNER_CLOUD_IDENTITY` et `_SIGNER_KEY_ID` : le broker ne la détient alors jamais.
 - **Audience :** Définissez `GITHUBSTS_OIDC_REQUIRED_AUDIENCE` en production. C'est une défense en profondeur en plus du champ `audience:` par politique.
 - **Backend JTI :** Utilisez `redis` pour les déploiements multi-réplicas. Le backend `memory` est par instance et n'empêche pas le rejeu inter-réplicas.
 - **Liste d'autorisation d'émetteurs :** `GITHUBSTS_OIDC_ALLOWED_ISSUERS` est obligatoire. Une liste vide est une erreur de validation, pas un repli « accepter n'importe quel émetteur ».

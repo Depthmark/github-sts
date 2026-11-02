@@ -184,7 +184,7 @@ func newTestPoller(t *testing.T, app string, srv *httptest.Server, quota *QuotaS
 	instances := []PoolInstanceConfig{{
 		LogicalApp: app,
 		Instance:   "i1",
-		AppConfig:  AppConfig{AppID: 1, PrivateKey: generateTestKey(t)},
+		AppConfig:  AppConfig{Credential: newTestCredential(t, app, "i1", 1, generateTestKey(t))},
 	}}
 	// A long forceCountedInterval here means existing probes stay purely
 	// conditional (as before this poller could force a counted re-read);

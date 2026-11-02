@@ -28,6 +28,8 @@ func tokenMintErrorType(err error) string {
 		return "context_canceled"
 	case errors.Is(err, context.DeadlineExceeded):
 		return "timeout"
+	case errors.Is(err, ErrAppCredential):
+		return "github_app_jwt_sign_failed"
 	}
 
 	var mintErr *TokenMintError

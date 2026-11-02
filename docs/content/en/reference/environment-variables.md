@@ -5,7 +5,7 @@ weight: 3
 translationKey: environment-variables
 ---
 
-All variables use the `GITHUBSTS_` prefix. Per-app variables follow `GITHUBSTS_APP_{NAME}_{FIELD}`.
+All github-sts variables use the `GITHUBSTS_` prefix. Per-app variables follow `GITHUBSTS_APP_{NAME}_{FIELD}`. An App key held in Azure Key Vault also needs `AZURE_FEDERATED_TOKEN_FILE`, an Azure SDK variable (see [GitHub App settings](#github-app-settings)).
 
 ## Server settings
 
@@ -25,27 +25,33 @@ All variables use the `GITHUBSTS_` prefix. Per-app variables follow `GITHUBSTS_A
 | `GITHUBSTS_SERVER_TLS_CIPHER_SUITES` | n/a | Comma-separated TLS 1.2 cipher suite allowlist (IANA names). Empty = Go defaults. Ignored when `min_version` is `1.3`. |
 | `GITHUBSTS_SERVER_TLS_RELOAD_INTERVAL` | `0` | Cert hot-reload poll interval (e.g. `1h`). `0` disables hot-reload. Requires cert and key to be set. |
 
-## GitHub App settings
+## GitHub App settings {#github-app-settings}
 
 | Variable | Default | Description |
 |---|---|---|
 | `GITHUBSTS_APP_{NAME}_APP_ID` | *required* | GitHub App numeric ID |
-| `GITHUBSTS_APP_{NAME}_PRIVATE_KEY` | *required* | PEM string (mutually exclusive with `_PATH`) |
+| `GITHUBSTS_APP_{NAME}_PRIVATE_KEY` | n/a | PEM string. Each instance needs exactly one key source: this, `_PRIVATE_KEY_PATH`, or `_SIGNER_CLOUD_IDENTITY` with `_SIGNER_KEY_ID` |
 | `GITHUBSTS_APP_{NAME}_PRIVATE_KEY_PATH` | n/a | Path to PEM file |
+| `GITHUBSTS_APP_{NAME}_SIGNER_CLOUD_IDENTITY` | n/a | Name of the `cloud_identities` entry that signs with the App key. The entry itself is set in YAML only (see [Configuration]({{< relref "/reference/configuration#signer" >}})) |
+| `GITHUBSTS_APP_{NAME}_SIGNER_KEY_ID` | n/a | The key's identifier in that identity's cloud, for Azure `https://<vault>.vault.azure.net/keys/<name>[/<version>]` |
 | `GITHUBSTS_APP_{NAME}_ORG_POLICY_REPO` | n/a | Central policy repository for repository-scoped requests (e.g. `.github`) |
 | `GITHUBSTS_APP_{NAME}_POLICY_RESOLUTION` | `org_first` | Resolution mode: `org_first`, `repo_first` (deprecated), or `org_only` |
 | `GITHUBSTS_APP_{NAME}_ROTATION_STRATEGY` | `round_robin` | Pool selection strategy: `round_robin` or `rate_limit_aware` (see [Configuration]({{< relref "/reference/configuration#app-pools-multi-instance-rate-limit-rotation" >}})) |
 | `GITHUBSTS_APP_{NAME}_ROTATION_MIN_REMAINING_PCT` | `0` | `rate_limit_aware` only: a member known to be below this remaining percentage is tried after the others |
 | `GITHUBSTS_APP_{NAME}_ROTATION_MAX_ATTEMPTS` | pool size, capped at `3` | Bound failover fan-out per request |
 
-Individual pool instances (`apps.<name>.instances[N]` in YAML) can also be set or overridden per-instance, 1-based and contiguous: the loader stops at the first index `N` where none of the four variables below is set.
+Individual pool instances (`apps.<name>.instances[N]` in YAML) can also be set or overridden per-instance, 1-based and contiguous: the loader stops at the first index `N` where none of the six variables below is set.
 
 | Variable | Default | Description |
 |---|---|---|
 | `GITHUBSTS_APP_{NAME}_INSTANCE_{N}_APP_ID` | — | GitHub App numeric ID for pool instance `N` |
-| `GITHUBSTS_APP_{NAME}_INSTANCE_{N}_PRIVATE_KEY` | — | PEM string for pool instance `N` (mutually exclusive with `_PATH`) |
+| `GITHUBSTS_APP_{NAME}_INSTANCE_{N}_PRIVATE_KEY` | — | PEM string for pool instance `N`. Each instance needs exactly one key source: this, `_PRIVATE_KEY_PATH`, or `_SIGNER_CLOUD_IDENTITY` with `_SIGNER_KEY_ID` |
 | `GITHUBSTS_APP_{NAME}_INSTANCE_{N}_PRIVATE_KEY_PATH` | — | Path to PEM file for pool instance `N` |
+| `GITHUBSTS_APP_{NAME}_INSTANCE_{N}_SIGNER_CLOUD_IDENTITY` | — | Name of the `cloud_identities` entry that signs with the key of pool instance `N` |
+| `GITHUBSTS_APP_{NAME}_INSTANCE_{N}_SIGNER_KEY_ID` | — | The key's identifier in that identity's cloud, for pool instance `N` |
 | `GITHUBSTS_APP_{NAME}_INSTANCE_{N}_NAME` | `app_id` (stringified) | Metrics/audit label for pool instance `N` |
+
+With a key in Azure Key Vault, github-sts also requires `AZURE_FEDERATED_TOKEN_FILE`, the path of the projected service account token it exchanges for each identity, and refuses to start without it. The github-sts Helm chart sets it, and so does the Azure workload identity webhook. github-sts ignores `AZURE_CLIENT_ID`, `AZURE_TENANT_ID` and `AZURE_TOKEN_CREDENTIALS`: each identity's IDs are in `cloud_identities`. See [Configuration]({{< relref "/reference/configuration#signer" >}}).
 
 ## Policy & security settings
 
@@ -98,7 +104,7 @@ Individual pool instances (`apps.<name>.instances[N]` in YAML) can also be set o
 
 ## Security notes
 
-- **Private keys:** Prefer `GITHUBSTS_APP_{NAME}_PRIVATE_KEY_PATH` over `_PRIVATE_KEY`. Environment variables appear in process listings and debug endpoints. Mount keys as files from a secret store.
+- **Private keys:** Prefer `GITHUBSTS_APP_{NAME}_PRIVATE_KEY_PATH` over `_PRIVATE_KEY`. Environment variables appear in process listings and debug endpoints. Mount keys as files from a secret store. Better still, keep the key in a key vault with `_SIGNER_CLOUD_IDENTITY` and `_SIGNER_KEY_ID`: the broker then never holds it.
 - **Audience:** Set `GITHUBSTS_OIDC_REQUIRED_AUDIENCE` in production. This is defense-in-depth on top of the per-policy `audience:` field.
 - **JTI backend:** Use `redis` for multi-replica deployments. The `memory` backend is per-instance and does not prevent cross-replica replay.
 - **Issuer allowlist:** `GITHUBSTS_OIDC_ALLOWED_ISSUERS` is required. An empty list is a hard validation error, not an "accept any issuer" fallback.

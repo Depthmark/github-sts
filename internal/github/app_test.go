@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/depthmark/github-sts/internal/metrics"
+	"github.com/depthmark/github-sts/internal/signer"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
@@ -24,9 +25,16 @@ func generateTestKey(t *testing.T) *rsa.PrivateKey {
 	return key
 }
 
+// newTestCredential returns a credential source that signs with key in
+// process, as a PEM-configured instance does.
+func newTestCredential(t *testing.T, appName, instance string, appID int64, key *rsa.PrivateKey) *AppCredentialSource {
+	t.Helper()
+	return NewAppCredentialSource(appName, instance, appID, signer.NewLocal(key))
+}
+
 func TestAppTokenProvider_GenerateAppJWT(t *testing.T) {
 	key := generateTestKey(t)
-	p := NewAppTokenProvider("test-app", "test-instance", 12345, key, "https://api.github.com", nil)
+	p := NewAppTokenProvider(newTestCredential(t, "test-app", "test-instance", 12345, key), "https://api.github.com", nil)
 	jwt, err := p.GenerateAppJWT(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -52,7 +60,7 @@ func TestAppTokenProvider_GetInstallationID_OrgOnly(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewAppTokenProvider("test-app", "test-instance", 12345, key, srv.URL, nil)
+	p := NewAppTokenProvider(newTestCredential(t, "test-app", "test-instance", 12345, key), srv.URL, nil)
 
 	// Repo-level scope should still use org endpoint.
 	id, err := p.GetInstallationID(context.Background(), "myorg/myrepo")
@@ -75,7 +83,7 @@ func TestAppTokenProvider_GetInstallationID_Caching(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewAppTokenProvider("test-app", "test-instance", 12345, key, srv.URL, nil)
+	p := NewAppTokenProvider(newTestCredential(t, "test-app", "test-instance", 12345, key), srv.URL, nil)
 
 	_, _ = p.GetInstallationID(context.Background(), "myorg")
 	_, _ = p.GetInstallationID(context.Background(), "myorg")
@@ -113,7 +121,7 @@ func TestAppTokenProvider_GetInstallationToken_WithPermissions(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewAppTokenProvider("test-app", "test-instance", 12345, key, srv.URL, nil)
+	p := NewAppTokenProvider(newTestCredential(t, "test-app", "test-instance", 12345, key), srv.URL, nil)
 
 	token, err := p.GetInstallationToken(context.Background(), "myorg",
 		map[string]string{"contents": "read"}, nil, "test")
@@ -152,7 +160,7 @@ func TestAppTokenProvider_GetInstallationToken_RepoRestriction(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewAppTokenProvider("test-app", "test-instance", 12345, key, srv.URL, nil)
+	p := NewAppTokenProvider(newTestCredential(t, "test-app", "test-instance", 12345, key), srv.URL, nil)
 
 	token, err := p.GetInstallationToken(context.Background(), "myorg/myrepo",
 		map[string]string{"contents": "read"}, nil, "test")
@@ -165,7 +173,7 @@ func TestAppTokenProvider_GetInstallationToken_RepoRestriction(t *testing.T) {
 }
 
 func TestAppTokenProvider_GetInstallationToken_RejectsEmptyRepositoryList(t *testing.T) {
-	p := NewAppTokenProvider("test-app", "test-app", 12345, generateTestKey(t), "https://api.invalid", nil)
+	p := NewAppTokenProvider(newTestCredential(t, "test-app", "test-app", 12345, generateTestKey(t)), "https://api.invalid", nil)
 
 	_, err := p.GetInstallationToken(context.Background(), "myorg", map[string]string{"contents": "read"}, []string{}, "test")
 	if err == nil || !strings.Contains(err.Error(), "empty repository list") {
@@ -364,7 +372,7 @@ func TestAppTokenProvider_GetInstallationToken_422CapturesDiff(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := NewAppTokenProvider("test-app", "test-instance", 12345, key, srv.URL, nil)
+	p := NewAppTokenProvider(newTestCredential(t, "test-app", "test-instance", 12345, key), srv.URL, nil)
 
 	_, err := p.GetInstallationToken(context.Background(), "myorg/myrepo",
 		map[string]string{"administration": "write", "contents": "write"}, nil, "test")
@@ -495,7 +503,7 @@ func TestGetInstallationToken_RetryabilityClassification(t *testing.T) {
 			}
 
 			key := generateTestKey(t)
-			p := NewAppTokenProvider("test-app", "test-instance", 12345, key, apiURL, nil)
+			p := NewAppTokenProvider(newTestCredential(t, "test-app", "test-instance", 12345, key), apiURL, nil)
 			_, err := p.GetInstallationToken(context.Background(), "myorg/myrepo", map[string]string{"contents": "read"}, nil, "test")
 			if err == nil {
 				t.Fatal("expected an error")
@@ -538,7 +546,7 @@ func TestFetchInstallationID_FailuresAreRetryable(t *testing.T) {
 			defer srv.Close()
 
 			key := generateTestKey(t)
-			p := NewAppTokenProvider("test-app", "test-instance", 12345, key, srv.URL, nil)
+			p := NewAppTokenProvider(newTestCredential(t, "test-app", "test-instance", 12345, key), srv.URL, nil)
 			_, err := p.GetInstallationID(context.Background(), "myorg")
 			if err == nil {
 				t.Fatal("expected an error")
@@ -559,7 +567,7 @@ func TestFetchInstallationID_TransportErrorIsRetryable(t *testing.T) {
 	srv.Close() // already closed — every request is a transport error
 
 	key := generateTestKey(t)
-	p := NewAppTokenProvider("test-app", "test-instance", 12345, key, srv.URL, nil)
+	p := NewAppTokenProvider(newTestCredential(t, "test-app", "test-instance", 12345, key), srv.URL, nil)
 	_, err := p.GetInstallationID(context.Background(), "myorg")
 	if err == nil {
 		t.Fatal("expected an error")

@@ -70,9 +70,9 @@ Par défaut, github-sts fait tourner les instances d'un pool en round-robin, éc
 
 Règles :
 
-- `instances` et les champs plats `app_id` / `private_key` / `private_key_path` sont mutuellement exclusifs sur une App. Une App en forme plate est traitée comme un pool d'une instance.
+- `instances` et les champs plats `app_id` / `private_key` / `private_key_path` / `signer` sont mutuellement exclusifs sur une App. Une App en forme plate est traitée comme un pool d'une instance.
 - `rotation` n'a de sens que sur une App poolée (`instances` défini) : le définir sur une App en forme plate est une erreur de validation, car cela serait autrement du YAML sans aucun effet.
-- Chaque instance nécessite `app_id` et exactement un des deux champs `private_key` / `private_key_path`.
+- Chaque instance nécessite `app_id` et exactement un des champs `private_key` / `private_key_path` / `signer` (voir [Garder la clé de l'App dans un coffre de clés](#signer)).
 - `app_id` doit être unique **au sein** du pool d'une App. Le même `app_id` réutilisé entre les pools de deux Apps logiques différentes est autorisé (elles partagent déjà un quota de limite de débit par construction) mais journalise un avertissement au démarrage, car c'est plus souvent un copier-coller erroné qu'une configuration intentionnelle.
 - `name` est optionnel et vaut par défaut `app_id` (converti en chaîne). Comme il devient une valeur d'étiquette Prometheus, il est limité à 100 caractères parmi `[a-zA-Z0-9._/-]`.
 - `rotation.strategy` vaut `round_robin` (défaut) ou `rate_limit_aware`. Avec `rate_limit_aware`, chaque requête place en fin d'ordre tout membre dont l'installation pour l'organisation demandée est connue comme étant sous `rotation.min_remaining_pct`, ou sans requête restante, dans une fenêtre de limite de débit pas encore réinitialisée. Le membre n'est pas retiré : il est encore tenté quand tous les autres membres échouent. Chaque fois qu'une requête le passe sans le tenter, `githubsts_app_pool_selection_total{outcome="skipped_rate_limited"}` le compte. Quand tous les membres sont bas, ou que rien n'est connu, l'ordre est un simple round-robin.
@@ -81,6 +81,62 @@ Règles :
 - `rotation.max_attempts` vaut par défaut `min(len(instances), 3)` lorsqu'il est omis ou à `0`.
 
 **Exigence opérationnelle :** chaque instance d'un pool doit être installée avec des autorisations et un accès aux dépôts identiques. github-sts traite les membres du pool comme interchangeables ; il ne vérifie pas actuellement qu'ils le sont réellement, donc une instance mal configurée ne se manifeste que par un 422 intermittent ou un échec d'accessibilité, sur la fraction des requêtes qui tombent dessus.
+
+## Garder la clé de l'App dans un coffre de clés {#signer}
+
+Gardez la clé privée de l'App hors de github-sts : désignez une clé détenue par Azure Key Vault, ou Managed HSM, au lieu d'un PEM. github-sts envoie au coffre un condensé SHA-256 et reçoit la signature du JWT de l'App : la clé n'entre jamais dans le processus. Chaque clé signe sous une identité cloud que vous définissez une seule fois dans `cloud_identities` et que son `signer` désigne par son nom.
+
+```yaml
+cloud_identities:
+  vault-one:
+    azure:
+      client_id: 00000000-0000-0000-0000-000000000001
+      tenant_id: 00000000-0000-0000-0000-000000000003
+  vault-two:
+    azure:
+      client_id: 00000000-0000-0000-0000-000000000002
+      tenant_id: 00000000-0000-0000-0000-000000000003
+
+apps:
+  checkout:
+    app_id: 111111
+    signer:
+      cloud_identity: vault-one
+      key_id: https://vault-one.vault.azure.net/keys/checkout
+  settings:
+    instances:
+      - app_id: 222222
+        signer:
+          cloud_identity: vault-two
+          key_id: https://vault-two.vault.azure.net/keys/settings
+```
+
+Règles :
+
+- `private_key`, `private_key_path` et `signer` sont mutuellement exclusifs, et chaque instance en exige exactement un. Le même bloc `signer` se place sur une App à plat ou sur une instance de pool.
+- Un broker utilise une seule sorte de source de clé : chaque instance a un `signer`, ou chaque instance a un PEM. Un mélange arrête le broker au démarrage, et rien ne bascule d'une sorte à l'autre.
+- `signer.cloud_identity` désigne une entrée de `cloud_identities`, et le cloud de cette identité choisit le fournisseur. Un nom qui n'est pas défini, ou une identité qu'aucun `signer` ne désigne, arrête le broker au démarrage.
+- `key_id` est l'identifiant de la clé tel qu'Azure l'affiche, `https://<vault>.vault.azure.net/keys/<name>`, éventuellement suivi de `/<version>`. Sans version, github-sts signe avec la version courante de la clé : importer une nouvelle version dans le coffre effectue donc la rotation de la clé sans changer la configuration.
+- github-sts signe un premier JWT d'App au démarrage et refuse de démarrer si une clé ne peut pas signer : il signale ainsi un identifiant erroné, un rôle manquant, un coffre injoignable, un coffre hors du locataire de son identité ou une identité qui ne fait pas confiance au jeton du pod avant de recevoir du trafic.
+- Après le démarrage, github-sts demande au coffre une signature par instance d'App toutes les 9 minutes, partagée par les échanges et les sondeurs en arrière-plan. Une panne du coffre arrête les échanges dès que le JWT d'App en cache expire ; un pool bascule vers une instance dont la clé signe encore.
+
+**Identités cloud.** Chaque entrée de `cloud_identities` est une identité managée affectée par l'utilisateur. `azure.client_id` et `azure.tenant_id` sont tous deux obligatoires, et ce sont des GUID : l'ID client et l'ID de locataire qu'affiche la ressource Azure de l'identité. Chaque clé désigne son identité : github-sts n'a donc pas d'identité par défaut et ignore `AZURE_CLIENT_ID` et `AZURE_TENANT_ID`. Le coffre d'une clé doit se trouver dans le `tenant_id` de son identité : Key Vault demande un jeton dans le locataire du coffre, et github-sts ne demande de jetons que dans celui de l'identité, si bien qu'un coffre d'un autre locataire arrête le broker au démarrage avec une erreur qui le dit. Pour un coffre d'un autre locataire, utilisez une identité créée dans ce locataire. `cloud_identities` se définit uniquement en YAML ; un `signer` peut aussi se définir par [variables d'environnement]({{< relref "/reference/environment-variables#github-app-settings" >}}).
+
+**S'authentifier auprès d'Azure.** github-sts s'authentifie par identité de charge de travail et rien d'autre, si bien qu'aucun secret Azure n'existe : il échange le jeton projeté du compte de service Kubernetes du pod contre chaque identité. Il lit le chemin du jeton dans `AZURE_FEDERATED_TOKEN_FILE` et refuse de démarrer si cette variable est absente. Le chart Helm de github-sts projette le jeton et définit la variable ; le webhook Azure d'identité de charge de travail fait de même pour un pod étiqueté `azure.workload.identity/use: "true"`. Pour chaque identité, Azure a besoin de :
+
+1. Un crédentiel fédéré avec l'émetteur des comptes de service du cluster, le sujet `system:serviceaccount:<namespace>:<service account>` et l'audience `api://AzureADTokenExchange`. Plusieurs identités peuvent faire confiance au même compte de service : Microsoft Entra ID échange l'unique jeton contre l'identité que désigne chaque clé.
+2. La permission `sign` sur ses propres clés et rien d'autre : un rôle personnalisé qui ne contient que `Microsoft.KeyVault/vaults/keys/sign/action`, attribué sur chaque clé.
+3. Un pare-feu de coffre qui admet l'adresse depuis laquelle le broker l'appelle.
+
+Microsoft Entra ID doit pouvoir lire l'émetteur du cluster ; un broker sur un cluster qui ne peut pas le publier garde des PEM. Des identités distinctes séparent les octrois et les journaux d'audit par coffre, mais elles n'isolent pas les Apps au sein d'un même broker : le pod peut signer sous toute identité qui fait confiance à son compte de service. Pour isoler les Apps les unes des autres, exécutez des brokers distincts avec des comptes de service distincts.
+
+**Importer la clé.** Importez une fois dans le coffre le PEM que GitHub a généré, puis supprimez-le. Limitez les opérations de la clé à `sign`, pour qu'aucun rôle ne puisse l'utiliser à autre chose :
+
+```bash
+az keyvault key import --vault-name vault-one --name checkout \
+  --pem-file github-app.pem --ops sign
+rm github-app.pem
+```
 
 ## TLS natif et mTLS
 

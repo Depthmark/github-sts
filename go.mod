@@ -3,6 +3,9 @@ module github.com/depthmark/github-sts
 go 1.27.0
 
 require (
+	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.22.0
+	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.14.0
+	github.com/Azure/azure-sdk-for-go/sdk/security/keyvault/azkeys v1.5.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/go-containerregistry v0.22.1
 	github.com/open-policy-agent/opa v1.21.2
@@ -26,7 +29,10 @@ require (
 )
 
 require (
+	github.com/Azure/azure-sdk-for-go/sdk/internal v1.12.0 // indirect
+	github.com/Azure/azure-sdk-for-go/sdk/security/keyvault/internal v1.2.0 // indirect
 	github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c // indirect
+	github.com/AzureAD/microsoft-authentication-library-for-go v1.7.2 // indirect
 	github.com/agnivade/levenshtein v1.2.1 // indirect
 	github.com/asaskevich/govalidator v0.0.0-20230301143203-a9d515a09cc2 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
