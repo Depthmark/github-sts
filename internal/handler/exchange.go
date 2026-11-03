@@ -109,6 +109,7 @@ const (
 	CodeGitHubIdentityInvalid = "github_identity_invalid" // GitHub identity claims are missing, malformed, or contradictory
 	CodeAudienceMismatch      = "audience_mismatch"       // token aud did not match policy.audience
 	CodeAppUnknown            = "app_unknown"             // requested ?app= is not configured on the server
+	CodeIssuerNotEnabled      = "issuer_not_enabled"      // token issuer is declared but the requested app does not list it
 	CodePolicyNotFound        = "policy_not_found"        // no .sts.yaml for this scope/app/identity
 	CodeTrustPolicyInvalid    = "trust_policy_invalid"    // policy definition is malformed or structurally unsafe
 	CodePolicyDenied          = "policy_denied"           // policy exists but evaluation failed (subject/claim_pattern)
@@ -144,6 +145,11 @@ type ExchangeHandler struct {
 	slogger                       *slog.Logger
 	trustForwardedHeaders         bool
 	bundleManager                 bundle.Manager
+
+	// githubIssuers holds the issuers from oidc.github_issuers by URL, and
+	// githubIssuerURLs the same URLs for policy validation.
+	githubIssuers    map[string]oidc.GitHubIssuer
+	githubIssuerURLs []string
 
 	// validator is the OIDC token validator. Production wires
 	// oidc.Validate; tests override to inject synthetic claims so the
@@ -186,6 +192,17 @@ func NewExchangeHandler(
 		trustForwardedHeaders:         trustForwardedHeaders,
 		bundleManager:                 bundleManager,
 		validator:                     oidc.Validate,
+	}
+}
+
+// SetGitHubIssuers installs the issuers from oidc.github_issuers. Set once at
+// startup, before the handler serves a request.
+func (h *ExchangeHandler) SetGitHubIssuers(issuers []oidc.GitHubIssuer) {
+	h.githubIssuers = make(map[string]oidc.GitHubIssuer, len(issuers))
+	h.githubIssuerURLs = make([]string, 0, len(issuers))
+	for _, issuer := range issuers {
+		h.githubIssuers[issuer.Issuer] = issuer
+		h.githubIssuerURLs = append(h.githubIssuerURLs, issuer.Issuer)
 	}
 }
 
@@ -311,15 +328,22 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	event.Issuer = claimString(claims, "iss")
 	event.Subject = claimString(claims, "sub")
-	if event.Issuer == oidc.GitHubActionsIssuer {
-		required := h.requireImmutableSubjectClaims
-		event.ImmutableSubjectRequired = &required
+	declaredIssuer, issuerDeclared := h.githubIssuers[event.Issuer]
+	immutableSubjectRequired := h.requireImmutableSubjectClaims || issuerDeclared
+	if event.Issuer == oidc.GitHubActionsIssuer || issuerDeclared {
+		event.ImmutableSubjectRequired = &immutableSubjectRequired
 	}
 
-	// GitHub.com repository identity is a broker-level security contract. It is
+	// GitHub repository identity is a broker-level security contract. It is
 	// validated before audience, JTI, app, or target policy work so malformed
-	// identity cannot consume state or probe target configuration.
-	sourceIdentity, err := oidc.ParseGitHubIdentity(claims, h.requireImmutableSubjectClaims)
+	// identity cannot consume state or probe target configuration. The issuer
+	// alone selects the rules, so ?app= cannot pick weaker ones.
+	var sourceIdentity *oidc.GitHubIdentity
+	if issuerDeclared {
+		sourceIdentity, err = oidc.ParseDeclaredGitHubIdentity(claims, declaredIssuer)
+	} else {
+		sourceIdentity, err = oidc.ParseGitHubIdentity(claims, h.requireImmutableSubjectClaims)
+	}
 	if err != nil {
 		reason := "github_identity_invalid"
 		var identityErr *oidc.GitHubIdentityError
@@ -465,6 +489,26 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	event.AppName = appName
 
+	// A declared issuer reaches only the Apps that list it, whatever the policy
+	// or the Rego bundle would say. Denied before any GitHub call.
+	if issuerDeclared && !declaredIssuer.EnabledFor(appName) {
+		event.Result = audit.ResultPolicyDenied
+		event.ErrorReason = fmt.Sprintf("issuer %q is not enabled for app %q", event.Issuer, appName)
+		event.DurationMS = msSince(start)
+		h.emitResult(event, req, start)
+		if h.slogger != nil {
+			h.slogger.Warn("issuer not enabled for app",
+				"trace_id", traceID,
+				"scope", req.Scope,
+				"app", appName,
+				"identity", req.Identity,
+				"issuer", event.Issuer,
+			)
+		}
+		writeJSON(w, http.StatusForbidden, ErrorResponse{Error: "forbidden", Code: CodeIssuerNotEnabled, TraceID: traceID})
+		return
+	}
+
 	// Resolve the caller-supplied target through the selected App before policy
 	// lookup. Names select the GitHub resource; immutable IDs authorize it.
 	targetCtx, targetSpan := startStage(requestCtx, "github.target.resolve",
@@ -574,7 +618,7 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, policyValidationSpan := startStage(requestCtx, "sts.policy.validate")
-	policyValidationErr := pol.Validate()
+	policyValidationErr := pol.Validate(h.githubIssuerURLs...)
 	if policyValidationErr != nil {
 		endStage(policyValidationSpan, "invalid", "")
 	} else {
@@ -661,6 +705,7 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				OwnerID:      policy.GitHubID(targetIdentity.OwnerID),
 				RepositoryID: policy.GitHubID(targetIdentity.RepositoryID),
 			},
+			h.githubIssuerURLs...,
 		)
 		if relationship.Allowed {
 			endStage(relationshipSpan, "allowed", "")
@@ -734,7 +779,7 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			},
 			YAMLPolicy:     bundle.FromPolicy(pol),
 			Claims:         claims,
-			SourceIdentity: bundleSourceIdentity(sourceIdentity, h.requireImmutableSubjectClaims),
+			SourceIdentity: bundleSourceIdentity(sourceIdentity, immutableSubjectRequired),
 			TargetIdentity: bundleTargetIdentity(targetIdentity),
 			Requested: &bundle.InputRequested{
 				// The narrowed set, not the policy ceiling. Enterprise Rego

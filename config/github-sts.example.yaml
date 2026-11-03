@@ -115,6 +115,15 @@ oidc:
     - "https://token.actions.githubusercontent.com"       # GitHub Actions
     # - "https://sts.windows.net/{tenant}/"              # Azure AD
 
+  # Extra GitHub issuers, each enabled for a bounded list of Apps. A GitHub.com
+  # enterprise that set include_enterprise_slug signs tokens with its own issuer.
+  # Declaring it gives those tokens the GitHub identity checks, with an immutable
+  # subject always required, and denies them for any App not listed here. The
+  # issuer must also appear in allowed_issuers above. Startup fails otherwise.
+  # github_issuers:
+  #   - issuer: "https://token.actions.githubusercontent.com/myorg-enterprise"
+  #     apps: ["default"]
+
   # Server-wide required audience. When set, every incoming OIDC token MUST
   # carry this value in its `aud` claim — enforced before policy lookup.
   # This is defense-in-depth on top of the per-policy `audience:` field

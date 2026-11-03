@@ -54,7 +54,7 @@ When the setting is empty, the endpoint remains unauthenticated. HTTPS protects 
 | Metric | Type | Description |
 |---|---|---|
 | `githubsts_http_requests_total` | Counter | HTTP requests by method, path, status |
-| `githubsts_oidc_immutable_subject_claims_required` | Gauge | `1` when immutable GitHub.com subjects are required; `0` when the visible legacy opt-out is active. |
+| `githubsts_oidc_immutable_subject_claims_required` | Gauge | `1` when immutable GitHub.com subjects are required; `0` when the visible legacy opt-out is active. Describes the default issuer: an issuer in `oidc.github_issuers` always requires them, whatever this value. |
 | `githubsts_http_request_duration_seconds` | Histogram | HTTP request latency |
 | `githubsts_http_requests_in_flight` | Gauge | Concurrent requests |
 

@@ -267,6 +267,27 @@ func newServer(cfg *config.Settings, slogger *slog.Logger, openKey keyOpener) (*
 		slogger,
 		githubHTTPClient,
 	)
+	githubIssuers := cfg.GitHubIssuers()
+	githubIssuerURLs := make([]string, 0, len(githubIssuers))
+	githubIssuerPosture := make([]handler.GitHubIssuerPosture, 0, len(githubIssuers))
+	for _, issuer := range githubIssuers {
+		githubIssuerURLs = append(githubIssuerURLs, issuer.Issuer)
+		githubIssuerPosture = append(githubIssuerPosture, handler.GitHubIssuerPosture{
+			Issuer:                        issuer.Issuer,
+			Instance:                      issuer.Instance,
+			RequireImmutableSubjectClaims: true,
+		})
+		slogger.Info("GitHub issuer declared", "issuer", issuer.Issuer, "instance", issuer.Instance, "apps", issuer.Apps)
+	}
+	policyLoader.SetGitHubIssuers(githubIssuerURLs)
+	for _, issuer := range cfg.AllowedIssuers() {
+		if _, declarable := oidc.GitHubIssuerInstance(issuer); declarable && !slices.Contains(githubIssuerURLs, issuer) {
+			slogger.Warn("enterprise issuer is allowed but not declared, so its tokens get no GitHub identity checks",
+				"issuer", issuer,
+				"setting", "oidc.github_issuers",
+			)
+		}
+	}
 
 	// Initialize per-IP rate limiter.
 	if cfg.RateLimit.Enabled {
@@ -329,6 +350,7 @@ func newServer(cfg *config.Settings, slogger *slog.Logger, openKey keyOpener) (*
 		cfg.Server.TrustForwardedHeaders,
 		bundleMgr,
 	)
+	exchangeHandler.SetGitHubIssuers(githubIssuers)
 
 	// Wrap exchange handler with rate limiting if enabled.
 	var exchangeH http.Handler = exchangeHandler
@@ -345,7 +367,7 @@ func newServer(cfg *config.Settings, slogger *slog.Logger, openKey keyOpener) (*
 	schemaHandler := handler.NewSchemaHandler(bundleMgr)
 	mux.Handle("GET /sts/v1/trust-policy.json", schemaHandler)
 	mux.Handle("HEAD /sts/v1/trust-policy.json", schemaHandler)
-	mux.Handle("POST /sts/v1/trust-policy/validate", handler.NewPolicyValidationHandler())
+	mux.Handle("POST /sts/v1/trust-policy/validate", handler.NewPolicyValidationHandler(githubIssuerURLs...))
 	// /health includes bundle status when the integration is enabled.
 	// liveBundleMgr is nil when bundle.enabled=false; HealthHandler
 	// degrades gracefully in that case (just returns status: ok).
@@ -357,6 +379,7 @@ func newServer(cfg *config.Settings, slogger *slog.Logger, openKey keyOpener) (*
 		RequireImmutableSubjectClaims: cfg.RequireImmutableSubjectClaims(),
 		BundleEnforcement:             cfg.BundleEnforcement,
 		YAMLOnlyAuthorizationPossible: yamlOnlyAuthPossible,
+		GitHubIssuers:                 githubIssuerPosture,
 	})
 	mux.Handle("GET /health", handler.OptionalBearerAuth(cfg.Health.AuthToken, "health", healthHandler))
 	mux.HandleFunc("GET /ready", handler.ReadinessHandler(&s.ready))

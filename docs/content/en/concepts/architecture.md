@@ -179,7 +179,7 @@ flowchart TD
 | 5 | Canonical GitHub identity: for GitHub.com, cross-check signed owner/repository ID claims and require immutable `sub` format by default | `github_identity_invalid` |
 | 6 | Server-wide audience: `aud` matches `oidc.required_audience` (if set) | `audience_mismatch` |
 | 7 | JTI replay: `jti` not consumed within the `jti.ttl` window | `replay_detected` |
-| 8 | App resolution: `?app=` matches a configured app | `app_unknown` |
+| 8 | App resolution: `?app=` matches a configured app, and a token from a declared issuer may reach that app | `app_unknown`, `issuer_not_enabled` |
 | 9 | Target resolution: resolve `scope` to GitHub's current canonical owner/repository names and immutable IDs; organization-level scopes are rejected | `bad_request` |
 | 10 | Policy lookup: `.sts.yaml` file found in repo or org policy repo, keyed by target IDs | `policy_not_found` |
 | 11 | Policy validation: workload selector, GitHub ID bindings, and `audience:` are present and well-formed | `trust_policy_invalid` |

@@ -45,6 +45,7 @@ grep abc-123 /var/log/github-sts.log
 | Problème | Solution |
 |---|---|
 | **L'échange renvoie `403`** avec `code: "app_unknown"` | `?app=` ne correspond à aucune App configurée. Vérifiez l'orthographe ou omettez-le lorsqu'une seule App est configurée. |
+| **L'échange renvoie `403`** avec `code: "issuer_not_enabled"` | L'émetteur du jeton est déclaré dans `oidc.github_issuers`, et l'App demandée ne figure pas dans sa liste `apps`. Ajoutez-y l'App ou demandez une App qu'elle contient. |
 | **L'échange renvoie `403`** avec `code: "policy_not_found"` | Vérifiez que la politique de confiance existe à `{base_path}/{app}/{identity}.sts.yaml` dans le dépôt cible (ou le dépôt de politiques d'organisation, selon `policy_resolution`). Un chemin de fichier incorrect ou une GitHub App sans accès en lecture au fichier de politique produit la même erreur. |
 | **L'échange renvoie `403`** avec `code: "policy_denied"` | La politique existe mais l'évaluation a échoué (subject, claim_pattern). Recherchez `trace_id` dans les journaux serveur pour l'écart précis. |
 

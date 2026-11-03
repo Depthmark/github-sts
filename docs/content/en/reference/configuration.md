@@ -41,7 +41,7 @@ apps:
     policy_resolution: org_first
 ```
 
-Valid log levels are lowercase `debug | info | warn | error`. `oidc.allowed_issuers` must contain at least one issuer; an empty list is a validation error. Top-level `bundle_enforcement` is also mandatory. See [Enterprise Rego bundles](#enterprise-rego-bundles) below. The explicit optional/no-bundle posture above emits a startup warning and observable health, metric, and audit signals; production deployments should use required mode.
+Valid log levels are lowercase `debug | info | warn | error`. `oidc.allowed_issuers` must contain at least one issuer; an empty list is a validation error. `oidc.github_issuers` is optional: it gives a GitHub.com enterprise issuer the GitHub identity checks and limits it to the Apps it lists. See [the enterprise issuer]({{< relref "/oidc-issuers/github-actions#enterprise-issuer" >}}). Top-level `bundle_enforcement` is also mandatory. See [Enterprise Rego bundles](#enterprise-rego-bundles) below. The explicit optional/no-bundle posture above emits a startup warning and observable health, metric, and audit signals; production deployments should use required mode.
 
 For production, deploy github-sts with the Helm chart rather than hand-managing this file. See [Helm chart installation]({{< relref "/integrations/helm-chart/installation" >}}).
 

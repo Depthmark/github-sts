@@ -38,7 +38,7 @@ apps:
     policy_resolution: org_first
 ```
 
-Les niveaux de journal valides sont en minuscules : `debug | info | warn | error`. `oidc.allowed_issuers` doit contenir au moins un émetteur ; une liste vide est une erreur de validation.
+Les niveaux de journal valides sont en minuscules : `debug | info | warn | error`. `oidc.allowed_issuers` doit contenir au moins un émetteur ; une liste vide est une erreur de validation. `oidc.github_issuers` est facultatif : il applique les vérifications d'identité GitHub à un émetteur d'entreprise GitHub.com et le limite aux Apps qu'il liste. Consultez [l'émetteur d'entreprise]({{< relref "/oidc-issuers/github-actions#enterprise-issuer" >}}).
 
 En production, déployez github-sts avec le chart Helm plutôt que de gérer ce fichier à la main. Consultez [Installation du chart Helm]({{< relref "/integrations/helm-chart/installation" >}}).
 

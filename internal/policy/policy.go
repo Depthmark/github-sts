@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -173,13 +174,14 @@ func ValidResolution(m Resolution) bool {
 	return false
 }
 
-// ParsePolicy parses a YAML trust policy from raw bytes.
-func ParsePolicy(data []byte) (*TrustPolicy, error) {
+// ParsePolicy parses a YAML trust policy from raw bytes. See Validate for
+// declaredGitHubIssuers.
+func ParsePolicy(data []byte, declaredGitHubIssuers ...string) (*TrustPolicy, error) {
 	var p TrustPolicy
 	if err := yamlstrict.Decode(data, &p); err != nil {
 		return nil, validationErrorf("parsing trust policy YAML: %w", err)
 	}
-	if err := p.Validate(); err != nil {
+	if err := p.Validate(declaredGitHubIssuers...); err != nil {
 		return nil, err
 	}
 	return &p, nil
@@ -248,10 +250,17 @@ func (p *TrustPolicy) Evaluate(claims map[string]any) EvalResult {
 	return EvalResult{Allowed: true}
 }
 
+// usesGitHubIssuer reports whether the policy's issuer is GitHub.com Actions or
+// one the operator declared.
+func (p *TrustPolicy) usesGitHubIssuer(declaredGitHubIssuers []string) bool {
+	return p.Issuer == githubActionsIssuer || slices.Contains(declaredGitHubIssuers, p.Issuer)
+}
+
 // EvaluateGitHubRelationship checks the exact immutable source-to-target
-// relationship in a validated GitHub.com trust policy.
-func (p *TrustPolicy) EvaluateGitHubRelationship(source, target GitHubRepository) EvalResult {
-	if p.Issuer != githubActionsIssuer || p.GitHub == nil {
+// relationship in a validated GitHub trust policy. See Validate for
+// declaredGitHubIssuers.
+func (p *TrustPolicy) EvaluateGitHubRelationship(source, target GitHubRepository, declaredGitHubIssuers ...string) EvalResult {
+	if !p.usesGitHubIssuer(declaredGitHubIssuers) || p.GitHub == nil {
 		return EvalResult{Reason: "trust policy does not define a GitHub relationship"}
 	}
 
@@ -273,7 +282,9 @@ func (p *TrustPolicy) EvaluateGitHubRelationship(source, target GitHubRepository
 }
 
 // Validate checks that the policy's fields are well-formed.
-func (p *TrustPolicy) Validate() error {
+// declaredGitHubIssuers lists the issuers from oidc.github_issuers, which need
+// the github block as GitHub.com Actions does; every other issuer must omit it.
+func (p *TrustPolicy) Validate(declaredGitHubIssuers ...string) error {
 	if p.Issuer == "" {
 		return validationErrorf("trust policy: issuer is required")
 	}
@@ -306,12 +317,12 @@ func (p *TrustPolicy) Validate() error {
 		}
 	}
 
-	if p.Issuer == githubActionsIssuer {
+	if p.usesGitHubIssuer(declaredGitHubIssuers) {
 		if err := p.validateGitHub(); err != nil {
 			return err
 		}
 	} else if p.GitHub != nil {
-		return validationErrorf("trust policy: github is only valid for issuer %q", githubActionsIssuer)
+		return validationErrorf("trust policy: github is only valid for issuer %q or an issuer declared in oidc.github_issuers", githubActionsIssuer)
 	}
 
 	if p.SubjectPattern != "" {
@@ -337,7 +348,7 @@ func (p *TrustPolicy) Validate() error {
 
 func (p *TrustPolicy) validateGitHub() error {
 	if p.GitHub == nil {
-		return validationErrorf("trust policy: github is required for issuer %q", githubActionsIssuer)
+		return validationErrorf("trust policy: github is required for issuer %q", p.Issuer)
 	}
 	if len(p.GitHub.Sources) == 0 {
 		return validationErrorf("trust policy: github.sources must contain at least one source")

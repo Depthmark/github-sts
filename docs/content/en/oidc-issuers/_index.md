@@ -78,6 +78,7 @@ Failure modes to expect:
 | `audience mismatch (server required_audience)` | Token's `aud` does not contain `oidc.required_audience` | Pass the right audience to `core.getIDToken('<value>')`. |
 | `audience check failed` (per-policy) | Token's `aud` does not match the policy's `audience:` field | Set `audience:` in `.sts.yaml` to match the workflow. |
 | `github_identity_invalid` | GitHub identity claims are missing, have wrong types, disagree, or use a legacy subject while immutable format is required | Opt the repository in to immutable subjects, verify owner/repository IDs, or use the visible legacy opt-out temporarily. Correlate `trace_id` for the finite reason. |
+| `issuer not enabled for app` | The token's issuer is declared in `oidc.github_issuers`, and the requested App is not in its `apps` list | Add the App to that list if the enterprise should reach it. See [the enterprise issuer]({{< relref "github-actions#enterprise-issuer" >}}). |
 
 ## Maintenance: detecting JWKS host drift
 

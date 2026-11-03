@@ -45,13 +45,6 @@
         "required": [
           "github"
         ]
-      },
-      "else": {
-        "not": {
-          "required": [
-            "github"
-          ]
-        }
       }
     }
   ],
@@ -67,7 +60,7 @@
       "type": "string",
       "format": "uri",
       "minLength": 1,
-      "description": "OIDC issuer URL. Must exactly match the iss claim of the presented token. Examples: https://token.actions.githubusercontent.com (GitHub Actions), https://accounts.google.com (Google Workload Identity), https://sts.windows.net/<tenant>/ (Azure AD), https://oidc.eks.<region>.amazonaws.com/id/<id> (AWS EKS).",
+      "description": "OIDC issuer URL. Must exactly match the iss claim of the presented token. Examples: https://token.actions.githubusercontent.com (GitHub Actions), https://token.actions.githubusercontent.com/<enterprise-slug> (a GitHub.com enterprise, declared in the broker's oidc.github_issuers), https://accounts.google.com (Google Workload Identity), https://sts.windows.net/<tenant>/ (Azure AD), https://oidc.eks.<region>.amazonaws.com/id/<id> (AWS EKS).",
       "examples": [
         "https://token.actions.githubusercontent.com",
         "https://accounts.google.com"
@@ -107,7 +100,7 @@
     },
     "github": {
       "$ref": "#/$defs/githubPolicy",
-      "description": "Required for GitHub.com Actions. Binds exact immutable source owner/repository IDs to one exact immutable target repository. IDs are strings and are never interpreted as regular expressions."
+      "description": "Required for GitHub.com Actions and for an issuer declared in the broker's oidc.github_issuers. Any other issuer must omit it, which only the broker can check because this schema cannot know the declared issuers. Binds exact immutable source owner/repository IDs to one exact immutable target repository. IDs are strings and are never interpreted as regular expressions."
     },
     "audience": {
       "type": "string",

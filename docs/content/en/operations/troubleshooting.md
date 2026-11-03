@@ -49,6 +49,7 @@ grep abc-123 /var/log/github-sts.log
 | Problem | Solution |
 |---|---|
 | **Exchange returns `403`** with `code: "app_unknown"` | `?app=` does not match a configured app. Check spelling or omit when only one app is configured. |
+| **Exchange returns `403`** with `code: "issuer_not_enabled"` | The token's issuer is declared in `oidc.github_issuers`, and the requested App is not in its `apps` list. Add the App there or request an App it lists. |
 | **Exchange returns `403`** with `code: "policy_not_found"` | Verify the trust policy exists at `{base_path}/{app}/{identity}.sts.yaml` in the target repo (or org policy repo, depending on `policy_resolution`). A wrong file path or a GitHub App that lacks read access to the policy file produces the same error. |
 | **Exchange returns `403`** with `code: "trust_policy_invalid"` | The policy lacks a selector or exact GitHub source/target IDs, or another policy field is malformed. Validate and fix the target policy. |
 | **Exchange returns `403`** with `code: "policy_denied"` | A valid policy did not match the workload selector or immutable source-to-target relationship. Grep server logs for `trace_id` for the precise mismatch. |

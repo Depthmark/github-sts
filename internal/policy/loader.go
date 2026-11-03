@@ -56,6 +56,7 @@ type GitHubPolicyLoader struct {
 	tokenProviders map[string]TokenProvider // app name → provider
 	orgPolicyRepos map[string]string        // app name → org_policy_repo
 	policyModes    map[string]Resolution    // app name → resolution mode
+	githubIssuers  []string                 // issuers from oidc.github_issuers
 	apiURL         string
 	basePath       string
 	cacheTTL       time.Duration
@@ -113,6 +114,12 @@ func NewGitHubLoader(
 		httpClient:     httpClient,
 		slogger:        slogger,
 	}
+}
+
+// SetGitHubIssuers installs the issuers from oidc.github_issuers, whose policies
+// need the github block. Set once at startup, before the first Load.
+func (l *GitHubPolicyLoader) SetGitHubIssuers(issuers []string) {
+	l.githubIssuers = issuers
 }
 
 // Load fetches a trust policy for the given scope/app/identity. Results are
@@ -347,7 +354,7 @@ func (l *GitHubPolicyLoader) fetchPolicyFile(ctx context.Context, token, repo, f
 		return nil, fmt.Errorf("reading policy body from %s/%s: %w", repo, filePath, err)
 	}
 
-	policy, err := ParsePolicy(body)
+	policy, err := ParsePolicy(body, l.githubIssuers...)
 	if err != nil {
 		metrics.PolicyLoadsTotal.WithLabelValues(appName, "github", "parse_error").Inc()
 		l.slogger.Error("policy parse failed",
