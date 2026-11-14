@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.4](https://github.com/Depthmark/github-sts/compare/v0.1.3...v0.1.4) (2026-11-14)
+
+
+### 📦 Dependencies
+
+* **deps:** bump the docker-dependencies group with 2 updates ([#125](https://github.com/Depthmark/github-sts/issues/125)) ([9efb54e](https://github.com/Depthmark/github-sts/commit/9efb54eba94540a0c2fd7e99cdccd0f6c3da9f81))
+* **deps:** bump the github-actions-dependencies group across 1 directory with 3 updates ([#129](https://github.com/Depthmark/github-sts/issues/129)) ([ea72466](https://github.com/Depthmark/github-sts/commit/ea724667a281bd7ce687d270c1c7b209f296604e))
+* **deps:** bump the golang-dependencies group across 1 directory with 4 updates ([#128](https://github.com/Depthmark/github-sts/issues/128)) ([ae24379](https://github.com/Depthmark/github-sts/commit/ae2437989126dfb20a8d8fb58847abcd195d4de0))
+
 ## [0.1.3](https://github.com/Depthmark/github-sts/compare/v0.1.2...v0.1.3) (2026-11-03)
 
 
