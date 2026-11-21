@@ -36,6 +36,7 @@ grep abc-123 /var/log/github-sts.log
 | **Exchange returns `401`** | Missing or malformed `Authorization: Bearer` header. Check the workflow actually requested an OIDC token (`id-token: write` permission). |
 | **Exchange returns `403`** with `code: "oidc_invalid"` | OIDC token rejected. Check token expiry, verify `oidc.allowed_issuers` includes the issuer, confirm `kid` is present, review server logs at `trace_id`. |
 | **Exchange returns `403`** with `code: "github_identity_invalid"` | GitHub.com source identity is missing string owner/repository ID claims, the claims disagree, or `sub` is still name-only while immutable format is required. Opt the repository in to immutable subjects and inspect the audit reason at `trace_id`. |
+| **Exchange returns `503`** with `code: "oidc_unavailable"` | The server could not fetch the issuer's keys, so the token was never checked. Retry with the same token after `Retry-After`. If it persists, the log line at `trace_id` names the failing discovery or `jwks_uri` request: check egress to the issuer. |
 | **JWKS host rejected** in logs | Issuer's `jwks_uri` host differs from the issuer host. Add it to `oidc.trusted_jwks_hosts` (see [OIDC Issuers]({{< relref "/oidc-issuers" >}})). |
 
 ### Audience

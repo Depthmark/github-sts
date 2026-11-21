@@ -2477,7 +2477,7 @@
             "uid": "$datasource"
           },
           "editorMode": "code",
-          "expr": "100 * (sum(increase(githubsts_token_exchanges_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$replica\",github_app=~\"$app\",result=~\"cache_error|github_error|bundle_stale|bundle_unavailable|bundle_evaluation_failed|unknown_error\"}[$__range])) or on() 0 * sum(increase(githubsts_token_exchanges_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$replica\",github_app=~\"$app\"}[$__range]))) / sum(increase(githubsts_token_exchanges_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$replica\",github_app=~\"$app\"}[$__range]))",
+          "expr": "100 * (sum(increase(githubsts_token_exchanges_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$replica\",github_app=~\"$app\",result=~\"cache_error|github_error|oidc_unavailable|bundle_stale|bundle_unavailable|bundle_evaluation_failed|unknown_error\"}[$__range])) or on() 0 * sum(increase(githubsts_token_exchanges_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$replica\",github_app=~\"$app\"}[$__range]))) / sum(increase(githubsts_token_exchanges_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$replica\",github_app=~\"$app\"}[$__range]))",
           "legendFormat": "failure %",
           "range": false,
           "refId": "A",
@@ -2562,7 +2562,7 @@
             "uid": "$datasource"
           },
           "editorMode": "code",
-          "expr": "100 * sum by (result) (rate(githubsts_token_exchanges_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$replica\",github_app=~\"$app\",result=~\"cache_error|github_error|bundle_stale|bundle_unavailable|bundle_evaluation_failed|unknown_error\"}[$__rate_interval])) / ignoring(result) group_left sum(rate(githubsts_token_exchanges_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$replica\",github_app=~\"$app\"}[$__rate_interval]))",
+          "expr": "100 * sum by (result) (rate(githubsts_token_exchanges_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$replica\",github_app=~\"$app\",result=~\"cache_error|github_error|oidc_unavailable|bundle_stale|bundle_unavailable|bundle_evaluation_failed|unknown_error\"}[$__rate_interval])) / ignoring(result) group_left sum(rate(githubsts_token_exchanges_total{namespace=~\"$namespace\",job=~\"$job\",instance=~\"$replica\",github_app=~\"$app\"}[$__rate_interval]))",
           "legendFormat": "{{result}}",
           "range": true,
           "refId": "A"

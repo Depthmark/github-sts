@@ -235,6 +235,7 @@ func SpanStatus(result audit.ExchangeResult) (codes.Code, string) {
 	switch result {
 	case audit.ResultCacheError,
 		audit.ResultGitHubError,
+		audit.ResultOIDCUnavailable,
 		audit.ResultBundleStale,
 		audit.ResultBundleUnavailable,
 		audit.ResultBundleEvaluationFailed,
