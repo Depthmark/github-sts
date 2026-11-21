@@ -11,10 +11,12 @@ import (
 	"crypto/rsa"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -265,7 +267,7 @@ func (p *STSTokenProvider) Token(ctx context.Context) (string, error) {
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("github-sts returned %d for scope %q", resp.StatusCode, p.Scope)
+		return "", newExchangeError(resp, p.Scope)
 	}
 
 	var result struct {
@@ -275,6 +277,58 @@ func (p *STSTokenProvider) Token(ctx context.Context) (string, error) {
 		return "", err
 	}
 	return result.Token, nil
+}
+
+// ExchangeError is a refused exchange. Code is github-sts's stable error
+// code, the value to branch on; TraceID is what an operator needs to find
+// the full reason in the server log. Both are empty when the response did
+// not come from github-sts, such as a proxy error page.
+type ExchangeError struct {
+	StatusCode int
+	Scope      string
+	Code       string
+	TraceID    string
+	// Message is the server's deliberately generic error text, such as
+	// "forbidden" or the reason a request was malformed.
+	Message string
+}
+
+func (e *ExchangeError) Error() string {
+	msg := fmt.Sprintf("github-sts returned %d for scope %q", e.StatusCode, e.Scope)
+	if e.Message != "" {
+		msg += ": " + e.Message
+	}
+	var details []string
+	if e.Code != "" {
+		details = append(details, "code="+e.Code)
+	}
+	if e.TraceID != "" {
+		details = append(details, "trace_id="+e.TraceID)
+	}
+	if len(details) > 0 {
+		msg += " (" + strings.Join(details, " ") + ")"
+	}
+	return msg
+}
+
+func newExchangeError(resp *http.Response, scope string) *ExchangeError {
+	var body struct {
+		Error   string `json:"error"`
+		Code    string `json:"code"`
+		TraceID string `json:"trace_id"`
+	}
+	_ = json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&body)
+	traceID := body.TraceID
+	if traceID == "" {
+		traceID = resp.Header.Get("X-Trace-ID")
+	}
+	return &ExchangeError{
+		StatusCode: resp.StatusCode,
+		Scope:      scope,
+		Code:       body.Code,
+		TraceID:    traceID,
+		Message:    body.Error,
+	}
 }
 
 // SetHTTPClient sets a custom HTTP client on the STSTokenProvider.
