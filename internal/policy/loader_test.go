@@ -2,8 +2,10 @@ package policy
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -670,5 +672,96 @@ func TestPolicyResolution_NoOrgRepo_RepoOnly(t *testing.T) {
 	if len(fake.requested) != 1 {
 		t.Fatalf("expected exactly 1 fetch (repo only), got %d: %v",
 			len(fake.requested), fake.requested)
+	}
+}
+
+// refusingTokenProvider refuses tokens for one repository, the way GitHub
+// refuses a repository missing from the installation, and mints for any
+// other.
+type refusingTokenProvider struct {
+	refused string
+	err     error
+	scopes  []string
+}
+
+func (p *refusingTokenProvider) GetInstallationToken(_ context.Context, scope string, _ map[string]string, _ []string, _ string) (string, string, error) {
+	p.scopes = append(p.scopes, scope)
+	if scope == p.refused {
+		return "", "", p.err
+	}
+	return "ghs_test", "", nil
+}
+
+// TestPolicyResolution_OrgPolicyRepoRefused_FailsClosed asserts that an org
+// policy repository the installation cannot reach fails the lookup in every
+// mode, names org_policy_repo, and is never replaced by the repo-local file.
+func TestPolicyResolution_OrgPolicyRepoRefused_FailsClosed(t *testing.T) {
+	tests := []struct {
+		name       string
+		mode       Resolution
+		wantScopes []string
+	}{
+		{name: "org_first does not fall back", mode: ResolutionOrgFirst, wantScopes: []string{"myorg/sts-policies"}},
+		{name: "repo_first fails after a repo-local miss", mode: ResolutionRepoFirst, wantScopes: []string{"myorg/myrepo", "myorg/sts-policies"}},
+		{name: "org_only fails", mode: ResolutionOrgOnly, wantScopes: []string{"myorg/sts-policies"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// repo_first only reaches the org repo after a repo-local miss,
+			// so only the other modes get a repo-local file to ignore.
+			files := map[string]string{"myorg/myrepo/": samplePolicyYAML}
+			if tt.mode == ResolutionRepoFirst {
+				files = nil
+			}
+			fake := &fakeRepoMux{files: files}
+			srv := httptest.NewServer(fake.handler(t))
+			defer srv.Close()
+
+			refusal := errForTest("cannot access repository")
+			tp := &refusingTokenProvider{refused: "myorg/sts-policies", err: refusal}
+			loader := testLoaderWithMode(tp, srv.URL, "sts-policies", tt.mode, 5*time.Minute)
+
+			pol, err := loader.Load(context.Background(), loadRequest("myorg/myrepo", "default", "ci"))
+			if pol != nil {
+				t.Fatalf("policy = %+v, want nil", pol)
+			}
+			var orgRepoErr *OrgPolicyRepoError
+			if !errors.As(err, &orgRepoErr) {
+				t.Fatalf("error = %v (%T), want *OrgPolicyRepoError", err, err)
+			}
+			if orgRepoErr.App != "default" || orgRepoErr.Repository != "myorg/sts-policies" {
+				t.Errorf("error names app %q repository %q, want %q %q", orgRepoErr.App, orgRepoErr.Repository, "default", "myorg/sts-policies")
+			}
+			if !errors.Is(err, refusal) {
+				t.Errorf("error %v does not wrap the refusal", err)
+			}
+			if !strings.Contains(err.Error(), `org policy repository "myorg/sts-policies" (org_policy_repo of app "default")`) {
+				t.Errorf("error does not name org_policy_repo: %v", err)
+			}
+			if !slices.Equal(tp.scopes, tt.wantScopes) {
+				t.Errorf("token scopes = %v, want %v", tp.scopes, tt.wantScopes)
+			}
+		})
+	}
+}
+
+// TestPolicyResolution_RepoRefused_NotReportedAsOrgPolicyRepo asserts that a
+// refusal on the requesting repository is not blamed on org_policy_repo.
+func TestPolicyResolution_RepoRefused_NotReportedAsOrgPolicyRepo(t *testing.T) {
+	fake := &fakeRepoMux{}
+	srv := httptest.NewServer(fake.handler(t))
+	defer srv.Close()
+
+	refusal := errForTest("cannot access repository")
+	tp := &refusingTokenProvider{refused: "myorg/myrepo", err: refusal}
+	loader := testLoaderWithMode(tp, srv.URL, "sts-policies", ResolutionOrgFirst, 5*time.Minute)
+
+	_, err := loader.Load(context.Background(), loadRequest("myorg/myrepo", "default", "ci"))
+	if !errors.Is(err, refusal) {
+		t.Fatalf("error = %v, want the refusal", err)
+	}
+	var orgRepoErr *OrgPolicyRepoError
+	if errors.As(err, &orgRepoErr) {
+		t.Errorf("error = %v, want it not to blame org_policy_repo", err)
 	}
 }

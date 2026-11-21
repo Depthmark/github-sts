@@ -39,6 +39,23 @@ type TokenProvider interface {
 	GetInstallationToken(ctx context.Context, scope string, permissions map[string]string, repositories []string, caller string) (string, string, error)
 }
 
+// OrgPolicyRepoError reports a failed read of the org policy repository an
+// app names in org_policy_repo, such as GitHub refusing a token because the
+// repository is missing or left out of an installation limited to selected
+// repositories. The loader never falls back to the requesting repository on
+// it: the repository it cannot read may hold the policy that must win
+// (ADR 0002), so the lookup fails closed.
+type OrgPolicyRepoError struct {
+	App        string
+	Repository string // owner/org_policy_repo
+	Err        error
+}
+
+func (e *OrgPolicyRepoError) Error() string {
+	return fmt.Sprintf("reading org policy repository %q (org_policy_repo of app %q): %v", e.Repository, e.App, e.Err)
+}
+func (e *OrgPolicyRepoError) Unwrap() error { return e.Err }
+
 type cacheEntry struct {
 	policy    *TrustPolicy
 	expiresAt time.Time
@@ -247,7 +264,7 @@ func (l *GitHubPolicyLoader) fetchRepoLevel(ctx context.Context, tp TokenProvide
 
 	switch mode {
 	case ResolutionOrgOnly:
-		pol, err := l.fetchFrom(ctx, tp, scope, orgRepo, filePath, appName, identity)
+		pol, err := l.fetchFromOrgRepo(ctx, tp, scope, orgRepo, filePath, appName, identity)
 		return pol, pol != nil, err
 
 	case ResolutionRepoFirst:
@@ -258,7 +275,7 @@ func (l *GitHubPolicyLoader) fetchRepoLevel(ctx context.Context, tp TokenProvide
 		if pol != nil {
 			return pol, false, nil
 		}
-		pol, err = l.fetchFrom(ctx, tp, scope, orgRepo, filePath, appName, identity)
+		pol, err = l.fetchFromOrgRepo(ctx, tp, scope, orgRepo, filePath, appName, identity)
 		if err != nil {
 			return nil, false, err
 		}
@@ -267,7 +284,7 @@ func (l *GitHubPolicyLoader) fetchRepoLevel(ctx context.Context, tp TokenProvide
 	case ResolutionOrgFirst:
 		fallthrough
 	default:
-		pol, err := l.fetchFrom(ctx, tp, scope, orgRepo, filePath, appName, identity)
+		pol, err := l.fetchFromOrgRepo(ctx, tp, scope, orgRepo, filePath, appName, identity)
 		if err != nil {
 			return nil, false, err
 		}
@@ -280,6 +297,17 @@ func (l *GitHubPolicyLoader) fetchRepoLevel(ctx context.Context, tp TokenProvide
 		}
 		return pol, false, nil
 	}
+}
+
+// fetchFromOrgRepo is fetchFrom for the org policy repository. It returns
+// every failure as an *OrgPolicyRepoError, so the operator reads that the
+// repository came from org_policy_repo and not from the request.
+func (l *GitHubPolicyLoader) fetchFromOrgRepo(ctx context.Context, tp TokenProvider, scope, orgRepo, filePath, appName, identity string) (*TrustPolicy, error) {
+	pol, err := l.fetchFrom(ctx, tp, scope, orgRepo, filePath, appName, identity)
+	if err != nil {
+		return nil, &OrgPolicyRepoError{App: appName, Repository: orgRepo, Err: err}
+	}
+	return pol, nil
 }
 
 // fetchFrom obtains an installation token scoped to repo and fetches the

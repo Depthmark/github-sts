@@ -101,6 +101,7 @@ because as far as this broker is concerned it is unsigned.
 |---|---|
 | **Exchange returns `502`** with `code: "upstream_error"` | Policy fetch or GitHub token mint failed. Check `githubsts_github_reachable` metric and server logs at `trace_id`. |
 | **Exchange returns `502`** and the log line at `trace_id` says `cannot access repository` | The GitHub App installation cannot reach the target or policy repository. If the error says `limited to selected repositories`, an organization owner adds the repository at the installation URL in the error. If it says `can access all repositories`, check the repository name. Each repository you add widens what the App can mint tokens for, so add only the ones your workloads need. |
+| **Exchange returns `502`** and the log line at `trace_id` says `org policy repository` | The GitHub App installation cannot read the repository that `org_policy_repo` names, so the exchange failed closed instead of using the requesting repo's policy. If the hint says `not among the selected repositories`, an organization owner adds the org policy repository at the installation URL in the error. If it says `does not exist`, create the repository, or correct or remove `org_policy_repo`. See [Policy resolution]({{< relref "/concepts/trust-policies#policy-resolution" >}}). |
 | **Audit events dropped** (`githubsts_audit_events_dropped_total` rising) | Audit sink can't keep up. Increase `GITHUBSTS_AUDIT_BUFFER_SIZE`, ensure the audit log path is writable, or speed up the audit consumer. |
 
 ## Debugging an exchange end-to-end

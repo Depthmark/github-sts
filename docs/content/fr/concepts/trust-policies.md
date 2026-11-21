@@ -145,6 +145,8 @@ apps:
 
 Si `org_policy_repo` n'est pas défini, seul le dépôt demandeur est consulté, quel que soit le mode.
 
+Créez le dépôt de politiques d'organisation avant de définir `org_policy_repo`, puis ajoutez-le à l'accès aux dépôts de l'installation de la GitHub App. Lorsqu'une recherche atteint ce dépôt et que l'installation ne peut pas le lire, github-sts refuse l'échange avec `502 upstream_error` et ne se rabat pas sur le dépôt demandeur : le dépôt illisible peut contenir la politique qui doit l'emporter. La ligne de journal au `trace_id` nomme `org_policy_repo` et indique quoi corriger.
+
 ## Étapes suivantes
 
 - [Recettes de politiques]({{< relref "/concepts/policy-recipes" >}}): modèles à copier-coller pour les scénarios courants
