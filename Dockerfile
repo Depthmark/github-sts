@@ -8,7 +8,7 @@
 # runner. GOARCH below cross-compiles the target binary, which avoids running
 # the whole toolchain under QEMU emulation on the non-native platform.
 # ─────────────────────────────────────────────────────────────────────────────
-FROM --platform=$BUILDPLATFORM cgr.dev/chainguard/go:latest@sha256:575572885e29c3c3bac6622d8db116e983436c546cb2987b001747ce6c278891 AS builder
+FROM --platform=$BUILDPLATFORM cgr.dev/chainguard/go:latest@sha256:163bd5500337364ac58a4c321836e748104dbb4e6951fb2e14b3949b6dca6a5f AS builder
 
 WORKDIR /build
 
