@@ -216,6 +216,37 @@ func TestExchange_InvalidAuth(t *testing.T) {
 	}
 }
 
+func TestExchange_UnavailableIssuerIsRetryable(t *testing.T) {
+	jtiCache := &mockJTICache{isNew: true}
+	al := &recordingAuditLogger{}
+	h := &ExchangeHandler{
+		jtiCache:       jtiCache,
+		policyLoader:   &mockPolicyLoader{},
+		appProviders:   map[string]github.ExchangeApp{},
+		allowedIssuers: []string{oidc.GitHubActionsIssuer},
+		auditLogger:    al,
+		validator: func(_ context.Context, _ string, _ []string) (oidc.Claims, error) {
+			return nil, fmt.Errorf("%w: fetching JWKS for issuer %q: connection refused", oidc.ErrIssuerUnavailable, oidc.GitHubActionsIssuer)
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/sts/exchange?scope=org/repo&identity=ci", nil)
+	req.Header.Set("Authorization", "Bearer any")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	assertErrorCode(t, w, http.StatusServiceUnavailable, CodeOIDCUnavailable)
+	if got := w.Header().Get("Retry-After"); got != "30" {
+		t.Errorf("Retry-After = %q, want 30", got)
+	}
+	if jtiCache.reserveCalls != 0 {
+		t.Errorf("JTI Reserve calls = %d, want 0 so the same token can retry", jtiCache.reserveCalls)
+	}
+	if got := al.lastEvent().Result; got != audit.ResultOIDCUnavailable {
+		t.Errorf("audit result = %q, want %q", got, audit.ResultOIDCUnavailable)
+	}
+}
+
 func TestExchange_GitHubIdentityInvalidBeforeStateOrPolicy(t *testing.T) {
 	jtiCache := &mockJTICache{isNew: true}
 	loader := &mockPolicyLoader{}
@@ -462,6 +493,87 @@ func TestExchange_InvalidTrustPolicyHasDistinctCode(t *testing.T) {
 }
 
 const authorizedSubject = "repo:org@1001/source@2001:ref:refs/heads/main"
+
+func TestExchange_TargetOutsideInstallationLogsTheFix(t *testing.T) {
+	accessErr := &github.RepositoryAccessError{
+		App: "test-app", Instance: "primary", AppID: 12345, Repository: "org/target",
+		InstallationID: 42, RepositorySelection: "selected",
+		SettingsURL: "https://github.com/organizations/org/settings/installations/42",
+	}
+	app := &mockExchangeApp{resolveErr: fmt.Errorf("creating target-resolution token: %w",
+		&github.TokenMintError{StatusCode: http.StatusUnprocessableEntity, Err: accessErr})}
+	h := authorizedExchangeHandler(app, &mockPolicyLoader{}, &recordingAuditLogger{})
+	var logs bytes.Buffer
+	h.slogger = slog.New(slog.NewJSONHandler(&logs, nil))
+
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, authorizedExchangeRequest())
+
+	// The caller still gets the generic answer (ADR 0012); only the log names the fix.
+	assertErrorCode(t, w, http.StatusBadGateway, CodeUpstream)
+	if strings.Contains(w.Body.String(), "org/target") {
+		t.Errorf("response names the repository: %s", w.Body.String())
+	}
+	for _, want := range []string{
+		`"msg":"target resolution failed"`,
+		`cannot access repository \"org/target\"`,
+		accessErr.SettingsURL,
+		`"hint":"The GitHub App installation cannot access this repository.`,
+	} {
+		if !strings.Contains(logs.String(), want) {
+			t.Errorf("logs do not contain %s:\n%s", want, logs.String())
+		}
+	}
+}
+
+func TestExchange_OrgPolicyRepoOutsideInstallationLogsTheFix(t *testing.T) {
+	tests := []struct {
+		name      string
+		selection string
+		wantHint  string
+	}{
+		{name: "selected repositories", selection: "selected",
+			wantHint: `"hint":"The org policy repository set by org_policy_repo is not among the selected repositories of the GitHub App installation. An organization owner must add it to the installation's repository access.`},
+		{name: "all repositories", selection: "all",
+			wantHint: `"hint":"The org policy repository set by org_policy_repo does not exist in this organization.`},
+		{name: "selection unknown", selection: "",
+			wantHint: `"hint":"The org policy repository set by org_policy_repo does not exist or is not among the repositories of the GitHub App installation.`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			accessErr := &github.RepositoryAccessError{
+				App: "test-app", Instance: "primary", AppID: 12345, Repository: "org/.github",
+				InstallationID: 42, RepositorySelection: tt.selection,
+				SettingsURL: "https://github.com/organizations/org/settings/installations/42",
+			}
+			loader := &mockPolicyLoader{err: &policy.OrgPolicyRepoError{App: "test-app", Repository: "org/.github",
+				Err: fmt.Errorf("getting token for policy fetch from org/.github: %w",
+					&github.TokenMintError{StatusCode: http.StatusUnprocessableEntity, Err: accessErr})}}
+			h := authorizedExchangeHandler(&mockExchangeApp{}, loader, &recordingAuditLogger{})
+			var logs bytes.Buffer
+			h.slogger = slog.New(slog.NewJSONHandler(&logs, nil))
+
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, authorizedExchangeRequest())
+
+			// Fails closed with the generic answer (ADR 0012); only the log names the fix.
+			assertErrorCode(t, w, http.StatusBadGateway, CodeUpstream)
+			if strings.Contains(w.Body.String(), "org/.github") {
+				t.Errorf("response names the org policy repository: %s", w.Body.String())
+			}
+			for _, want := range []string{
+				`"msg":"policy load failed"`,
+				`org policy repository \"org/.github\" (org_policy_repo of app \"test-app\")`,
+				tt.wantHint,
+				`Exchanges fail closed until then: github-sts does not fall back to the requesting repository's policy."`,
+			} {
+				if !strings.Contains(logs.String(), want) {
+					t.Errorf("logs do not contain %s:\n%s", want, logs.String())
+				}
+			}
+		})
+	}
+}
 
 func TestExchange_UpstreamErrorPassesGitHubWaitOn(t *testing.T) {
 	tests := []struct {

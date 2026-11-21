@@ -377,7 +377,7 @@
             "uid": "$datasource"
           },
           "editorMode": "code",
-          "expr": "sum(increase(githubsts_token_exchanges_total{namespace=~\"$namespace\",job=~\"$job\",result=~\"cache_error|github_error|bundle_stale|bundle_unavailable|bundle_evaluation_failed|unknown_error\"}[$__range])) or on() (0 * count(githubsts_token_exchanges_total{namespace=~\"$namespace\",job=~\"$job\"}))",
+          "expr": "sum(increase(githubsts_token_exchanges_total{namespace=~\"$namespace\",job=~\"$job\",result=~\"cache_error|github_error|oidc_unavailable|bundle_stale|bundle_unavailable|bundle_evaluation_failed|unknown_error\"}[$__range])) or on() (0 * count(githubsts_token_exchanges_total{namespace=~\"$namespace\",job=~\"$job\"}))",
           "legendFormat": "faults",
           "range": true,
           "refId": "A"

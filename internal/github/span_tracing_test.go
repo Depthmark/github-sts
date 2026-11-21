@@ -120,3 +120,36 @@ func TestPolicyToken422HasPurposeAndSafeErrorType(t *testing.T) {
 		t.Fatalf("found mint=%v HTTP 422=%v, want both", foundMint, foundHTTP422)
 	}
 }
+
+func TestRepositoryAccessRefusalHasOwnErrorType(t *testing.T) {
+	provider, recorder := githubTraceRecorder(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/orgs/myorg/installation":
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 42, "repository_selection": "selected"})
+		default:
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_, _ = w.Write([]byte(`{"message":"There is at least one repository that does not exist or is not accessible to the parent installation."}`))
+		}
+	}))
+	defer srv.Close()
+
+	p := NewAppTokenProvider(newTestCredential(t, "test-actions-app", "app-2", 12345, generateTestKey(t)), srv.URL, nil)
+	ctx, root := provider.Tracer("test").Start(context.Background(), "github.target.resolve")
+	_, err := p.GetInstallationToken(ctx, "myorg/newrepo", map[string]string{"metadata": "read"}, []string{"newrepo"}, "target_resolver")
+	root.End()
+	if err == nil {
+		t.Fatal("expected GitHub 422")
+	}
+
+	for _, span := range recorder.Ended() {
+		if span.Name() == "github.token.mint" {
+			if got := spanAttribute(span, string(tracing.AttrErrorType)); got != "github_repository_not_accessible" {
+				t.Errorf("error.type = %q, want github_repository_not_accessible", got)
+			}
+			return
+		}
+	}
+	t.Fatal("no github.token.mint span recorded")
+}

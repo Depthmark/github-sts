@@ -117,6 +117,7 @@ const (
 	CodeOrgPolicyDenied       = "org_policy_denied"       // org-rego bundle blocked this request at exchange time
 
 	// 503 — server is up but a dependency is degraded.
+	CodeOIDCUnavailable        = "oidc_unavailable"         // the token issuer's keys could not be fetched; retry
 	CodeBundleStale            = "bundle_stale"             // bundle hasn't refreshed in time and fail_mode=closed
 	CodeBundleUnavailable      = "bundle_unavailable"       // mandatory baseline did not participate
 	CodeBundleEvaluationFailed = "bundle_evaluation_failed" // timeout, strict built-in error, or other evaluation fault
@@ -302,10 +303,32 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	oidcCtx, oidcSpan := startStage(requestCtx, "sts.oidc.validate")
 	claims, err := validate(oidcCtx, bearer, h.allowedIssuers)
-	if err != nil {
+	switch {
+	case errors.Is(err, oidc.ErrIssuerUnavailable):
+		endStage(oidcSpan, "", "oidc_issuer_unavailable")
+	case err != nil:
 		endStage(oidcSpan, "invalid", "")
-	} else {
+	default:
 		endStage(oidcSpan, "success", "")
+	}
+	// The token was never judged, so the caller has nothing to fix: tell it
+	// to retry. Rejected before the JTI is reserved, so the same token works.
+	if errors.Is(err, oidc.ErrIssuerUnavailable) {
+		event.Result = audit.ResultOIDCUnavailable
+		event.ErrorReason = fmt.Sprintf("oidc issuer unavailable: %v", err)
+		event.DurationMS = msSince(start)
+		h.emitResult(event, req, start)
+		if h.slogger != nil {
+			h.slogger.Error("oidc issuer unavailable",
+				"trace_id", traceID,
+				"scope", req.Scope,
+				"identity", req.Identity,
+				"error", err,
+			)
+		}
+		w.Header().Set("Retry-After", "30")
+		writeJSON(w, http.StatusServiceUnavailable, ErrorResponse{Error: "service unavailable", Code: CodeOIDCUnavailable, TraceID: traceID})
+		return
 	}
 	if err != nil {
 		event.Issuer = claimString(claims, "iss")
@@ -536,6 +559,7 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"app", appName,
 				"identity", req.Identity,
 				"error", err,
+				"hint", classifyUpstreamError(err),
 			)
 		}
 		if errors.Is(err, github.ErrTargetScopeNotCanonical) {
@@ -1183,8 +1207,16 @@ func writeUpstreamError(w http.ResponseWriter, err error, traceID string) {
 // classifyUpstreamError extracts an actionable hint from a GitHub API
 // error for structured logging. Operators can search for these hints.
 func classifyUpstreamError(err error) string {
+	var orgRepoErr *policy.OrgPolicyRepoError
+	var accessErr *github.RepositoryAccessError
 	msg := err.Error()
 	switch {
+	case errors.As(err, &orgRepoErr) && errors.As(err, &accessErr):
+		return orgPolicyRepoAccessHint(accessErr.RepositorySelection)
+	case errors.As(err, &accessErr):
+		return "The GitHub App installation cannot access this repository. Add the repository to the installation's repository access, or check that it exists."
+	case errors.Is(err, github.ErrTargetScopeNotCanonical):
+		return "The scope does not match GitHub's canonical owner/repository spelling. Request the exact spelling GitHub reports."
 	case strings.Contains(msg, "is not installed on organization"):
 		return "GitHub App is not installed on the target organization. Install it via the GitHub organization settings."
 	case strings.Contains(msg, "authentication failed"):
@@ -1197,6 +1229,22 @@ func classifyUpstreamError(err error) string {
 		return "Request to GitHub API timed out. Check network connectivity and GitHub API status."
 	default:
 		return "Unexpected GitHub API error. Check the error field for details."
+	}
+}
+
+// orgPolicyRepoAccessHint names the fix when the installation cannot reach
+// the org policy repository. Each hint says the exchange failed closed,
+// because an operator who expects a fallback to the requesting repository
+// would otherwise look for the fault there.
+func orgPolicyRepoAccessHint(repositorySelection string) string {
+	const failsClosed = " Exchanges fail closed until then: github-sts does not fall back to the requesting repository's policy."
+	switch repositorySelection {
+	case "selected":
+		return "The org policy repository set by org_policy_repo is not among the selected repositories of the GitHub App installation. An organization owner must add it to the installation's repository access." + failsClosed
+	case "all":
+		return "The org policy repository set by org_policy_repo does not exist in this organization. Create it, or correct or remove org_policy_repo." + failsClosed
+	default:
+		return "The org policy repository set by org_policy_repo does not exist or is not among the repositories of the GitHub App installation. Add it to the installation's repository access, or create it." + failsClosed
 	}
 }
 

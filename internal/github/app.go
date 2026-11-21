@@ -29,9 +29,11 @@ import (
 const installationCacheTTL = 15 * time.Minute
 
 type cachedInstallation struct {
-	id          int64
-	permissions map[string]string // granted permissions on the installation
-	fetchedAt   time.Time
+	id                  int64
+	permissions         map[string]string // granted permissions on the installation
+	repositorySelection string            // "all" or "selected"
+	htmlURL             string            // the installation's settings page
+	fetchedAt           time.Time
 }
 
 // AppTokenProvider creates permission-scoped GitHub installation tokens
@@ -87,6 +89,60 @@ type TokenMintError struct {
 
 func (e *TokenMintError) Error() string { return e.Err.Error() }
 func (e *TokenMintError) Unwrap() error { return e.Err }
+
+// RepositoryAccessError reports a token request GitHub refused because the
+// App's installation cannot reach the requested repository. GitHub gives the
+// same answer for a repository left out of an installation limited to
+// selected repositories and for a repository that does not exist, so
+// RepositorySelection is what tells the two apart. It arrives wrapped in a
+// non-retryable *TokenMintError.
+type RepositoryAccessError struct {
+	App            string
+	Instance       string
+	AppID          int64
+	Repository     string // owner/repository as requested
+	InstallationID int64
+	// RepositorySelection is the installation's "all" or "selected", or ""
+	// when the installation lookup did not report it.
+	RepositorySelection string
+	// SettingsURL is the installation's settings page, where an org admin
+	// changes its repository access, or "" when unknown.
+	SettingsURL string
+}
+
+func (e *RepositoryAccessError) Error() string {
+	msg := fmt.Sprintf("github app %q instance %q (app_id: %d) cannot access repository %q: ",
+		e.App, e.Instance, e.AppID, e.Repository)
+	switch e.RepositorySelection {
+	case "selected":
+		msg += fmt.Sprintf("installation %d on %q is limited to selected repositories and this one is not among them — "+
+			"add it to the installation's repository access", e.InstallationID, extractOrg(e.Repository))
+		if e.SettingsURL != "" {
+			msg += " at " + e.SettingsURL
+		}
+	case "all":
+		msg += fmt.Sprintf("installation %d on %q can access all repositories, so this one most likely does not exist under that name",
+			e.InstallationID, extractOrg(e.Repository))
+	default:
+		msg += fmt.Sprintf("GitHub reports that it does not exist or is not among the repositories of installation %d", e.InstallationID)
+	}
+	return msg
+}
+
+// isRepositoryAccessRefusal reports whether a 422 body from the
+// access_tokens endpoint is GitHub's refusal to scope a token to a
+// repository the installation cannot reach. GitHub sends no code for it,
+// only the message "There is at least one repository that does not exist or
+// is not accessible to the parent installation."
+func isRepositoryAccessRefusal(body []byte) bool {
+	var refusal struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(body, &refusal); err != nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(refusal.Message), "not accessible to the parent installation")
+}
 
 // GenerateAppJWT returns a short-lived JWT for authenticating as the GitHub
 // App. The signed token is cached for 9 minutes (valid for 10) by the
@@ -201,8 +257,10 @@ func (p *AppTokenProvider) fetchInstallationID(ctx context.Context, org string) 
 	}
 
 	var install struct {
-		ID          int64             `json:"id"`
-		Permissions map[string]string `json:"permissions"`
+		ID                  int64             `json:"id"`
+		Permissions         map[string]string `json:"permissions"`
+		RepositorySelection string            `json:"repository_selection"`
+		HTMLURL             string            `json:"html_url"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&install); err != nil {
 		return 0, &TokenMintError{StatusCode: resp.StatusCode, Retryable: true, Err: err}
@@ -211,12 +269,15 @@ func (p *AppTokenProvider) fetchInstallationID(ctx context.Context, org string) 
 	metrics.GitHubAPICalls.WithLabelValues(p.appName, p.instance, "get_installation", "ok").Inc()
 
 	// Cache the result with timestamp. We capture the installation's granted
-	// permissions so we can diff them against requested permissions on a 422.
+	// permissions so we can diff them against requested permissions on a 422,
+	// and its repository selection so a repository refusal can say why.
 	p.mu.Lock()
 	p.installationCache[org] = &cachedInstallation{
-		id:          install.ID,
-		permissions: install.Permissions,
-		fetchedAt:   time.Now(),
+		id:                  install.ID,
+		permissions:         install.Permissions,
+		repositorySelection: install.RepositorySelection,
+		htmlURL:             install.HTMLURL,
+		fetchedAt:           time.Now(),
 	}
 	p.mu.Unlock()
 
@@ -243,6 +304,26 @@ func (p *AppTokenProvider) GetGrantedPermissions(scope string) map[string]string
 		out[k] = v
 	}
 	return out
+}
+
+// repositoryAccessError describes GitHub's refusal to scope a token to
+// scope's repository, using the installation details cached by
+// GetInstallationID.
+func (p *AppTokenProvider) repositoryAccessError(scope string, installationID int64) *RepositoryAccessError {
+	accessErr := &RepositoryAccessError{
+		App:            p.appName,
+		Instance:       p.instance,
+		AppID:          p.appID,
+		Repository:     scope,
+		InstallationID: installationID,
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if entry, ok := p.installationCache[extractOrg(scope)]; ok && entry.id == installationID {
+		accessErr.RepositorySelection = entry.repositorySelection
+		accessErr.SettingsURL = entry.htmlURL
+	}
+	return accessErr
 }
 
 // MintedToken is one installation token plus the grant GitHub actually
@@ -483,6 +564,14 @@ func (p *AppTokenProvider) getInstallationToken(ctx context.Context, scope strin
 	if resp.StatusCode == http.StatusUnprocessableEntity {
 		metrics.GitHubAPICalls.WithLabelValues(p.appName, p.instance, "create_token", "error").Inc()
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+
+		// A repository the installation cannot reach is not a permissions
+		// problem, so skip the diff below: it would only point the operator
+		// at the wrong fix. The caller logs this error with its trace_id.
+		if isRepositoryAccessRefusal(respBody) {
+			return MintedToken{}, &TokenMintError{StatusCode: resp.StatusCode, Retryable: false,
+				Err: p.repositoryAccessError(scope, installationID)}
+		}
 
 		// Diff the requested permissions against what the installation
 		// actually has, so the operator sees exactly which permission is

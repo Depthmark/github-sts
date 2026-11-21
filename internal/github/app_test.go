@@ -413,6 +413,81 @@ func TestAppTokenProvider_GetInstallationToken_422CapturesDiff(t *testing.T) {
 	}
 }
 
+func TestAppTokenProvider_GetInstallationToken_RepositoryNotAccessible(t *testing.T) {
+	const settingsURL = "https://github.com/organizations/myorg/settings/installations/42"
+	tests := []struct {
+		name          string
+		selection     string
+		htmlURL       string
+		wantInMessage []string
+	}{
+		{
+			name:          "selected repositories",
+			selection:     "selected",
+			htmlURL:       settingsURL,
+			wantInMessage: []string{"limited to selected repositories", "add it to the installation's repository access at " + settingsURL},
+		},
+		{
+			name:          "all repositories",
+			selection:     "all",
+			htmlURL:       settingsURL,
+			wantInMessage: []string{"can access all repositories", "most likely does not exist"},
+		},
+		{
+			name:          "selection not reported",
+			wantInMessage: []string{"does not exist or is not among the repositories of installation 42"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case strings.HasSuffix(r.URL.Path, "/installation"):
+					w.WriteHeader(http.StatusOK)
+					_ = json.NewEncoder(w).Encode(map[string]any{
+						"id":                   42,
+						"permissions":          map[string]string{"contents": "read", "metadata": "read"},
+						"repository_selection": tt.selection,
+						"html_url":             tt.htmlURL,
+					})
+				case strings.Contains(r.URL.Path, "/access_tokens"):
+					w.WriteHeader(http.StatusUnprocessableEntity)
+					_, _ = w.Write([]byte(`{"message":"There is at least one repository that does not exist or is not accessible to the parent installation.","status":"422"}`))
+				}
+			}))
+			defer srv.Close()
+
+			p := NewAppTokenProvider(newTestCredential(t, "test-app", "test-instance", 12345, generateTestKey(t)), srv.URL, nil)
+			_, err := p.GetInstallationToken(context.Background(), "myorg/newrepo", map[string]string{"contents": "read"}, nil, "test")
+
+			var mintErr *TokenMintError
+			if !errors.As(err, &mintErr) {
+				t.Fatalf("expected *TokenMintError, got %T: %v", err, err)
+			}
+			if mintErr.Retryable || mintErr.StatusCode != http.StatusUnprocessableEntity {
+				t.Errorf("TokenMintError = {StatusCode: %d, Retryable: %v}, want {422, false}", mintErr.StatusCode, mintErr.Retryable)
+			}
+			var accessErr *RepositoryAccessError
+			if !errors.As(err, &accessErr) {
+				t.Fatalf("expected *RepositoryAccessError, got: %v", err)
+			}
+			if accessErr.Repository != "myorg/newrepo" || accessErr.InstallationID != 42 || accessErr.RepositorySelection != tt.selection {
+				t.Errorf("RepositoryAccessError = %+v", accessErr)
+			}
+			msg := err.Error()
+			for _, want := range append([]string{`instance "test-instance"`, "(app_id: 12345)", `cannot access repository "myorg/newrepo"`}, tt.wantInMessage...) {
+				if !strings.Contains(msg, want) {
+					t.Errorf("error does not contain %q:\n%s", want, msg)
+				}
+			}
+			if strings.Contains(msg, "permissions") {
+				t.Errorf("error points at permissions for a repository-access refusal:\n%s", msg)
+			}
+		})
+	}
+}
+
 func TestExtractOrg(t *testing.T) {
 	tests := []struct {
 		scope string

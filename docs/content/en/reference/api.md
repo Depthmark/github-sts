@@ -122,6 +122,7 @@ Error responses share this shape:
 | `403` | `org_policy_denied` | Enterprise policy was evaluated and denied the exchange after the YAML policy allowed it. Check audit `bundle_decisions` for bundle, package, rule, exception, and reason details. |
 | `405` | `method_not_allowed` | Use `GET` or `POST`. |
 | `409` | `replay_detected` | JTI already consumed; obtain a fresh OIDC token. |
+| `503` | `oidc_unavailable` | The server could not fetch the keys of the token's issuer, so it never judged the token. Retry after `Retry-After` seconds with the same token. If it persists, check the server's route to the issuer's discovery and `jwks_uri` endpoints. |
 | `503` | `bundle_stale` | A configured bundle is older than `max_staleness` and uses fail-closed behavior. Restore bundle pull/verification or raise `max_staleness` intentionally. |
 | `503` | `bundle_unavailable` | Required mode could not prove that the mandatory baseline participated. Restore the global baseline and retry. |
 | `503` | `bundle_evaluation_failed` | Bundle evaluation faulted, such as a timeout, strict built-in error, or malformed decision result. Inspect the server log at `trace_id`. |
@@ -299,5 +300,15 @@ err = client.RevokeToken(ctx, token, "https://api.github.com")
 ```
 
 `NewAppTokenProvider(appID int64, pemData []byte, owner, apiURL string, opts ...Option)` returns `(*AppTokenProvider, error)`; its `Token(ctx context.Context) (string, error)` method mints a token. `STSTokenProvider` is a plain struct with a `Token(ctx)` method (there is no constructor). `client.DefaultSATokenPath` is `/var/run/secrets/tokens/github-sts-token`.
+
+When github-sts refuses the exchange, `STSTokenProvider.Token` returns a `*client.ExchangeError`. Branch on its `Code` and hand its `TraceID` to an operator, who finds the full reason in the server log. It carries only what the [error response](#error-responses) already holds, so it exposes nothing more to the caller.
+
+```go
+token, err := stsProvider.Token(ctx)
+var exchangeErr *client.ExchangeError
+if errors.As(err, &exchangeErr) && exchangeErr.Code == "replay_detected" {
+    // The service account token was already used: wait for a fresh one.
+}
+```
 
 The client lives at [`client/`](https://github.com/Depthmark/github-sts/tree/main/client) and is importable as `github.com/depthmark/github-sts/client`.

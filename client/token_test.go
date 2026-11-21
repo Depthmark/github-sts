@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -278,6 +279,68 @@ func TestSTSTokenProvider_Token_HappyPath(t *testing.T) {
 	}
 	if token != "ghs_sts_tok" {
 		t.Fatalf("unexpected token: %s", token)
+	}
+}
+
+func TestSTSTokenProvider_Token_RefusalCarriesCodeAndTraceID(t *testing.T) {
+	tests := []struct {
+		name        string
+		header      string
+		body        string
+		wantCode    string
+		wantTraceID string
+		wantError   string
+	}{
+		{
+			name:        "github-sts error body",
+			body:        `{"error":"forbidden","code":"policy_denied","trace_id":"abc-123"}`,
+			wantCode:    "policy_denied",
+			wantTraceID: "abc-123",
+			wantError:   `github-sts returned 403 for scope "myorg/myrepo": forbidden (code=policy_denied trace_id=abc-123)`,
+		},
+		{
+			name:        "trace id only in the header",
+			header:      "def-456",
+			body:        "<html>Forbidden</html>",
+			wantTraceID: "def-456",
+			wantError:   `github-sts returned 403 for scope "myorg/myrepo" (trace_id=def-456)`,
+		},
+		{
+			name:      "not from github-sts",
+			body:      "<html>Forbidden</html>",
+			wantError: `github-sts returned 403 for scope "myorg/myrepo"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tt.header != "" {
+					w.Header().Set("X-Trace-ID", tt.header)
+				}
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer srv.Close()
+
+			tokenPath := filepath.Join(t.TempDir(), "token")
+			if err := os.WriteFile(tokenPath, []byte("fake-sa-token"), 0600); err != nil {
+				t.Fatalf("writing temp token: %v", err)
+			}
+			p := &STSTokenProvider{STSURL: srv.URL, Identity: "ci", Scope: "myorg/myrepo", SATokenPath: tokenPath}
+
+			_, err := p.Token(context.Background())
+			var exchangeErr *ExchangeError
+			if !errors.As(err, &exchangeErr) {
+				t.Fatalf("expected *ExchangeError, got %T: %v", err, err)
+			}
+			if exchangeErr.StatusCode != http.StatusForbidden || exchangeErr.Code != tt.wantCode || exchangeErr.TraceID != tt.wantTraceID {
+				t.Errorf("ExchangeError = %+v", exchangeErr)
+			}
+			if err.Error() != tt.wantError {
+				t.Errorf("error = %q, want %q", err.Error(), tt.wantError)
+			}
+		})
 	}
 }
 

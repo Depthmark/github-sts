@@ -70,7 +70,7 @@ GET /sts/exchange                 sts.result=github_error, status=ERROR
             └── HTTP POST        http.response.status_code=422
 ```
 
-The mint span reports `error.type=github_permissions_not_granted`. Check that the selected GitHub App installation has the requested permission and access to the policy repository.
+The mint span reports `error.type=github_permissions_not_granted` when the selected GitHub App installation lacks the requested permission. It reports `error.type=github_repository_not_accessible` when the installation cannot reach the policy repository: add the repository to the installation's repository access, or check its name.
 
 Authorization denials such as `policy_denied` and `org_policy_denied` remain status `Unset`. Their `sts.result` and `sts.stage.result=denied` attributes distinguish them from service or dependency failures without inflating error-rate alerts.
 

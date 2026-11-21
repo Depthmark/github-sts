@@ -36,6 +36,7 @@ grep abc-123 /var/log/github-sts.log
 | **Exchange returns `401`** | Missing or malformed `Authorization: Bearer` header. Check the workflow actually requested an OIDC token (`id-token: write` permission). |
 | **Exchange returns `403`** with `code: "oidc_invalid"` | OIDC token rejected. Check token expiry, verify `oidc.allowed_issuers` includes the issuer, confirm `kid` is present, review server logs at `trace_id`. |
 | **Exchange returns `403`** with `code: "github_identity_invalid"` | GitHub.com source identity is missing string owner/repository ID claims, the claims disagree, or `sub` is still name-only while immutable format is required. Opt the repository in to immutable subjects and inspect the audit reason at `trace_id`. |
+| **Exchange returns `503`** with `code: "oidc_unavailable"` | The server could not fetch the issuer's keys, so the token was never checked. Retry with the same token after `Retry-After`. If it persists, the log line at `trace_id` names the failing discovery or `jwks_uri` request: check egress to the issuer. |
 | **JWKS host rejected** in logs | Issuer's `jwks_uri` host differs from the issuer host. Add it to `oidc.trusted_jwks_hosts` (see [OIDC Issuers]({{< relref "/oidc-issuers" >}})). |
 
 ### Audience
@@ -100,6 +101,8 @@ because as far as this broker is concerned it is unsigned.
 | Problem | Solution |
 |---|---|
 | **Exchange returns `502`** with `code: "upstream_error"` | Policy fetch or GitHub token mint failed. Check `githubsts_github_reachable` metric and server logs at `trace_id`. |
+| **Exchange returns `502`** and the log line at `trace_id` says `cannot access repository` | The GitHub App installation cannot reach the target or policy repository. If the error says `limited to selected repositories`, an organization owner adds the repository at the installation URL in the error. If it says `can access all repositories`, check the repository name. Each repository you add widens what the App can mint tokens for, so add only the ones your workloads need. |
+| **Exchange returns `502`** and the log line at `trace_id` says `org policy repository` | The GitHub App installation cannot read the repository that `org_policy_repo` names, so the exchange failed closed instead of using the requesting repo's policy. If the hint says `not among the selected repositories`, an organization owner adds the org policy repository at the installation URL in the error. If it says `does not exist`, create the repository, or correct or remove `org_policy_repo`. See [Policy resolution]({{< relref "/concepts/trust-policies#policy-resolution" >}}). |
 | **Audit events dropped** (`githubsts_audit_events_dropped_total` rising) | Audit sink can't keep up. Increase `GITHUBSTS_AUDIT_BUFFER_SIZE`, ensure the audit log path is writable, or speed up the audit consumer. |
 
 ## Debugging an exchange end-to-end

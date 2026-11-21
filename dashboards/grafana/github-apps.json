@@ -520,7 +520,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "100 * (sum(rate(githubsts_token_exchanges_total{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\",result=~\"cache_error|github_error|bundle_stale|bundle_unavailable|bundle_evaluation_failed|unknown_error\"}[$__rate_interval])) or on() 0 * sum(rate(githubsts_token_exchanges_total{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"}[$__rate_interval]))) / sum(rate(githubsts_token_exchanges_total{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"}[$__rate_interval]))",
+          "expr": "100 * (sum(rate(githubsts_token_exchanges_total{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\",result=~\"cache_error|github_error|oidc_unavailable|bundle_stale|bundle_unavailable|bundle_evaluation_failed|unknown_error\"}[$__rate_interval])) or on() 0 * sum(rate(githubsts_token_exchanges_total{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"}[$__rate_interval]))) / sum(rate(githubsts_token_exchanges_total{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"}[$__rate_interval]))",
           "refId": "A",
           "range": false,
           "instant": true,
@@ -872,7 +872,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "100 * (sum by (github_app) (rate(githubsts_token_exchanges_total{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\",result=~\"cache_error|github_error|bundle_stale|bundle_unavailable|bundle_evaluation_failed|unknown_error\"}[$__rate_interval])) or on(github_app) 0 * sum by (github_app) (rate(githubsts_token_exchanges_total{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"}[$__rate_interval]))) / sum by (github_app) (rate(githubsts_token_exchanges_total{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"}[$__rate_interval]))",
+          "expr": "100 * (sum by (github_app) (rate(githubsts_token_exchanges_total{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\",result=~\"cache_error|github_error|oidc_unavailable|bundle_stale|bundle_unavailable|bundle_evaluation_failed|unknown_error\"}[$__rate_interval])) or on(github_app) 0 * sum by (github_app) (rate(githubsts_token_exchanges_total{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"}[$__rate_interval]))) / sum by (github_app) (rate(githubsts_token_exchanges_total{namespace=~\"$namespace\",job=~\"$job\",github_app=~\"${app:regex}\"}[$__rate_interval]))",
           "refId": "A",
           "range": true,
           "instant": false,

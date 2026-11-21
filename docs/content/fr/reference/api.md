@@ -121,6 +121,7 @@ Les réponses d'erreur partagent cette forme :
 | `403` | `policy_denied` | La politique existe mais l'évaluation a échoué (subject, claim_pattern). Consultez la ligne de journal d'audit au `trace_id` pour l'écart précis. |
 | `405` | `method_not_allowed` | Utilisez `GET` ou `POST`. |
 | `409` | `replay_detected` | JTI déjà consommé ; obtenez un nouveau jeton OIDC. |
+| `503` | `oidc_unavailable` | Le serveur n'a pas pu récupérer les clés de l'émetteur du jeton, et n'a donc jamais évalué le jeton. Réessayez après `Retry-After` secondes avec le même jeton. Si l'erreur persiste, vérifiez l'accès du serveur aux points de terminaison de découverte et `jwks_uri` de l'émetteur. |
 | `500` | `internal_error` | Problème côté serveur (backend de cache, mauvaise configuration de l'App). Consultez les journaux serveur au `trace_id`. |
 | `502` | `upstream_error` | Échec de la récupération de politique ou de l'émission du jeton GitHub. Consultez les journaux serveur au `trace_id`. |
 
@@ -271,5 +272,15 @@ err = client.RevokeToken(ctx, token, "https://api.github.com")
 ```
 
 `NewAppTokenProvider(appID int64, pemData []byte, owner, apiURL string, opts ...Option)` renvoie `(*AppTokenProvider, error)` ; sa méthode `Token(ctx context.Context) (string, error)` émet un jeton. `STSTokenProvider` est une simple structure avec une méthode `Token(ctx)` (il n'y a pas de constructeur). `client.DefaultSATokenPath` vaut `/var/run/secrets/tokens/github-sts-token`.
+
+Quand github-sts refuse l'échange, `STSTokenProvider.Token` renvoie une `*client.ExchangeError`. Basez votre logique sur son `Code` et transmettez son `TraceID` à un opérateur, qui trouve la raison complète dans le journal du serveur. Elle ne contient que ce que la [réponse d'erreur](#error-responses) contient déjà, et n'expose donc rien de plus à l'appelant.
+
+```go
+token, err := stsProvider.Token(ctx)
+var exchangeErr *client.ExchangeError
+if errors.As(err, &exchangeErr) && exchangeErr.Code == "replay_detected" {
+    // Le jeton de compte de service a déjà servi : attendez-en un nouveau.
+}
+```
 
 Le client se trouve dans [`client/`](https://github.com/Depthmark/github-sts/tree/main/client) et est importable en tant que `github.com/depthmark/github-sts/client`.

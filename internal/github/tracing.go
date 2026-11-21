@@ -36,7 +36,10 @@ func tokenMintErrorType(err error) string {
 	if !errors.As(err, &mintErr) {
 		return "github_operation_failed"
 	}
+	var accessErr *RepositoryAccessError
 	switch {
+	case errors.As(err, &accessErr):
+		return "github_repository_not_accessible"
 	case mintErr.StatusCode == http.StatusUnprocessableEntity:
 		return "github_permissions_not_granted"
 	case mintErr.StatusCode == http.StatusNotFound:

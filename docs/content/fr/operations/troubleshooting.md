@@ -32,6 +32,7 @@ grep abc-123 /var/log/github-sts.log
 |---|---|
 | **L'échange renvoie `401`** | En-tête `Authorization: Bearer` manquant ou malformé. Vérifiez que le workflow a réellement demandé un jeton OIDC (permission `id-token: write`). |
 | **L'échange renvoie `403`** avec `code: "oidc_invalid"` | Jeton OIDC rejeté. Vérifiez l'expiration du jeton, que `oidc.allowed_issuers` inclut l'émetteur, que `kid` est présent, et consultez les journaux serveur au `trace_id`. |
+| **L'échange renvoie `503`** avec `code: "oidc_unavailable"` | Le serveur n'a pas pu récupérer les clés de l'émetteur, et le jeton n'a donc jamais été vérifié. Réessayez avec le même jeton après `Retry-After`. Si l'erreur persiste, la ligne de journal au `trace_id` nomme la requête de découverte ou `jwks_uri` en échec : vérifiez l'accès sortant vers l'émetteur. |
 | **Hôte JWKS rejeté** dans les journaux | L'hôte `jwks_uri` de l'émetteur diffère de l'hôte de l'émetteur. Ajoutez-le à `oidc.trusted_jwks_hosts` (voir [Émetteurs OIDC]({{< relref "/oidc-issuers" >}})). |
 
 ### Audience
@@ -89,6 +90,8 @@ seule signature est un tag historique `sha256-<digest>.sig` renvoie
 | Problème | Solution |
 |---|---|
 | **L'échange renvoie `502`** avec `code: "upstream_error"` | Échec de la récupération de politique ou de l'émission du jeton GitHub. Vérifiez la métrique `githubsts_github_reachable` et les journaux serveur au `trace_id`. |
+| **L'échange renvoie `502`** et la ligne de journal au `trace_id` indique `cannot access repository` | L'installation de la GitHub App ne peut pas atteindre le dépôt cible ou le dépôt de politiques. Si l'erreur indique `limited to selected repositories`, un propriétaire de l'organisation ajoute le dépôt à l'adresse d'installation donnée dans l'erreur. Si elle indique `can access all repositories`, vérifiez le nom du dépôt. Chaque dépôt ajouté élargit les jetons que l'App peut émettre : n'ajoutez que ceux dont vos charges de travail ont besoin. |
+| **L'échange renvoie `502`** et la ligne de journal au `trace_id` indique `org policy repository` | L'installation de la GitHub App ne peut pas lire le dépôt que nomme `org_policy_repo` : l'échange est donc refusé au lieu d'utiliser la politique du dépôt demandeur. Si l'indication dit `not among the selected repositories`, un propriétaire de l'organisation ajoute le dépôt de politiques d'organisation à l'adresse d'installation donnée dans l'erreur. Si elle dit `does not exist`, créez le dépôt, ou corrigez ou retirez `org_policy_repo`. Voir [Résolution de politique]({{< relref "/concepts/trust-policies#policy-resolution" >}}). |
 | **Événements d'audit abandonnés** (`githubsts_audit_events_dropped_total` en hausse) | Le puits d'audit ne suit pas. Augmentez `GITHUBSTS_AUDIT_BUFFER_SIZE`, assurez-vous que le chemin du journal d'audit est accessible en écriture, ou accélérez le consommateur d'audit. |
 
 ## Déboguer un échange de bout en bout
