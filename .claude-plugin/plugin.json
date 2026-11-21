@@ -1,6 +1,6 @@
 {
   "name": "github-sts",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Skills for github-sts. Repository owners write a trust policy that validates and wire a GitHub Actions workflow that exchanges a token. Platform admins publish a signed policy bundle the broker admits in required mode.",
   "author": {
     "name": "Depthmark"
