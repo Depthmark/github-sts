@@ -535,6 +535,7 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"app", appName,
 				"identity", req.Identity,
 				"error", err,
+				"hint", classifyUpstreamError(err),
 			)
 		}
 		if errors.Is(err, github.ErrTargetScopeNotCanonical) {
@@ -1170,8 +1171,13 @@ func remoteIP(r *http.Request, trustForwarded bool) string {
 // classifyUpstreamError extracts an actionable hint from a GitHub API
 // error for structured logging. Operators can search for these hints.
 func classifyUpstreamError(err error) string {
+	var accessErr *github.RepositoryAccessError
 	msg := err.Error()
 	switch {
+	case errors.As(err, &accessErr):
+		return "The GitHub App installation cannot access this repository. Add the repository to the installation's repository access, or check that it exists."
+	case errors.Is(err, github.ErrTargetScopeNotCanonical):
+		return "The scope does not match GitHub's canonical owner/repository spelling. Request the exact spelling GitHub reports."
 	case strings.Contains(msg, "is not installed on organization"):
 		return "GitHub App is not installed on the target organization. Install it via the GitHub organization settings."
 	case strings.Contains(msg, "authentication failed"):

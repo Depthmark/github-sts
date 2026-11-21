@@ -3,6 +3,7 @@ title: Tracer les échanges de jetons
 description: Configurer OpenTelemetry et lire les spans de requête, de politique, de bundle et de GitHub émis par github-sts.
 weight: 5
 translationKey: tracing-token-exchanges
+translationStatus: pending-review
 ---
 
 Activez le traçage pour localiser la latence ou les erreurs de dépendances dans un échange de jeton. Le service exporte les traces avec OTLP et retourne l'identifiant de la trace active dans `X-Trace-ID` et les réponses d'erreur.
@@ -70,7 +71,7 @@ GET /sts/exchange                 sts.result=github_error, status=ERROR
             └── HTTP POST        http.response.status_code=422
 ```
 
-Le span de création du jeton indique `error.type=github_permissions_not_granted`. Vérifiez que l'installation de la GitHub App sélectionnée possède la permission demandée et peut accéder au dépôt de politiques.
+Le span de création du jeton indique `error.type=github_permissions_not_granted` lorsque l'installation de la GitHub App sélectionnée ne possède pas la permission demandée. Il indique `error.type=github_repository_not_accessible` lorsque l'installation ne peut pas atteindre le dépôt de politiques : ajoutez le dépôt à l'accès aux dépôts de l'installation, ou vérifiez son nom.
 
 Les refus d'autorisation comme `policy_denied` et `org_policy_denied` conservent le statut `Unset`. Leurs attributs `sts.result` et `sts.stage.result=denied` les distinguent des erreurs du service ou de ses dépendances sans augmenter artificiellement les alertes de taux d'erreur.
 

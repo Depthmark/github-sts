@@ -462,6 +462,38 @@ func TestExchange_InvalidTrustPolicyHasDistinctCode(t *testing.T) {
 
 const authorizedSubject = "repo:org@1001/source@2001:ref:refs/heads/main"
 
+func TestExchange_TargetOutsideInstallationLogsTheFix(t *testing.T) {
+	accessErr := &github.RepositoryAccessError{
+		App: "test-app", Instance: "primary", AppID: 12345, Repository: "org/target",
+		InstallationID: 42, RepositorySelection: "selected",
+		SettingsURL: "https://github.com/organizations/org/settings/installations/42",
+	}
+	app := &mockExchangeApp{resolveErr: fmt.Errorf("creating target-resolution token: %w",
+		&github.TokenMintError{StatusCode: http.StatusUnprocessableEntity, Err: accessErr})}
+	h := authorizedExchangeHandler(app, &mockPolicyLoader{}, &recordingAuditLogger{})
+	var logs bytes.Buffer
+	h.slogger = slog.New(slog.NewJSONHandler(&logs, nil))
+
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, authorizedExchangeRequest())
+
+	// The caller still gets the generic answer (ADR 0012); only the log names the fix.
+	assertErrorCode(t, w, http.StatusBadGateway, CodeUpstream)
+	if strings.Contains(w.Body.String(), "org/target") {
+		t.Errorf("response names the repository: %s", w.Body.String())
+	}
+	for _, want := range []string{
+		`"msg":"target resolution failed"`,
+		`cannot access repository \"org/target\"`,
+		accessErr.SettingsURL,
+		`"hint":"The GitHub App installation cannot access this repository.`,
+	} {
+		if !strings.Contains(logs.String(), want) {
+			t.Errorf("logs do not contain %s:\n%s", want, logs.String())
+		}
+	}
+}
+
 func authorizedExchangeHandler(app github.ExchangeApp, loader *mockPolicyLoader, al *recordingAuditLogger) *ExchangeHandler {
 	return &ExchangeHandler{
 		jtiCache:                      &mockJTICache{isNew: true},

@@ -89,6 +89,7 @@ seule signature est un tag historique `sha256-<digest>.sig` renvoie
 | Problème | Solution |
 |---|---|
 | **L'échange renvoie `502`** avec `code: "upstream_error"` | Échec de la récupération de politique ou de l'émission du jeton GitHub. Vérifiez la métrique `githubsts_github_reachable` et les journaux serveur au `trace_id`. |
+| **L'échange renvoie `502`** et la ligne de journal au `trace_id` indique `cannot access repository` | L'installation de la GitHub App ne peut pas atteindre le dépôt cible ou le dépôt de politiques. Si l'erreur indique `limited to selected repositories`, un propriétaire de l'organisation ajoute le dépôt à l'adresse d'installation donnée dans l'erreur. Si elle indique `can access all repositories`, vérifiez le nom du dépôt. Chaque dépôt ajouté élargit les jetons que l'App peut émettre : n'ajoutez que ceux dont vos charges de travail ont besoin. |
 | **Événements d'audit abandonnés** (`githubsts_audit_events_dropped_total` en hausse) | Le puits d'audit ne suit pas. Augmentez `GITHUBSTS_AUDIT_BUFFER_SIZE`, assurez-vous que le chemin du journal d'audit est accessible en écriture, ou accélérez le consommateur d'audit. |
 
 ## Déboguer un échange de bout en bout
