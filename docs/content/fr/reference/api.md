@@ -270,4 +270,14 @@ err = client.RevokeToken(ctx, token, "https://api.github.com")
 
 `NewAppTokenProvider(appID int64, pemData []byte, owner, apiURL string, opts ...Option)` renvoie `(*AppTokenProvider, error)` ; sa méthode `Token(ctx context.Context) (string, error)` émet un jeton. `STSTokenProvider` est une simple structure avec une méthode `Token(ctx)` (il n'y a pas de constructeur). `client.DefaultSATokenPath` vaut `/var/run/secrets/tokens/github-sts-token`.
 
+Quand github-sts refuse l'échange, `STSTokenProvider.Token` renvoie une `*client.ExchangeError`. Basez votre logique sur son `Code` et transmettez son `TraceID` à un opérateur, qui trouve la raison complète dans le journal du serveur. Elle ne contient que ce que la [réponse d'erreur](#error-responses) contient déjà, et n'expose donc rien de plus à l'appelant.
+
+```go
+token, err := stsProvider.Token(ctx)
+var exchangeErr *client.ExchangeError
+if errors.As(err, &exchangeErr) && exchangeErr.Code == "replay_detected" {
+    // Le jeton de compte de service a déjà servi : attendez-en un nouveau.
+}
+```
+
 Le client se trouve dans [`client/`](https://github.com/Depthmark/github-sts/tree/main/client) et est importable en tant que `github.com/depthmark/github-sts/client`.
