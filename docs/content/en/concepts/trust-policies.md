@@ -200,6 +200,8 @@ apps:
 
 If `org_policy_repo` is unset, only the requesting repo is consulted regardless of mode.
 
+Create the org policy repository before you set `org_policy_repo`, and add it to the GitHub App installation's repository access. When a lookup reaches that repository and the installation cannot read it, github-sts fails the exchange closed with `502 upstream_error` and does not fall back to the requesting repo: the repository it cannot read may hold the policy that must win. The log line at `trace_id` names `org_policy_repo` and says what to fix.
+
 ## Next steps
 
 - [Policy Recipes]({{< relref "/concepts/policy-recipes" >}}): copy-and-paste patterns for common scenarios

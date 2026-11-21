@@ -1194,9 +1194,12 @@ func remoteIP(r *http.Request, trustForwarded bool) string {
 // classifyUpstreamError extracts an actionable hint from a GitHub API
 // error for structured logging. Operators can search for these hints.
 func classifyUpstreamError(err error) string {
+	var orgRepoErr *policy.OrgPolicyRepoError
 	var accessErr *github.RepositoryAccessError
 	msg := err.Error()
 	switch {
+	case errors.As(err, &orgRepoErr) && errors.As(err, &accessErr):
+		return orgPolicyRepoAccessHint(accessErr.RepositorySelection)
 	case errors.As(err, &accessErr):
 		return "The GitHub App installation cannot access this repository. Add the repository to the installation's repository access, or check that it exists."
 	case errors.Is(err, github.ErrTargetScopeNotCanonical):
@@ -1213,6 +1216,22 @@ func classifyUpstreamError(err error) string {
 		return "Request to GitHub API timed out. Check network connectivity and GitHub API status."
 	default:
 		return "Unexpected GitHub API error. Check the error field for details."
+	}
+}
+
+// orgPolicyRepoAccessHint names the fix when the installation cannot reach
+// the org policy repository. Each hint says the exchange failed closed,
+// because an operator who expects a fallback to the requesting repository
+// would otherwise look for the fault there.
+func orgPolicyRepoAccessHint(repositorySelection string) string {
+	const failsClosed = " Exchanges fail closed until then: github-sts does not fall back to the requesting repository's policy."
+	switch repositorySelection {
+	case "selected":
+		return "The org policy repository set by org_policy_repo is not among the selected repositories of the GitHub App installation. An organization owner must add it to the installation's repository access." + failsClosed
+	case "all":
+		return "The org policy repository set by org_policy_repo does not exist in this organization. Create it, or correct or remove org_policy_repo." + failsClosed
+	default:
+		return "The org policy repository set by org_policy_repo does not exist or is not among the repositories of the GitHub App installation. Add it to the installation's repository access, or create it." + failsClosed
 	}
 }
 
