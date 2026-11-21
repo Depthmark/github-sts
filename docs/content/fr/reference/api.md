@@ -124,6 +124,8 @@ Les réponses d'erreur partagent cette forme :
 | `500` | `internal_error` | Problème côté serveur (backend de cache, mauvaise configuration de l'App). Consultez les journaux serveur au `trace_id`. |
 | `502` | `upstream_error` | Échec de la récupération de politique ou de l'émission du jeton GitHub. Consultez les journaux serveur au `trace_id`. |
 
+Une réponse `502` porte `Retry-After` en secondes lorsque GitHub a limité le débit de l'App ou a répondu par une erreur 5xx : attendez ce délai, puis réessayez. Après une limite de débit, la valeur est l'heure de réinitialisation donnée par GitHub, plafonnée à une heure ; après une erreur 5xx, elle vaut 10 secondes. Une réponse `502` sans `Retry-After` n'aboutira pas en réessayant tant qu'un opérateur n'a pas corrigé la cause.
+
 ## Validation des politiques de confiance
 
 ### `POST /sts/v1/trust-policy/validate`

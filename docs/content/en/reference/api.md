@@ -128,6 +128,8 @@ Error responses share this shape:
 | `500` | `internal_error` | Server-side problem (cache backend, app misconfig). Check server logs at `trace_id`. |
 | `502` | `upstream_error` | Policy fetch or GitHub token mint failed. Check server logs at `trace_id`. |
 
+A `502` carries `Retry-After` in seconds when GitHub rate limited the App or answered with a 5xx: wait that long, then retry. After a rate limit, the value is GitHub's own reset time, capped at one hour; after a 5xx, it is 10 seconds. A `502` without `Retry-After` will not succeed on retry until an operator fixes the cause.
+
 Bundle-related audit events always include `bundle_enforcement`. Once the bundle
 path is reached, `bundle_digest` and `org_decision.applicable` /
 `org_decision.evaluated` record participation; completed evaluations add
