@@ -7,6 +7,7 @@ import (
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -569,6 +570,37 @@ func TestExchange_OrgPolicyRepoOutsideInstallationLogsTheFix(t *testing.T) {
 				if !strings.Contains(logs.String(), want) {
 					t.Errorf("logs do not contain %s:\n%s", want, logs.String())
 				}
+			}
+		})
+	}
+}
+
+func TestExchange_UpstreamErrorPassesGitHubWaitOn(t *testing.T) {
+	tests := []struct {
+		name    string
+		mintErr error
+		want    string
+	}{
+		{"rate limited", fmt.Errorf("minting: %w", &github.TokenMintError{
+			StatusCode: http.StatusForbidden, Retryable: true, RetryAfter: 42 * time.Second, Err: errors.New("rate limited"),
+		}), "42"},
+		{"permanent failure", &github.TokenMintError{StatusCode: http.StatusNotFound, Retryable: true, Err: errors.New("not installed")}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			app := &mockExchangeApp{
+				target:  github.TargetIdentity{Scope: "org/target", Owner: "org", OwnerID: "1001", Repository: "target", RepositoryID: "3001"},
+				mintErr: tt.mintErr,
+			}
+			h := authorizedExchangeHandler(app, &mockPolicyLoader{pol: validExchangePolicy("2001", "3001")}, &recordingAuditLogger{})
+			h.slogger = slog.New(slog.DiscardHandler)
+
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, authorizedExchangeRequest())
+
+			assertErrorCode(t, w, http.StatusBadGateway, CodeUpstream)
+			if got := w.Header().Get("Retry-After"); got != tt.want {
+				t.Errorf("Retry-After = %q, want %q", got, tt.want)
 			}
 		})
 	}

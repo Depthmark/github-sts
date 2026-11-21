@@ -81,6 +81,9 @@ func NewAppTokenProvider(credential *AppCredentialSource, apiURL string, httpCli
 type TokenMintError struct {
 	StatusCode int
 	Retryable  bool
+	// RetryAfter is how long GitHub asked callers to wait, set only for a
+	// rate limit or a 5xx: the failures that waiting can fix. See retryAfter.
+	RetryAfter time.Duration
 	Err        error
 }
 
@@ -235,7 +238,9 @@ func (p *AppTokenProvider) fetchInstallationID(ctx context.Context, org string) 
 				"install it at https://github.com/organizations/%s/settings/installations",
 			p.appName, p.instance, p.appID, org, org)}
 	}
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+	// A rate-limited 403 is not a credential problem; it falls through to
+	// the generic branch below, which passes GitHub's wait on.
+	if resp.StatusCode == http.StatusUnauthorized || (resp.StatusCode == http.StatusForbidden && !isRetryableTokenMintStatus(resp)) {
 		metrics.GitHubAPICalls.WithLabelValues(p.appName, p.instance, "get_installation", "auth_error").Inc()
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		return 0, &TokenMintError{StatusCode: resp.StatusCode, Retryable: true, Err: fmt.Errorf(
@@ -246,7 +251,7 @@ func (p *AppTokenProvider) fetchInstallationID(ctx context.Context, org string) 
 	if resp.StatusCode != http.StatusOK {
 		metrics.GitHubAPICalls.WithLabelValues(p.appName, p.instance, "get_installation", "error").Inc()
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return 0, &TokenMintError{StatusCode: resp.StatusCode, Retryable: true, Err: fmt.Errorf(
+		return 0, &TokenMintError{StatusCode: resp.StatusCode, Retryable: true, RetryAfter: retryAfter(resp, time.Now()), Err: fmt.Errorf(
 			"resolving installation for org %q via app %q instance %q: GitHub API returned HTTP %d: %s",
 			org, p.appName, p.instance, resp.StatusCode, string(body))}
 	}
@@ -599,6 +604,7 @@ func (p *AppTokenProvider) getInstallationToken(ctx context.Context, scope strin
 		return MintedToken{}, &TokenMintError{
 			StatusCode: resp.StatusCode,
 			Retryable:  isRetryableTokenMintStatus(resp),
+			RetryAfter: retryAfter(resp, time.Now()),
 			Err: fmt.Errorf("creating installation token for app %q instance %q scope %q: GitHub API returned HTTP %d: %s",
 				p.appName, p.instance, scope, resp.StatusCode, string(respBody)),
 		}
@@ -691,6 +697,39 @@ func isRetryableTokenMintStatus(resp *http.Response) bool {
 		}
 	}
 	return false
+}
+
+const (
+	// upstreamRetryAfter is the wait suggested after a GitHub 5xx, which
+	// names none of its own.
+	upstreamRetryAfter = 10 * time.Second
+	// rateLimitRetryAfter is GitHub's documented minimum wait for a rate
+	// limit that names no reset time.
+	rateLimitRetryAfter = time.Minute
+	// maxRetryAfter caps the wait at one primary rate-limit window.
+	maxRetryAfter = time.Hour
+)
+
+// retryAfter returns how long a caller should wait before retrying resp,
+// in whole seconds, or 0 when waiting would not help. It is non-zero
+// exactly when isRetryableTokenMintStatus reports a rate limit or a 5xx:
+// a secondary limit's Retry-After, a primary limit's X-RateLimit-Reset, or
+// upstreamRetryAfter for a 5xx.
+func retryAfter(resp *http.Response, now time.Time) time.Duration {
+	if !isRetryableTokenMintStatus(resp) {
+		return 0
+	}
+	wait := upstreamRetryAfter
+	if resp.StatusCode < 500 {
+		wait = rateLimitRetryAfter
+		if secs, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil {
+			wait = time.Duration(secs) * time.Second
+		} else if reset, err := strconv.ParseInt(resp.Header.Get("X-RateLimit-Reset"), 10, 64); err == nil {
+			wait = time.Unix(reset, 0).Sub(now)
+		}
+	}
+	wait = min(max(wait, time.Second), maxRetryAfter)
+	return (wait + time.Second - 1).Truncate(time.Second)
 }
 
 // ExtractRateLimitHeaders parses GitHub rate limit headers from an HTTP

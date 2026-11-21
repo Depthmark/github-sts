@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -565,7 +566,7 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "target scope is not canonical", Code: CodeBadRequest, TraceID: traceID})
 			return
 		}
-		writeJSON(w, http.StatusBadGateway, ErrorResponse{Error: "upstream error", Code: CodeUpstream, TraceID: traceID})
+		writeUpstreamError(w, err, traceID)
 		return
 	}
 	event.TargetRepositoryOwner = targetIdentity.Owner
@@ -622,7 +623,7 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"hint", classifyUpstreamError(err),
 			)
 		}
-		writeJSON(w, http.StatusBadGateway, ErrorResponse{Error: "upstream error", Code: CodeUpstream, TraceID: traceID})
+		writeUpstreamError(w, err, traceID)
 		return
 	}
 	if pol == nil {
@@ -940,7 +941,7 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"error", err,
 			"hint", classifyUpstreamError(err),
 		)
-		writeJSON(w, http.StatusBadGateway, ErrorResponse{Error: "upstream error", Code: CodeUpstream, TraceID: traceID})
+		writeUpstreamError(w, err, traceID)
 		return
 	}
 
@@ -1189,6 +1190,18 @@ func remoteIP(r *http.Request, trustForwarded bool) string {
 		return addr[:idx]
 	}
 	return addr
+}
+
+// writeUpstreamError answers a failed GitHub call with 502. When GitHub was
+// rate limited or failing, it passes GitHub's wait on as Retry-After, so a
+// client backs off instead of failing the job. The wait describes GitHub's
+// health or the App's quota, never a policy or a repository's contents.
+func writeUpstreamError(w http.ResponseWriter, err error, traceID string) {
+	var mintErr *github.TokenMintError
+	if errors.As(err, &mintErr) && mintErr.RetryAfter > 0 {
+		w.Header().Set("Retry-After", strconv.Itoa(int(mintErr.RetryAfter/time.Second)))
+	}
+	writeJSON(w, http.StatusBadGateway, ErrorResponse{Error: "upstream error", Code: CodeUpstream, TraceID: traceID})
 }
 
 // classifyUpstreamError extracts an actionable hint from a GitHub API

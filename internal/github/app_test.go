@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/depthmark/github-sts/internal/metrics"
 	"github.com/depthmark/github-sts/internal/signer"
@@ -594,6 +595,74 @@ func TestGetInstallationToken_RetryabilityClassification(t *testing.T) {
 				t.Errorf("StatusCode = %d, want %d", mintErr.StatusCode, tt.wantStatus)
 			}
 		})
+	}
+}
+
+func TestRetryAfter(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	tests := []struct {
+		name    string
+		status  int
+		headers map[string]string
+		want    time.Duration
+	}{
+		{"5xx", http.StatusBadGateway, nil, upstreamRetryAfter},
+		{"secondary limit names its wait", http.StatusForbidden, map[string]string{"Retry-After": "30"}, 30 * time.Second},
+		{"primary limit waits for the reset", http.StatusTooManyRequests,
+			map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "1700000090"}, 90 * time.Second},
+		{"primary limit without a reset", http.StatusForbidden, map[string]string{"X-RateLimit-Remaining": "0"}, rateLimitRetryAfter},
+		{"reset already passed", http.StatusForbidden,
+			map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "1699999000"}, time.Second},
+		{"wait capped", http.StatusForbidden, map[string]string{"Retry-After": "86400"}, maxRetryAfter},
+		{"bare 403 is not a rate limit", http.StatusForbidden, nil, 0},
+		{"422 cannot be waited out", http.StatusUnprocessableEntity, nil, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := &http.Response{StatusCode: tt.status, Header: http.Header{}}
+			for k, v := range tt.headers {
+				resp.Header.Set(k, v)
+			}
+			if got := retryAfter(resp, now); got != tt.want {
+				t.Errorf("retryAfter = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAppTokenProvider_GetInstallationToken_RateLimitCarriesRetryAfter(t *testing.T) {
+	srv := newMockGitHubServer(42, statusHandler(http.StatusForbidden, map[string]string{"Retry-After": "45"}))
+	defer srv.Close()
+
+	p := NewAppTokenProvider(newTestCredential(t, "test-app", "test-instance", 12345, generateTestKey(t)), srv.URL, nil)
+	_, err := p.GetInstallationToken(context.Background(), "myorg/myrepo", map[string]string{"contents": "read"}, nil, "test")
+	var mintErr *TokenMintError
+	if !errors.As(err, &mintErr) {
+		t.Fatalf("expected *TokenMintError, got %T: %v", err, err)
+	}
+	if mintErr.RetryAfter != 45*time.Second {
+		t.Errorf("RetryAfter = %v, want 45s", mintErr.RetryAfter)
+	}
+}
+
+func TestFetchInstallationID_RateLimitIsNotAnAuthFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-RateLimit-Remaining", "0")
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	p := NewAppTokenProvider(newTestCredential(t, "test-app", "test-instance", 12345, generateTestKey(t)), srv.URL, nil)
+	_, err := p.GetInstallationID(context.Background(), "myorg")
+	var mintErr *TokenMintError
+	if !errors.As(err, &mintErr) {
+		t.Fatalf("expected *TokenMintError, got %T: %v", err, err)
+	}
+	if mintErr.RetryAfter != rateLimitRetryAfter {
+		t.Errorf("RetryAfter = %v, want %v", mintErr.RetryAfter, rateLimitRetryAfter)
+	}
+	if strings.Contains(err.Error(), "authentication failed") {
+		t.Errorf("a rate limit is reported as an authentication failure: %v", err)
 	}
 }
 

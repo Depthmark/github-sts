@@ -168,6 +168,7 @@ func (p *AppTokenProvider) fetchTarget(ctx context.Context, scope RepositoryScop
 		return TargetIdentity{}, &TokenMintError{
 			StatusCode: resp.StatusCode,
 			Retryable:  isRetryableTokenMintStatus(resp),
+			RetryAfter: retryAfter(resp, time.Now()),
 			Err: fmt.Errorf("resolving target %q: GitHub API returned HTTP %d: %s",
 				scope.String(), resp.StatusCode, string(body)),
 		}
