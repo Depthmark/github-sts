@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.1.4](https://github.com/Depthmark/github-sts/compare/v0.1.3...v0.1.4) (2026-11-21)
+
+
+### ✨ Features
+
+* **client:** include code and trace_id in exchange errors ([#136](https://github.com/Depthmark/github-sts/issues/136)) ([c16c3c0](https://github.com/Depthmark/github-sts/commit/c16c3c042299de41307f6b2ddd25bb284bc4f2a6))
+* send Retry-After on GitHub rate limits and 5xx ([#137](https://github.com/Depthmark/github-sts/issues/137)) ([0161ef6](https://github.com/Depthmark/github-sts/commit/0161ef607e03fc4e21d05942ee4464c75f782eb1))
+
+
+### 🐛 Bug Fixes
+
+* return 503 oidc_unavailable when issuer keys cannot be fetched ([#134](https://github.com/Depthmark/github-sts/issues/134)) ([86ceb51](https://github.com/Depthmark/github-sts/commit/86ceb515bb7286ed62dd5733ad5da95faca3eda0))
+* say when the org policy repository is missing from the GitHub App installation ([#135](https://github.com/Depthmark/github-sts/issues/135)) ([87923d6](https://github.com/Depthmark/github-sts/commit/87923d6e979b95ff9250d4519ac141bfb034ae28))
+* say which repository the GitHub App installation cannot access ([#133](https://github.com/Depthmark/github-sts/issues/133)) ([99daa89](https://github.com/Depthmark/github-sts/commit/99daa89876c66a131ed638164eb3e326dee26ff1))
+
+
+### 📦 Dependencies
+
+* **deps:** bump chainguard/go from `5755728` to `163bd55` in the docker-dependencies group ([#131](https://github.com/Depthmark/github-sts/issues/131)) ([187e505](https://github.com/Depthmark/github-sts/commit/187e505cb4436c9f4cf3fec9bba734d240116a22))
+* **deps:** bump github.com/open-policy-agent/opa from 1.22.2 to 1.22.4 in the golang-dependencies group ([#132](https://github.com/Depthmark/github-sts/issues/132)) ([2fcf69b](https://github.com/Depthmark/github-sts/commit/2fcf69be767f8de6f0490856e2f991c93c3e4eaf))
+* **deps:** bump the docker-dependencies group with 2 updates ([#125](https://github.com/Depthmark/github-sts/issues/125)) ([9efb54e](https://github.com/Depthmark/github-sts/commit/9efb54eba94540a0c2fd7e99cdccd0f6c3da9f81))
+* **deps:** bump the github-actions-dependencies group across 1 directory with 3 updates ([#129](https://github.com/Depthmark/github-sts/issues/129)) ([ea72466](https://github.com/Depthmark/github-sts/commit/ea724667a281bd7ce687d270c1c7b209f296604e))
+* **deps:** bump the golang-dependencies group across 1 directory with 4 updates ([#128](https://github.com/Depthmark/github-sts/issues/128)) ([ae24379](https://github.com/Depthmark/github-sts/commit/ae2437989126dfb20a8d8fb58847abcd195d4de0))
+
 ## [0.1.3](https://github.com/Depthmark/github-sts/compare/v0.1.2...v0.1.3) (2026-11-03)
 
 
