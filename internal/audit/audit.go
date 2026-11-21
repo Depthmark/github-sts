@@ -21,7 +21,7 @@ func auditLogLevel(result ExchangeResult) slog.Level {
 	case ResultPolicyDenied, ResultPolicyInvalid, ResultOrgPolicyDenied, ResultNotFound, ResultOIDCInvalid, ResultJTIReplay:
 		return slog.LevelWarn
 	default:
-		// ResultGitHubError, ResultCacheError, ResultUnknownError
+		// ResultGitHubError, ResultOIDCUnavailable, ResultCacheError, ResultUnknownError
 		return slog.LevelError
 	}
 }
@@ -35,6 +35,7 @@ const (
 	ResultPolicyInvalid          ExchangeResult = "trust_policy_invalid"
 	ResultOrgPolicyDenied        ExchangeResult = "org_policy_denied"
 	ResultOIDCInvalid            ExchangeResult = "oidc_invalid"
+	ResultOIDCUnavailable        ExchangeResult = "oidc_unavailable"
 	ResultJTIReplay              ExchangeResult = "jti_replay"
 	ResultNotFound               ExchangeResult = "policy_not_found"
 	ResultCacheError             ExchangeResult = "cache_error"

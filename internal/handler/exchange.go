@@ -116,6 +116,7 @@ const (
 	CodeOrgPolicyDenied       = "org_policy_denied"       // org-rego bundle blocked this request at exchange time
 
 	// 503 — server is up but a dependency is degraded.
+	CodeOIDCUnavailable        = "oidc_unavailable"         // the token issuer's keys could not be fetched; retry
 	CodeBundleStale            = "bundle_stale"             // bundle hasn't refreshed in time and fail_mode=closed
 	CodeBundleUnavailable      = "bundle_unavailable"       // mandatory baseline did not participate
 	CodeBundleEvaluationFailed = "bundle_evaluation_failed" // timeout, strict built-in error, or other evaluation fault
@@ -301,10 +302,32 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	oidcCtx, oidcSpan := startStage(requestCtx, "sts.oidc.validate")
 	claims, err := validate(oidcCtx, bearer, h.allowedIssuers)
-	if err != nil {
+	switch {
+	case errors.Is(err, oidc.ErrIssuerUnavailable):
+		endStage(oidcSpan, "", "oidc_issuer_unavailable")
+	case err != nil:
 		endStage(oidcSpan, "invalid", "")
-	} else {
+	default:
 		endStage(oidcSpan, "success", "")
+	}
+	// The token was never judged, so the caller has nothing to fix: tell it
+	// to retry. Rejected before the JTI is reserved, so the same token works.
+	if errors.Is(err, oidc.ErrIssuerUnavailable) {
+		event.Result = audit.ResultOIDCUnavailable
+		event.ErrorReason = fmt.Sprintf("oidc issuer unavailable: %v", err)
+		event.DurationMS = msSince(start)
+		h.emitResult(event, req, start)
+		if h.slogger != nil {
+			h.slogger.Error("oidc issuer unavailable",
+				"trace_id", traceID,
+				"scope", req.Scope,
+				"identity", req.Identity,
+				"error", err,
+			)
+		}
+		w.Header().Set("Retry-After", "30")
+		writeJSON(w, http.StatusServiceUnavailable, ErrorResponse{Error: "service unavailable", Code: CodeOIDCUnavailable, TraceID: traceID})
+		return
 	}
 	if err != nil {
 		event.Issuer = claimString(claims, "iss")

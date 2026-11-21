@@ -32,6 +32,7 @@ grep abc-123 /var/log/github-sts.log
 |---|---|
 | **L'échange renvoie `401`** | En-tête `Authorization: Bearer` manquant ou malformé. Vérifiez que le workflow a réellement demandé un jeton OIDC (permission `id-token: write`). |
 | **L'échange renvoie `403`** avec `code: "oidc_invalid"` | Jeton OIDC rejeté. Vérifiez l'expiration du jeton, que `oidc.allowed_issuers` inclut l'émetteur, que `kid` est présent, et consultez les journaux serveur au `trace_id`. |
+| **L'échange renvoie `503`** avec `code: "oidc_unavailable"` | Le serveur n'a pas pu récupérer les clés de l'émetteur, et le jeton n'a donc jamais été vérifié. Réessayez avec le même jeton après `Retry-After`. Si l'erreur persiste, la ligne de journal au `trace_id` nomme la requête de découverte ou `jwks_uri` en échec : vérifiez l'accès sortant vers l'émetteur. |
 | **Hôte JWKS rejeté** dans les journaux | L'hôte `jwks_uri` de l'émetteur diffère de l'hôte de l'émetteur. Ajoutez-le à `oidc.trusted_jwks_hosts` (voir [Émetteurs OIDC]({{< relref "/oidc-issuers" >}})). |
 
 ### Audience

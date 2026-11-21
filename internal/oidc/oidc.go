@@ -9,6 +9,7 @@ import (
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -127,6 +128,12 @@ var (
 	jwksSF    singleflight.Group
 )
 
+// ErrIssuerUnavailable marks a token that could not be checked because the
+// keys of its allowed issuer could not be fetched. The token may be valid:
+// the failure belongs to the server and its route to the issuer, not to
+// the caller.
+var ErrIssuerUnavailable = errors.New("oidc issuer keys unavailable")
+
 // Validate verifies an OIDC bearer token's signature and standard claims
 // against the issuer's JWKS endpoint. If allowedIssuers is non-empty, the
 // token's issuer must be in the list.
@@ -173,7 +180,7 @@ func Validate(ctx context.Context, tokenString string, allowedIssuers []string) 
 	keys, err := getJWKS(ctx, issuer)
 	if err != nil {
 		metrics.OIDCValidationErrors.WithLabelValues(issuer, "jwks_fetch_failed").Inc()
-		return nil, fmt.Errorf("fetching JWKS for issuer %q: %w", issuer, err)
+		return nil, fmt.Errorf("%w: fetching JWKS for issuer %q: %w", ErrIssuerUnavailable, issuer, err)
 	}
 
 	// Build keyfunc for verification. `kid` is required: the previous

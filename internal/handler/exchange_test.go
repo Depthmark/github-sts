@@ -215,6 +215,37 @@ func TestExchange_InvalidAuth(t *testing.T) {
 	}
 }
 
+func TestExchange_UnavailableIssuerIsRetryable(t *testing.T) {
+	jtiCache := &mockJTICache{isNew: true}
+	al := &recordingAuditLogger{}
+	h := &ExchangeHandler{
+		jtiCache:       jtiCache,
+		policyLoader:   &mockPolicyLoader{},
+		appProviders:   map[string]github.ExchangeApp{},
+		allowedIssuers: []string{oidc.GitHubActionsIssuer},
+		auditLogger:    al,
+		validator: func(_ context.Context, _ string, _ []string) (oidc.Claims, error) {
+			return nil, fmt.Errorf("%w: fetching JWKS for issuer %q: connection refused", oidc.ErrIssuerUnavailable, oidc.GitHubActionsIssuer)
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/sts/exchange?scope=org/repo&identity=ci", nil)
+	req.Header.Set("Authorization", "Bearer any")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	assertErrorCode(t, w, http.StatusServiceUnavailable, CodeOIDCUnavailable)
+	if got := w.Header().Get("Retry-After"); got != "30" {
+		t.Errorf("Retry-After = %q, want 30", got)
+	}
+	if jtiCache.reserveCalls != 0 {
+		t.Errorf("JTI Reserve calls = %d, want 0 so the same token can retry", jtiCache.reserveCalls)
+	}
+	if got := al.lastEvent().Result; got != audit.ResultOIDCUnavailable {
+		t.Errorf("audit result = %q, want %q", got, audit.ResultOIDCUnavailable)
+	}
+}
+
 func TestExchange_GitHubIdentityInvalidBeforeStateOrPolicy(t *testing.T) {
 	jtiCache := &mockJTICache{isNew: true}
 	loader := &mockPolicyLoader{}

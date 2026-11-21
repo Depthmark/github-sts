@@ -6,6 +6,7 @@ import (
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 	"net/http"
@@ -228,8 +229,39 @@ func TestValidate_KidNotInJWKS_Rejected(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := Validate(context.Background(), signed, []string{srv.URL}); err == nil {
+	_, err = Validate(context.Background(), signed, []string{srv.URL})
+	if err == nil {
 		t.Fatal("expected error for kid not in JWKS")
+	}
+	if errors.Is(err, ErrIssuerUnavailable) {
+		t.Fatalf("an unknown kid is the token's fault, not an unavailable issuer: %v", err)
+	}
+}
+
+func TestValidate_UnreachableIssuerIsUnavailable(t *testing.T) {
+	ResetCacheForTesting()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
+		"iss": srv.URL, "sub": "test",
+		"exp": time.Now().Add(10 * time.Minute).Unix(), "iat": time.Now().Unix(),
+	})
+	tok.Header["kid"] = "k1"
+	signed, err := tok.SignedString(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = Validate(context.Background(), signed, []string{srv.URL})
+	if !errors.Is(err, ErrIssuerUnavailable) {
+		t.Fatalf("error = %v, want ErrIssuerUnavailable", err)
 	}
 }
 

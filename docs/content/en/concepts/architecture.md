@@ -174,7 +174,7 @@ flowchart TD
 |---|---|---|
 | 1 | Parse the JWT and require an `iss` claim | `oidc_invalid` |
 | 2 | Issuer allowlist: `iss` in `oidc.allowed_issuers` | `oidc_invalid` |
-| 3 | JWKS fetch: retrieve keys from the issuer's pinned `jwks_uri` | `oidc_invalid` |
+| 3 | JWKS fetch: retrieve keys from the issuer's pinned `jwks_uri` | `oidc_unavailable` |
 | 4 | Signature and claims: `kid` matches a JWKS key, RS256 signature valid, `exp` and `iat` required (`nbf` checked when present) | `oidc_invalid` |
 | 5 | Canonical GitHub identity: for GitHub.com, cross-check signed owner/repository ID claims and require immutable `sub` format by default | `github_identity_invalid` |
 | 6 | Server-wide audience: `aud` matches `oidc.required_audience` (if set) | `audience_mismatch` |

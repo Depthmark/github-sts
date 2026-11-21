@@ -121,6 +121,7 @@ Les réponses d'erreur partagent cette forme :
 | `403` | `policy_denied` | La politique existe mais l'évaluation a échoué (subject, claim_pattern). Consultez la ligne de journal d'audit au `trace_id` pour l'écart précis. |
 | `405` | `method_not_allowed` | Utilisez `GET` ou `POST`. |
 | `409` | `replay_detected` | JTI déjà consommé ; obtenez un nouveau jeton OIDC. |
+| `503` | `oidc_unavailable` | Le serveur n'a pas pu récupérer les clés de l'émetteur du jeton, et n'a donc jamais évalué le jeton. Réessayez après `Retry-After` secondes avec le même jeton. Si l'erreur persiste, vérifiez l'accès du serveur aux points de terminaison de découverte et `jwks_uri` de l'émetteur. |
 | `500` | `internal_error` | Problème côté serveur (backend de cache, mauvaise configuration de l'App). Consultez les journaux serveur au `trace_id`. |
 | `502` | `upstream_error` | Échec de la récupération de politique ou de l'émission du jeton GitHub. Consultez les journaux serveur au `trace_id`. |
 

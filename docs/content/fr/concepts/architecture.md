@@ -159,7 +159,7 @@ flowchart TD
 |---|---|---|
 | 1 | Analyser le JWT et exiger une revendication `iss` | `oidc_invalid` |
 | 2 | Liste d'autorisation d'émetteurs : `iss` dans `oidc.allowed_issuers` | `oidc_invalid` |
-| 3 | Récupération JWKS : récupérer les clés depuis le `jwks_uri` épinglé de l'émetteur | `oidc_invalid` |
+| 3 | Récupération JWKS : récupérer les clés depuis le `jwks_uri` épinglé de l'émetteur | `oidc_unavailable` |
 | 4 | Signature et revendications : `kid` correspond à une clé JWKS, signature RS256 valide, `exp` et `iat` requises (`nbf` vérifié lorsqu'il est présent) | `oidc_invalid` |
 | 5 | Audience au niveau du serveur : `aud` correspond à `oidc.required_audience` (si défini) | `audience_mismatch` |
 | 6 | Rejeu JTI : `jti` non consommé dans la fenêtre `jti.ttl` | `replay_detected` |
