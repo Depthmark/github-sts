@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.5](https://github.com/Depthmark/github-sts/compare/v0.1.4...v0.1.5) (2026-11-23)
+
+
+### ✨ Features
+
+* return error help in English or French through Accept-Language ([#138](https://github.com/Depthmark/github-sts/issues/138)) ([08ca6ae](https://github.com/Depthmark/github-sts/commit/08ca6ae4226ad74099518d6f7c205e6f845e19c2))
+
 ## [0.1.4](https://github.com/Depthmark/github-sts/compare/v0.1.3...v0.1.4) (2026-11-21)
 
 
