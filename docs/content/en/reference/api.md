@@ -120,7 +120,7 @@ Error responses share this shape:
 | `403` | `trust_policy_invalid` | The loaded policy is malformed, lacks a workload selector or required GitHub ID binding, or otherwise violates the policy contract. Fix the target policy; details are in the audit log. |
 | `403` | `policy_denied` | A valid policy did not match the workload or exact immutable source-to-target relationship. Check the audit log line at `trace_id` for the precise mismatch. |
 | `403` | `org_policy_denied` | Enterprise policy was evaluated and denied the exchange after the YAML policy allowed it. Check audit `bundle_decisions` for bundle, package, rule, exception, and reason details. |
-| `405` | `method_not_allowed` | Use `GET` or `POST`. |
+| `405` | `method_not_allowed` | The endpoint does not accept this method. The `Allow` header names the methods it does: `GET, POST` for `/sts/exchange`, `POST` for `/sts/v1/trust-policy/validate`, and `GET, HEAD` for `/sts/v1/trust-policy.json`. |
 | `409` | `replay_detected` | JTI already consumed; obtain a fresh OIDC token. |
 | `503` | `oidc_unavailable` | The server could not fetch the keys of the token's issuer, so it never judged the token. Retry after `Retry-After` seconds with the same token. If it persists, check the server's route to the issuer's discovery and `jwks_uri` endpoints. |
 | `503` | `bundle_stale` | A configured bundle is older than `max_staleness` and uses fail-closed behavior. Restore bundle pull/verification or raise `max_staleness` intentionally. |
@@ -191,7 +191,7 @@ Diagnostic severities are `error` or `warning`. Errors include YAML parse errors
 
 ### `GET /sts/v1/trust-policy.json`
 
-Return the JSON Schema file from the loaded bundle at `/data/sts/v1/trust-policy.json`. The broker republishes those bytes without interpreting them, so this endpoint reflects whatever schema the operator's own Rego bundle ships. It depends on an enabled bundle that carries the schema document and returns `503` if the bundle integration is disabled or the schema file is missing.
+Return the JSON Schema file from the loaded bundle at `/data/sts/v1/trust-policy.json`. The broker republishes those bytes without interpreting them, so this endpoint reflects whatever schema the operator's own Rego bundle ships. It depends on an enabled bundle that carries the schema document and returns `503` if the bundle integration is disabled or the schema file is missing. `HEAD` returns the same status and headers without the body, so an editor can check the `ETag` without downloading the schema.
 
 Most users do not need this endpoint. The project's own trust policy schema is published as a static file that needs no broker and no authentication: see [Trust Policy Schema]({{< relref "/reference/policy-schema" >}}). Use this endpoint when a deployment has customised the schema in its bundle and editors should follow that customised version.
 

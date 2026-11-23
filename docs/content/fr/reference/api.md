@@ -119,7 +119,7 @@ Les réponses d'erreur partagent cette forme :
 | `403` | `issuer_not_enabled` | L'émetteur du jeton est déclaré dans `oidc.github_issuers`, et l'App demandée ne figure pas dans sa liste `apps`. Ajoutez-y l'App ou demandez une App qu'elle contient. |
 | `403` | `policy_not_found` | Aucun `.sts.yaml` pour ce `scope/app/identity`. Vérifiez le chemin du fichier : `{base_path}/{app}/{identity}.sts.yaml` dans le dépôt cible (ou le dépôt de politiques d'organisation). |
 | `403` | `policy_denied` | La politique existe mais l'évaluation a échoué (subject, claim_pattern). Consultez la ligne de journal d'audit au `trace_id` pour l'écart précis. |
-| `405` | `method_not_allowed` | Utilisez `GET` ou `POST`. |
+| `405` | `method_not_allowed` | Le point de terminaison n'accepte pas cette méthode. L'en-tête `Allow` nomme celles qu'il accepte : `GET, POST` pour `/sts/exchange`, `POST` pour `/sts/v1/trust-policy/validate`, et `GET, HEAD` pour `/sts/v1/trust-policy.json`. |
 | `409` | `replay_detected` | JTI déjà consommé ; obtenez un nouveau jeton OIDC. |
 | `503` | `oidc_unavailable` | Le serveur n'a pas pu récupérer les clés de l'émetteur du jeton, et n'a donc jamais évalué le jeton. Réessayez après `Retry-After` secondes avec le même jeton. Si l'erreur persiste, vérifiez l'accès du serveur aux points de terminaison de découverte et `jwks_uri` de l'émetteur. |
 | `500` | `internal_error` | Problème côté serveur (backend de cache, mauvaise configuration de l'App). Consultez les journaux serveur au `trace_id`. |
@@ -181,7 +181,7 @@ Les niveaux de diagnostic sont `error` ou `warning`. Les erreurs comprennent les
 
 ### `GET /sts/v1/trust-policy.json`
 
-Renvoyer le fichier de schéma JSON contenu dans le bundle chargé, à l'emplacement `/data/sts/v1/trust-policy.json`. Le broker republie ces octets sans les interpréter : ce point de terminaison reflète donc le schéma fourni par le bundle Rego de l'opérateur. Il dépend d'un bundle activé qui embarque le document de schéma et renvoie `503` si l'intégration des bundles est désactivée ou si le fichier de schéma est absent.
+Renvoyer le fichier de schéma JSON contenu dans le bundle chargé, à l'emplacement `/data/sts/v1/trust-policy.json`. Le broker republie ces octets sans les interpréter : ce point de terminaison reflète donc le schéma fourni par le bundle Rego de l'opérateur. Il dépend d'un bundle activé qui embarque le document de schéma et renvoie `503` si l'intégration des bundles est désactivée ou si le fichier de schéma est absent. `HEAD` renvoie le même statut et les mêmes en-têtes sans le corps, ce qui permet à un éditeur de vérifier l'`ETag` sans télécharger le schéma.
 
 La plupart des utilisateurs n'ont pas besoin de ce point de terminaison. Le schéma de politique de confiance du projet est publié sous forme de fichier statique, sans broker ni authentification : consultez [Schéma des politiques de confiance]({{< relref "/reference/policy-schema" >}}). Utilisez ce point de terminaison lorsqu'un déploiement a personnalisé le schéma dans son bundle et que les éditeurs doivent suivre cette version personnalisée.
 

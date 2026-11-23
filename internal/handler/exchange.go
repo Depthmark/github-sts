@@ -215,8 +215,10 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	traceID := traceIDFromContext(r)
 
-	// Only GET and POST are allowed.
+	// Only GET and POST are allowed. RFC 9110 requires a 405 to name the
+	// methods that are.
 	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+		w.Header().Set("Allow", "GET, POST")
 		writeJSON(w, http.StatusMethodNotAllowed, ErrorResponse{Error: "method not allowed", Code: CodeMethodNotAllowed, TraceID: traceID})
 		return
 	}
