@@ -221,6 +221,12 @@ type STSTokenProvider struct {
 	// silently downgraded.
 	Permissions map[string]string
 
+	// AcceptLanguage is sent as the Accept-Language header, and picks the
+	// language of the help text github-sts returns when it refuses the
+	// exchange: "fr" for French, "en, fr" for both. Leave it empty for
+	// English.
+	AcceptLanguage string
+
 	httpClient *http.Client
 }
 
@@ -259,6 +265,9 @@ func (p *STSTokenProvider) Token(ctx context.Context) (string, error) {
 		return "", err
 	}
 	req.Header.Set("Authorization", "Bearer "+string(saToken))
+	if p.AcceptLanguage != "" {
+		req.Header.Set("Accept-Language", p.AcceptLanguage)
+	}
 
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
@@ -291,6 +300,11 @@ type ExchangeError struct {
 	// Message is the server's deliberately generic error text, such as
 	// "forbidden" or the reason a request was malformed.
 	Message string
+	// Help says what to do about Code, keyed by language ("en", "fr"), in
+	// the languages STSTokenProvider.AcceptLanguage asked for. It is nil
+	// when the response carried none, such as a proxy error page or an
+	// older github-sts.
+	Help map[string]string
 }
 
 func (e *ExchangeError) Error() string {
@@ -313,9 +327,10 @@ func (e *ExchangeError) Error() string {
 
 func newExchangeError(resp *http.Response, scope string) *ExchangeError {
 	var body struct {
-		Error   string `json:"error"`
-		Code    string `json:"code"`
-		TraceID string `json:"trace_id"`
+		Error   string            `json:"error"`
+		Code    string            `json:"code"`
+		TraceID string            `json:"trace_id"`
+		Help    map[string]string `json:"help"`
 	}
 	_ = json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&body)
 	traceID := body.TraceID
@@ -328,6 +343,7 @@ func newExchangeError(resp *http.Response, scope string) *ExchangeError {
 		Code:       body.Code,
 		TraceID:    traceID,
 		Message:    body.Error,
+		Help:       body.Help,
 	}
 }
 

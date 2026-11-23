@@ -103,10 +103,17 @@ your own refresh interval rather than treating the absence as an error.
 Error responses share this shape:
 
 ```json
-{ "error": "forbidden", "code": "policy_denied", "trace_id": "abc-123" }
+{
+  "error": "forbidden",
+  "code": "policy_denied",
+  "trace_id": "abc-123",
+  "help": {
+    "en": "A valid trust policy did not match this workload: its subject, a claim_pattern, the source repository or the target repository differs. Compare the policy with your token's claims, and give the trace_id to your github-sts operator for the exact mismatch."
+  }
+}
 ```
 
-`error` is deliberately generic so attackers can't probe the validator. Use the `code` field (the machine-readable error code) to branch in your client logic, and `trace_id` to correlate with server/audit logs (the log line carries the full reason).
+`error` is deliberately generic so attackers can't probe the validator. Use the `code` field (the machine-readable error code) to branch in your client logic, and `trace_id` to correlate with server/audit logs (the log line carries the full reason). `help` tells a person what to do about `code`, in English unless the request asks for French: see [Help in English or French](#help-language).
 
 | Status | `code` | What to fix |
 |---|---|---|
@@ -136,6 +143,39 @@ path is reached, `bundle_digest` and `org_decision.applicable` /
 `org_decision.evaluated` record participation; completed evaluations add
 `bundle_decisions`. This distinguishes `org_policy_denied` from dependency and
 evaluation failures.
+
+### Help in English or French {#help-language}
+
+Read what to fix in French, or in both languages, by sending `Accept-Language` with the request:
+
+```bash
+curl -H "Authorization: Bearer $OIDC_TOKEN" \
+  -H "Accept-Language: en, fr" \
+  "https://sts.example.com/sts/exchange?scope=myorg/myrepo&app=default&identity=ci"
+```
+
+```json
+{
+  "error": "forbidden",
+  "code": "audience_mismatch",
+  "trace_id": "abc-123",
+  "help": {
+    "en": "The token's audience does not match the trust policy. Request the token with the policy's audience value, for example core.getIDToken('<audience>') in GitHub Actions.",
+    "fr": "L'audience du jeton ne correspond pas à la politique de confiance. Demandez le jeton avec la valeur audience de la politique, par exemple core.getIDToken('<audience>') dans GitHub Actions."
+  }
+}
+```
+
+The language with the highest weight wins, and a region such as `fr-CA` counts as its language. When English and French share the highest weight, `help` carries both:
+
+| `Accept-Language` | `help` carries | `Content-Language` |
+|---|---|---|
+| Absent, `*`, or only unsupported languages such as `de` | `en` | `en` |
+| `fr` or `fr-CA` | `fr` | `fr` |
+| `en, fr` | `en` and `fr` | `en, fr` |
+| `fr, en;q=0.9` | `fr` | `fr` |
+
+Every response that carries `help` also sends `Vary: Accept-Language`. The help text is fixed for each `code`: it never quotes your token, your request or a trust policy, so it reveals nothing `code` does not, and the exact reason stays in the audit log at `trace_id`. `error`, `code` and `trace_id` keep the same values in every language, so branch on `code`, never on `help`.
 
 ## Trust Policy Validation
 
@@ -181,13 +221,18 @@ Invalid policy content returns `422` with diagnostics:
       "message": "subject and subject_pattern are mutually exclusive",
       "path": "$.subject_pattern",
       "line": 3,
-      "column": 1
+      "column": 1,
+      "help": {
+        "en": "subject and subject_pattern cannot both be set. Keep subject for an exact match, or subject_pattern for a regular expression."
+      }
     }
   ]
 }
 ```
 
 Diagnostic severities are `error` or `warning`. Errors include YAML parse errors, unknown fields, selector conflicts, unsupported `repositories`, invalid immutable IDs, and the same trust-policy validation errors enforced by the exchange path.
+
+`message` states the specific finding in English. `help` says what to do about the diagnostic's `code`, in the languages `Accept-Language` picks, by the rules in [Help in English or French](#help-language).
 
 ### `GET /sts/v1/trust-policy.json`
 
@@ -308,6 +353,15 @@ token, err := stsProvider.Token(ctx)
 var exchangeErr *client.ExchangeError
 if errors.As(err, &exchangeErr) && exchangeErr.Code == "replay_detected" {
     // The service account token was already used: wait for a fresh one.
+}
+```
+
+`ExchangeError.Help` holds the response's `help` object, keyed by language. Set `AcceptLanguage` on the provider to read it in French or in both languages; the value is sent as the `Accept-Language` header, by the rules in [Help in English or French](#help-language):
+
+```go
+stsProvider.AcceptLanguage = "en, fr"
+if _, err := stsProvider.Token(ctx); errors.As(err, &exchangeErr) {
+    log.Printf("%v\n%s\n%s", err, exchangeErr.Help["en"], exchangeErr.Help["fr"])
 }
 ```
 
