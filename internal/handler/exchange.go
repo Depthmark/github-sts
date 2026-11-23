@@ -17,6 +17,7 @@ import (
 	"github.com/depthmark/github-sts/internal/audit"
 	"github.com/depthmark/github-sts/internal/bundle"
 	"github.com/depthmark/github-sts/internal/github"
+	"github.com/depthmark/github-sts/internal/help"
 	"github.com/depthmark/github-sts/internal/jti"
 	"github.com/depthmark/github-sts/internal/metrics"
 	"github.com/depthmark/github-sts/internal/oidc"
@@ -91,11 +92,14 @@ func expiresIn(expiresAt, now time.Time) int64 {
 // safe to surface to callers — operators use it to tell apart "fix the
 // workflow" from "fix the policy" failures without log access. TraceID is
 // the per-request identifier also emitted in audit/server logs; give it to
-// ops to find the matching log line, which carries the full reason.
+// ops to find the matching log line, which carries the full reason. Help
+// says what to do about Code, in the languages the request's
+// Accept-Language picked; it is fixed per code, so it is as generic as Code.
 type ErrorResponse struct {
-	Error   string `json:"error"`
-	Code    string `json:"code,omitempty"`
-	TraceID string `json:"trace_id,omitempty"`
+	Error   string    `json:"error"`
+	Code    string    `json:"code,omitempty"`
+	TraceID string    `json:"trace_id,omitempty"`
+	Help    help.Text `json:"help,omitempty"`
 }
 
 // Error codes returned in ErrorResponse.Code. These are a stable public API —
@@ -217,35 +221,35 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Only GET and POST are allowed.
 	if r.Method != http.MethodGet && r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, ErrorResponse{Error: "method not allowed", Code: CodeMethodNotAllowed, TraceID: traceID})
+		writeError(w, r, http.StatusMethodNotAllowed, ErrorResponse{Error: "method not allowed", Code: CodeMethodNotAllowed, TraceID: traceID})
 		return
 	}
 
 	// Parse request parameters.
 	req, err := parseExchangeRequest(r)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error(), Code: CodeBadRequest, TraceID: traceID})
+		writeError(w, r, http.StatusBadRequest, ErrorResponse{Error: err.Error(), Code: CodeBadRequest, TraceID: traceID})
 		return
 	}
 
 	// Validate required fields.
 	if req.Scope == "" || req.Identity == "" {
-		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "scope and identity are required", Code: CodeBadRequest, TraceID: traceID})
+		writeError(w, r, http.StatusBadRequest, ErrorResponse{Error: "scope and identity are required", Code: CodeBadRequest, TraceID: traceID})
 		return
 	}
 
 	// Validate field characters and length to prevent metrics cardinality abuse.
 	if err := validateField("scope", req.Scope, 200); err != nil {
-		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error(), Code: CodeBadRequest, TraceID: traceID})
+		writeError(w, r, http.StatusBadRequest, ErrorResponse{Error: err.Error(), Code: CodeBadRequest, TraceID: traceID})
 		return
 	}
 	if err := validateField("identity", req.Identity, 100); err != nil {
-		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error(), Code: CodeBadRequest, TraceID: traceID})
+		writeError(w, r, http.StatusBadRequest, ErrorResponse{Error: err.Error(), Code: CodeBadRequest, TraceID: traceID})
 		return
 	}
 	if req.AppName != "" {
 		if err := validateField("app", req.AppName, 100); err != nil {
-			writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error(), Code: CodeBadRequest, TraceID: traceID})
+			writeError(w, r, http.StatusBadRequest, ErrorResponse{Error: err.Error(), Code: CodeBadRequest, TraceID: traceID})
 			return
 		}
 	}
@@ -253,17 +257,17 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// body reaches the map directly, so guard it here too.
 	for name, level := range req.Permissions {
 		if err := validateField("permission name", name, 64); err != nil {
-			writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error(), Code: CodeBadRequest, TraceID: traceID})
+			writeError(w, r, http.StatusBadRequest, ErrorResponse{Error: err.Error(), Code: CodeBadRequest, TraceID: traceID})
 			return
 		}
 		if err := validateField("permission level", level, 16); err != nil {
-			writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error(), Code: CodeBadRequest, TraceID: traceID})
+			writeError(w, r, http.StatusBadRequest, ErrorResponse{Error: err.Error(), Code: CodeBadRequest, TraceID: traceID})
 			return
 		}
 	}
 	targetScope, err := github.ParseRepositoryScope(req.Scope)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error(), Code: CodeBadRequest, TraceID: traceID})
+		writeError(w, r, http.StatusBadRequest, ErrorResponse{Error: err.Error(), Code: CodeBadRequest, TraceID: traceID})
 		return
 	}
 
@@ -293,7 +297,7 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		event.ErrorReason = "missing or invalid authorization header"
 		event.DurationMS = msSince(start)
 		h.emitResult(event, req, start)
-		writeJSON(w, http.StatusForbidden, ErrorResponse{Error: "forbidden", Code: CodeOIDCInvalid, TraceID: traceID})
+		writeError(w, r, http.StatusForbidden, ErrorResponse{Error: "forbidden", Code: CodeOIDCInvalid, TraceID: traceID})
 		return
 	}
 
@@ -327,7 +331,7 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			)
 		}
 		w.Header().Set("Retry-After", "30")
-		writeJSON(w, http.StatusServiceUnavailable, ErrorResponse{Error: "service unavailable", Code: CodeOIDCUnavailable, TraceID: traceID})
+		writeError(w, r, http.StatusServiceUnavailable, ErrorResponse{Error: "service unavailable", Code: CodeOIDCUnavailable, TraceID: traceID})
 		return
 	}
 	if err != nil {
@@ -346,7 +350,7 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"error", err,
 			)
 		}
-		writeJSON(w, http.StatusForbidden, ErrorResponse{Error: "forbidden", Code: CodeOIDCInvalid, TraceID: traceID})
+		writeError(w, r, http.StatusForbidden, ErrorResponse{Error: "forbidden", Code: CodeOIDCInvalid, TraceID: traceID})
 		return
 	}
 
@@ -388,7 +392,7 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"reason", reason,
 			)
 		}
-		writeJSON(w, http.StatusForbidden, ErrorResponse{Error: "forbidden", Code: CodeGitHubIdentityInvalid, TraceID: traceID})
+		writeError(w, r, http.StatusForbidden, ErrorResponse{Error: "forbidden", Code: CodeGitHubIdentityInvalid, TraceID: traceID})
 		return
 	}
 	if sourceIdentity != nil {
@@ -417,7 +421,7 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"expected_audience", h.requiredAudience,
 			)
 		}
-		writeJSON(w, http.StatusForbidden, ErrorResponse{Error: "forbidden", Code: CodeAudienceMismatch, TraceID: traceID})
+		writeError(w, r, http.StatusForbidden, ErrorResponse{Error: "forbidden", Code: CodeAudienceMismatch, TraceID: traceID})
 		return
 	}
 
@@ -452,7 +456,7 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"error", err,
 			)
 		}
-		writeJSON(w, http.StatusInternalServerError, ErrorResponse{Error: "internal error", Code: CodeInternal, TraceID: traceID})
+		writeError(w, r, http.StatusInternalServerError, ErrorResponse{Error: "internal error", Code: CodeInternal, TraceID: traceID})
 		return
 	}
 	if !isNew {
@@ -460,7 +464,7 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		event.ErrorReason = "token already used"
 		event.DurationMS = msSince(start)
 		h.emitResult(event, req, start)
-		writeJSON(w, http.StatusConflict, ErrorResponse{Error: "token replay detected", Code: CodeReplay, TraceID: traceID})
+		writeError(w, r, http.StatusConflict, ErrorResponse{Error: "token replay detected", Code: CodeReplay, TraceID: traceID})
 		return
 	}
 
@@ -508,7 +512,7 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			code = CodeInternal
 			msg = "internal error"
 		}
-		writeJSON(w, status, ErrorResponse{Error: msg, Code: code, TraceID: traceID})
+		writeError(w, r, status, ErrorResponse{Error: msg, Code: code, TraceID: traceID})
 		return
 	}
 	event.AppName = appName
@@ -529,7 +533,7 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"issuer", event.Issuer,
 			)
 		}
-		writeJSON(w, http.StatusForbidden, ErrorResponse{Error: "forbidden", Code: CodeIssuerNotEnabled, TraceID: traceID})
+		writeError(w, r, http.StatusForbidden, ErrorResponse{Error: "forbidden", Code: CodeIssuerNotEnabled, TraceID: traceID})
 		return
 	}
 
@@ -563,10 +567,10 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			)
 		}
 		if errors.Is(err, github.ErrTargetScopeNotCanonical) {
-			writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "target scope is not canonical", Code: CodeBadRequest, TraceID: traceID})
+			writeError(w, r, http.StatusBadRequest, ErrorResponse{Error: "target scope is not canonical", Code: CodeBadRequest, TraceID: traceID})
 			return
 		}
-		writeUpstreamError(w, err, traceID)
+		writeUpstreamError(w, r, err, traceID)
 		return
 	}
 	event.TargetRepositoryOwner = targetIdentity.Owner
@@ -606,7 +610,7 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if h.slogger != nil {
 				h.slogger.Warn("trust policy invalid", "trace_id", traceID, "scope", req.Scope, "app", appName, "identity", req.Identity, "error", err)
 			}
-			writeJSON(w, http.StatusForbidden, ErrorResponse{Error: "forbidden", Code: CodeTrustPolicyInvalid, TraceID: traceID})
+			writeError(w, r, http.StatusForbidden, ErrorResponse{Error: "forbidden", Code: CodeTrustPolicyInvalid, TraceID: traceID})
 			return
 		}
 		event.Result = audit.ResultGitHubError
@@ -623,7 +627,7 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"hint", classifyUpstreamError(err),
 			)
 		}
-		writeUpstreamError(w, err, traceID)
+		writeUpstreamError(w, r, err, traceID)
 		return
 	}
 	if pol == nil {
@@ -639,7 +643,7 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"identity", req.Identity,
 			)
 		}
-		writeJSON(w, http.StatusForbidden, ErrorResponse{Error: "forbidden", Code: CodePolicyNotFound, TraceID: traceID})
+		writeError(w, r, http.StatusForbidden, ErrorResponse{Error: "forbidden", Code: CodePolicyNotFound, TraceID: traceID})
 		return
 	}
 	_, policyValidationSpan := startStage(requestCtx, "sts.policy.validate")
@@ -657,7 +661,7 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if h.slogger != nil {
 			h.slogger.Warn("trust policy invalid", "trace_id", traceID, "scope", req.Scope, "app", appName, "identity", req.Identity, "error", err)
 		}
-		writeJSON(w, http.StatusForbidden, ErrorResponse{Error: "forbidden", Code: CodeTrustPolicyInvalid, TraceID: traceID})
+		writeError(w, r, http.StatusForbidden, ErrorResponse{Error: "forbidden", Code: CodeTrustPolicyInvalid, TraceID: traceID})
 		return
 	}
 	// Recorded as soon as the policy is known to be well-formed, so every
@@ -691,7 +695,7 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"reason", event.ErrorReason,
 			)
 		}
-		writeJSON(w, http.StatusForbidden, ErrorResponse{Error: "forbidden", Code: CodeAudienceMismatch, TraceID: traceID})
+		writeError(w, r, http.StatusForbidden, ErrorResponse{Error: "forbidden", Code: CodeAudienceMismatch, TraceID: traceID})
 		return
 	}
 
@@ -716,7 +720,7 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"subject", event.Subject,
 			"reason", evalResult.Reason,
 		)
-		writeJSON(w, http.StatusForbidden, ErrorResponse{Error: "forbidden", Code: CodePolicyDenied, TraceID: traceID})
+		writeError(w, r, http.StatusForbidden, ErrorResponse{Error: "forbidden", Code: CodePolicyDenied, TraceID: traceID})
 		return
 	}
 	if sourceIdentity != nil {
@@ -745,7 +749,7 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if h.slogger != nil {
 				h.slogger.Warn("source-to-target relationship denied", "trace_id", traceID, "scope", req.Scope, "identity", req.Identity, "reason", relationship.Reason)
 			}
-			writeJSON(w, http.StatusForbidden, ErrorResponse{Error: "forbidden", Code: CodePolicyDenied, TraceID: traceID})
+			writeError(w, r, http.StatusForbidden, ErrorResponse{Error: "forbidden", Code: CodePolicyDenied, TraceID: traceID})
 			return
 		}
 	}
@@ -781,7 +785,7 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// or does not grant, which would let a caller map out a policy it
 		// cannot read. Operators get the full reason from the audit log via
 		// trace_id, the same contract as every other denial here.
-		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "requested permissions are not permitted by the trust policy", Code: CodeBadRequest, TraceID: traceID})
+		writeError(w, r, http.StatusBadRequest, ErrorResponse{Error: "requested permissions are not permitted by the trust policy", Code: CodeBadRequest, TraceID: traceID})
 		return
 	}
 	// Repository scopes always mint for the one resolved immutable target.
@@ -879,7 +883,7 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"error", evalErr,
 			)
 			w.Header().Set("Retry-After", retryAfter)
-			writeJSON(w, http.StatusServiceUnavailable, ErrorResponse{Error: "service unavailable", Code: code, TraceID: traceID})
+			writeError(w, r, http.StatusServiceUnavailable, ErrorResponse{Error: "service unavailable", Code: code, TraceID: traceID})
 			return
 		}
 		if decision.EvaluatedDigest != "" {
@@ -906,7 +910,7 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"bundle_digest", event.BundleDigest,
 				"reasons", decision.Reasons,
 			)
-			writeJSON(w, http.StatusForbidden, ErrorResponse{Error: "forbidden", Code: CodeOrgPolicyDenied, TraceID: traceID})
+			writeError(w, r, http.StatusForbidden, ErrorResponse{Error: "forbidden", Code: CodeOrgPolicyDenied, TraceID: traceID})
 			return
 		}
 		if decision.Evaluated {
@@ -941,7 +945,7 @@ func (h *ExchangeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"error", err,
 			"hint", classifyUpstreamError(err),
 		)
-		writeUpstreamError(w, err, traceID)
+		writeUpstreamError(w, r, err, traceID)
 		return
 	}
 
@@ -1076,6 +1080,24 @@ func extractBearer(r *http.Request) string {
 	return strings.TrimPrefix(auth, "Bearer ")
 }
 
+// writeError writes resp with the help text for its code, in the languages
+// the request's Accept-Language picks (ADR 0021).
+func writeError(w http.ResponseWriter, r *http.Request, status int, resp ErrorResponse) {
+	langs := help.Negotiate(r.Header.Get("Accept-Language"))
+	resp.Help = help.For(resp.Code, langs)
+	if resp.Help != nil {
+		setHelpLanguage(w, langs)
+	}
+	writeJSON(w, status, resp)
+}
+
+// setHelpLanguage labels a response that carries help text with its
+// languages, and tells caches that Accept-Language chose them.
+func setHelpLanguage(w http.ResponseWriter, langs []help.Language) {
+	w.Header().Set("Content-Language", help.ContentLanguage(langs))
+	w.Header().Add("Vary", "Accept-Language")
+}
+
 // writeJSON writes a JSON response with the given status code.
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -1196,12 +1218,12 @@ func remoteIP(r *http.Request, trustForwarded bool) string {
 // rate limited or failing, it passes GitHub's wait on as Retry-After, so a
 // client backs off instead of failing the job. The wait describes GitHub's
 // health or the App's quota, never a policy or a repository's contents.
-func writeUpstreamError(w http.ResponseWriter, err error, traceID string) {
+func writeUpstreamError(w http.ResponseWriter, r *http.Request, err error, traceID string) {
 	var mintErr *github.TokenMintError
 	if errors.As(err, &mintErr) && mintErr.RetryAfter > 0 {
 		w.Header().Set("Retry-After", strconv.Itoa(int(mintErr.RetryAfter/time.Second)))
 	}
-	writeJSON(w, http.StatusBadGateway, ErrorResponse{Error: "upstream error", Code: CodeUpstream, TraceID: traceID})
+	writeError(w, r, http.StatusBadGateway, ErrorResponse{Error: "upstream error", Code: CodeUpstream, TraceID: traceID})
 }
 
 // classifyUpstreamError extracts an actionable hint from a GitHub API
