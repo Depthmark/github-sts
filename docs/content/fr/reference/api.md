@@ -105,27 +105,75 @@ absence comme une erreur.
 Les réponses d'erreur partagent cette forme :
 
 ```json
-{ "error": "forbidden", "code": "policy_denied", "trace_id": "abc-123" }
+{
+  "error": "forbidden",
+  "code": "policy_denied",
+  "trace_id": "abc-123",
+  "help": {
+    "en": "A valid trust policy did not match this workload: its subject, a claim_pattern, the source repository or the target repository differs. Compare the policy with your token's claims, and give the trace_id to your github-sts operator for the exact mismatch."
+  }
+}
 ```
 
-`error` est délibérément générique afin que les attaquants ne puissent pas sonder le validateur. Utilisez le champ `code` (le code d'erreur lisible par machine) pour brancher dans votre logique cliente, et `trace_id` pour corréler avec les journaux serveur/audit (la ligne de journal porte la raison complète).
+`error` est délibérément générique afin que les attaquants ne puissent pas sonder le validateur. Utilisez le champ `code` (le code d'erreur lisible par machine) pour brancher dans votre logique cliente, et `trace_id` pour corréler avec les journaux serveur/audit (la ligne de journal porte la raison complète). `help` indique à une personne quoi faire du `code`, en anglais sauf si la requête demande le français : voir [Aide en anglais ou en français](#help-language).
 
 | Statut | `code` | Que corriger |
 |---|---|---|
 | `400` | `bad_request` | Paramètres de requête manquants/invalides, portée cible malformée ou non canonique, portée organisation non prise en charge, corps JSON invalide, ou permissions demandées que la politique de confiance n'autorise pas. |
 | `403` | `oidc_invalid` | Jeton OIDC rejeté (manquant/expiré, signature invalide, `iss` inconnu, `kid` manquant, malformé). Rafraîchissez ou réémettez le jeton ; vérifiez `allowed_issuers`. |
+| `403` | `github_identity_invalid` | L'identité source GitHub.com n'a pas les revendications d'identifiants immuables, a des revendications de dépôt contradictoires, ou utilise un `sub` hérité alors que les sujets immuables sont exigés. Vérifiez les paramètres OIDC du dépôt et la raison d'audit au `trace_id`. |
 | `403` | `audience_mismatch` | L'`aud` du jeton ne correspond pas à l'`audience:` de la politique. Transmettez la bonne valeur à `core.getIDToken(<audience>)` ou mettez à jour la politique. |
 | `403` | `app_unknown` | `?app=` ne correspond à aucune App configurée. Vérifiez l'orthographe ou omettez-le lorsqu'une seule App est configurée. |
 | `403` | `issuer_not_enabled` | L'émetteur du jeton est déclaré dans `oidc.github_issuers`, et l'App demandée ne figure pas dans sa liste `apps`. Ajoutez-y l'App ou demandez une App qu'elle contient. |
 | `403` | `policy_not_found` | Aucun `.sts.yaml` pour ce `scope/app/identity`. Vérifiez le chemin du fichier : `{base_path}/{app}/{identity}.sts.yaml` dans le dépôt cible (ou le dépôt de politiques d'organisation). |
+| `403` | `trust_policy_invalid` | La politique chargée est malformée, n'a pas de sélecteur de charge de travail ni la liaison d'identifiants GitHub requise, ou enfreint autrement le contrat de politique. Corrigez la politique cible ; les détails figurent dans le journal d'audit. |
 | `403` | `policy_denied` | La politique existe mais l'évaluation a échoué (subject, claim_pattern). Consultez la ligne de journal d'audit au `trace_id` pour l'écart précis. |
+| `403` | `org_policy_denied` | La politique d'entreprise a été évaluée et a refusé l'échange après que la politique YAML l'a autorisé. Consultez `bundle_decisions` dans l'audit pour le bundle, le package, la règle, l'exception et la raison. |
 | `405` | `method_not_allowed` | Le point de terminaison n'accepte pas cette méthode. L'en-tête `Allow` nomme celles qu'il accepte : `GET, POST` pour `/sts/exchange`, `POST` pour `/sts/v1/trust-policy/validate`, et `GET, HEAD` pour `/sts/v1/trust-policy.json`. |
 | `409` | `replay_detected` | JTI déjà consommé ; obtenez un nouveau jeton OIDC. |
 | `503` | `oidc_unavailable` | Le serveur n'a pas pu récupérer les clés de l'émetteur du jeton, et n'a donc jamais évalué le jeton. Réessayez après `Retry-After` secondes avec le même jeton. Si l'erreur persiste, vérifiez l'accès du serveur aux points de terminaison de découverte et `jwks_uri` de l'émetteur. |
+| `503` | `bundle_stale` | Un bundle configuré est plus ancien que `max_staleness` et refuse les échanges dans ce cas (`fail_mode: closed`). Rétablissez la récupération ou la vérification du bundle, ou relevez `max_staleness` en connaissance de cause. |
+| `503` | `bundle_unavailable` | Le mode requis n'a pas pu prouver la participation de la base de référence obligatoire. Rétablissez la base de référence globale et réessayez. |
+| `503` | `bundle_evaluation_failed` | L'évaluation du bundle a échoué, par exemple sur un délai dépassé, une erreur stricte de fonction intégrée ou un résultat de décision malformé. Consultez le journal du serveur au `trace_id`. |
 | `500` | `internal_error` | Problème côté serveur (backend de cache, mauvaise configuration de l'App). Consultez les journaux serveur au `trace_id`. |
 | `502` | `upstream_error` | Échec de la récupération de politique ou de l'émission du jeton GitHub. Consultez les journaux serveur au `trace_id`. |
 
 Une réponse `502` porte `Retry-After` en secondes lorsque GitHub a limité le débit de l'App ou a répondu par une erreur 5xx : attendez ce délai, puis réessayez. Après une limite de débit, la valeur est l'heure de réinitialisation donnée par GitHub, plafonnée à une heure ; après une erreur 5xx, elle vaut 10 secondes. Une réponse `502` sans `Retry-After` n'aboutira pas en réessayant tant qu'un opérateur n'a pas corrigé la cause.
+
+Les événements d'audit liés aux bundles incluent toujours `bundle_enforcement`. Une fois le chemin des bundles atteint, `bundle_digest` et `org_decision.applicable` / `org_decision.evaluated` enregistrent la participation ; les évaluations terminées ajoutent `bundle_decisions`. Cela distingue `org_policy_denied` des échecs de dépendance et d'évaluation.
+
+### Aide en anglais ou en français {#help-language}
+
+Lisez quoi corriger en français, ou dans les deux langues, en envoyant `Accept-Language` avec la requête :
+
+```bash
+curl -H "Authorization: Bearer $OIDC_TOKEN" \
+  -H "Accept-Language: en, fr" \
+  "https://sts.example.com/sts/exchange?scope=myorg/myrepo&app=default&identity=ci"
+```
+
+```json
+{
+  "error": "forbidden",
+  "code": "audience_mismatch",
+  "trace_id": "abc-123",
+  "help": {
+    "en": "The token's audience does not match the trust policy. Request the token with the policy's audience value, for example core.getIDToken('<audience>') in GitHub Actions.",
+    "fr": "L'audience du jeton ne correspond pas à la politique de confiance. Demandez le jeton avec la valeur audience de la politique, par exemple core.getIDToken('<audience>') dans GitHub Actions."
+  }
+}
+```
+
+La langue au poids le plus élevé l'emporte, et une région comme `fr-CA` compte pour sa langue. Quand l'anglais et le français partagent le poids le plus élevé, `help` contient les deux :
+
+| `Accept-Language` | `help` contient | `Content-Language` |
+|---|---|---|
+| Absent, `*`, ou seulement des langues non prises en charge comme `de` | `en` | `en` |
+| `fr` ou `fr-CA` | `fr` | `fr` |
+| `en, fr` | `en` et `fr` | `en, fr` |
+| `fr, en;q=0.9` | `fr` | `fr` |
+
+Toute réponse qui contient `help` envoie aussi `Vary: Accept-Language`. Le texte d'aide est fixe pour chaque `code` : il ne cite jamais votre jeton, votre requête ni une politique de confiance, il ne révèle donc rien de plus que `code`, et la raison exacte reste dans le journal d'audit au `trace_id`. `error`, `code` et `trace_id` gardent les mêmes valeurs dans toutes les langues : basez votre logique sur `code`, jamais sur `help`.
 
 ## Validation des politiques de confiance
 
@@ -171,13 +219,18 @@ Un contenu de politique invalide renvoie `422` avec des diagnostics :
       "message": "subject and subject_pattern are mutually exclusive",
       "path": "$.subject_pattern",
       "line": 3,
-      "column": 1
+      "column": 1,
+      "help": {
+        "en": "subject and subject_pattern cannot both be set. Keep subject for an exact match, or subject_pattern for a regular expression."
+      }
     }
   ]
 }
 ```
 
 Les niveaux de diagnostic sont `error` ou `warning`. Les erreurs comprennent les erreurs d'analyse YAML, les champs inconnus, les conflits de sélecteurs, le champ `repositories` non pris en charge, les identifiants immuables invalides, ainsi que les mêmes erreurs de validation de politique appliquées par le chemin d'échange.
+
+`message` énonce la constatation précise, en anglais. `help` indique quoi faire du `code` du diagnostic, dans les langues que choisit `Accept-Language`, selon les règles décrites dans [Aide en anglais ou en français](#help-language).
 
 ### `GET /sts/v1/trust-policy.json`
 
@@ -280,6 +333,15 @@ token, err := stsProvider.Token(ctx)
 var exchangeErr *client.ExchangeError
 if errors.As(err, &exchangeErr) && exchangeErr.Code == "replay_detected" {
     // Le jeton de compte de service a déjà servi : attendez-en un nouveau.
+}
+```
+
+`ExchangeError.Help` contient l'objet `help` de la réponse, indexé par langue. Définissez `AcceptLanguage` sur le fournisseur pour le lire en français ou dans les deux langues ; la valeur est envoyée dans l'en-tête `Accept-Language`, selon les règles décrites dans [Aide en anglais ou en français](#help-language) :
+
+```go
+stsProvider.AcceptLanguage = "en, fr"
+if _, err := stsProvider.Token(ctx); errors.As(err, &exchangeErr) {
+    log.Printf("%v\n%s\n%s", err, exchangeErr.Help["en"], exchangeErr.Help["fr"])
 }
 ```
 

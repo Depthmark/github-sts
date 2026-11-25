@@ -8,10 +8,12 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -289,6 +291,7 @@ func TestSTSTokenProvider_Token_RefusalCarriesCodeAndTraceID(t *testing.T) {
 		body        string
 		wantCode    string
 		wantTraceID string
+		wantHelp    map[string]string
 		wantError   string
 	}{
 		{
@@ -296,6 +299,14 @@ func TestSTSTokenProvider_Token_RefusalCarriesCodeAndTraceID(t *testing.T) {
 			body:        `{"error":"forbidden","code":"policy_denied","trace_id":"abc-123"}`,
 			wantCode:    "policy_denied",
 			wantTraceID: "abc-123",
+			wantError:   `github-sts returned 403 for scope "myorg/myrepo": forbidden (code=policy_denied trace_id=abc-123)`,
+		},
+		{
+			name:        "github-sts error body with bilingual help",
+			body:        `{"error":"forbidden","code":"policy_denied","trace_id":"abc-123","help":{"en":"Compare the policy.","fr":"Comparez la politique."}}`,
+			wantCode:    "policy_denied",
+			wantTraceID: "abc-123",
+			wantHelp:    map[string]string{"en": "Compare the policy.", "fr": "Comparez la politique."},
 			wantError:   `github-sts returned 403 for scope "myorg/myrepo": forbidden (code=policy_denied trace_id=abc-123)`,
 		},
 		{
@@ -337,8 +348,49 @@ func TestSTSTokenProvider_Token_RefusalCarriesCodeAndTraceID(t *testing.T) {
 			if exchangeErr.StatusCode != http.StatusForbidden || exchangeErr.Code != tt.wantCode || exchangeErr.TraceID != tt.wantTraceID {
 				t.Errorf("ExchangeError = %+v", exchangeErr)
 			}
+			if !maps.Equal(exchangeErr.Help, tt.wantHelp) {
+				t.Errorf("Help = %v, want %v", exchangeErr.Help, tt.wantHelp)
+			}
 			if err.Error() != tt.wantError {
 				t.Errorf("error = %q, want %q", err.Error(), tt.wantError)
+			}
+		})
+	}
+}
+
+func TestSTSTokenProvider_Token_SendsAcceptLanguage(t *testing.T) {
+	tests := []struct {
+		name           string
+		acceptLanguage string
+		wantHeader     []string
+	}{
+		{name: "unset sends no header", acceptLanguage: "", wantHeader: nil},
+		{name: "French", acceptLanguage: "fr", wantHeader: []string{"fr"}},
+		{name: "bilingual", acceptLanguage: "en, fr", wantHeader: []string{"en, fr"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got []string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				got = r.Header.Values("Accept-Language")
+				_ = json.NewEncoder(w).Encode(map[string]string{"token": "ghs_lang"})
+			}))
+			defer srv.Close()
+
+			tokenPath := filepath.Join(t.TempDir(), "token")
+			if err := os.WriteFile(tokenPath, []byte("sa-token"), 0600); err != nil {
+				t.Fatalf("writing temp token: %v", err)
+			}
+			p := &STSTokenProvider{
+				STSURL: srv.URL, Identity: "ci", Scope: "myorg/myrepo",
+				SATokenPath: tokenPath, AcceptLanguage: tt.acceptLanguage,
+			}
+
+			if _, err := p.Token(context.Background()); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !slices.Equal(got, tt.wantHeader) {
+				t.Fatalf("Accept-Language = %v, want %v", got, tt.wantHeader)
 			}
 		})
 	}

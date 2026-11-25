@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/depthmark/github-sts/internal/help"
 	"github.com/depthmark/github-sts/internal/policy"
 	"gopkg.in/yaml.v3"
 )
@@ -24,14 +25,29 @@ type PolicyValidationResponse struct {
 	Formatted   string             `json:"formatted,omitempty"`
 }
 
+// PolicyDiagnostic is one finding about a policy. Message is the specific
+// finding in English; Help says what to do about Code, in the languages the
+// request's Accept-Language picked.
 type PolicyDiagnostic struct {
-	Severity string `json:"severity"`
-	Code     string `json:"code"`
-	Message  string `json:"message"`
-	Path     string `json:"path,omitempty"`
-	Line     int    `json:"line,omitempty"`
-	Column   int    `json:"column,omitempty"`
+	Severity string    `json:"severity"`
+	Code     string    `json:"code"`
+	Message  string    `json:"message"`
+	Path     string    `json:"path,omitempty"`
+	Line     int       `json:"line,omitempty"`
+	Column   int       `json:"column,omitempty"`
+	Help     help.Text `json:"help,omitempty"`
 }
+
+// Diagnostic codes returned in PolicyDiagnostic.Code. Editor tooling
+// branches on them, so they are a stable public API like the Code constants.
+const (
+	DiagnosticYAMLParseError          = "yaml_parse_error"
+	DiagnosticInvalidDocument         = "invalid_document"
+	DiagnosticPolicyValidationError   = "policy_validation_error"
+	DiagnosticUnknownField            = "unknown_field"
+	DiagnosticSubjectConflict         = "subject_conflict"
+	DiagnosticRepositoriesUnsupported = "repositories_unsupported"
+)
 
 // PolicyValidationHandler validates/lints trust-policy YAML for editor tooling.
 // It intentionally evaluates only the YAML policy contract; it does not read
@@ -49,20 +65,35 @@ func NewPolicyValidationHandler(declaredGitHubIssuers ...string) *PolicyValidati
 func (h *PolicyValidationHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", "POST")
-		writeJSON(w, http.StatusMethodNotAllowed, ErrorResponse{Error: "method not allowed", Code: CodeMethodNotAllowed})
+		writeError(w, r, http.StatusMethodNotAllowed, ErrorResponse{Error: "method not allowed", Code: CodeMethodNotAllowed})
 		return
 	}
 	content, err := readValidationContent(r)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error(), Code: CodeBadRequest})
+		writeError(w, r, http.StatusBadRequest, ErrorResponse{Error: err.Error(), Code: CodeBadRequest})
 		return
 	}
 	resp := validatePolicyContent(content, h.declaredGitHubIssuers)
+	addDiagnosticHelp(w, r, resp.Diagnostics)
 	status := http.StatusOK
 	if !resp.Valid {
 		status = http.StatusUnprocessableEntity
 	}
 	writeJSON(w, status, resp)
+}
+
+// addDiagnosticHelp gives each diagnostic the help text for its code, in the
+// languages the request's Accept-Language picks (ADR 0021).
+func addDiagnosticHelp(w http.ResponseWriter, r *http.Request, diagnostics []PolicyDiagnostic) {
+	langs := help.Negotiate(r.Header.Get("Accept-Language"))
+	added := false
+	for i := range diagnostics {
+		diagnostics[i].Help = help.For(diagnostics[i].Code, langs)
+		added = added || diagnostics[i].Help != nil
+	}
+	if added {
+		setHelpLanguage(w, langs)
+	}
 }
 
 func readValidationContent(r *http.Request) (string, error) {
@@ -95,7 +126,7 @@ func validatePolicyContent(content string, declaredGitHubIssuers []string) Polic
 	if err := yaml.Unmarshal([]byte(content), &root); err != nil {
 		return PolicyValidationResponse{Valid: false, Diagnostics: []PolicyDiagnostic{{
 			Severity: "error",
-			Code:     "yaml_parse_error",
+			Code:     DiagnosticYAMLParseError,
 			Message:  err.Error(),
 		}}}
 	}
@@ -103,7 +134,7 @@ func validatePolicyContent(content string, declaredGitHubIssuers []string) Polic
 	if doc == nil {
 		return PolicyValidationResponse{Valid: false, Diagnostics: []PolicyDiagnostic{{
 			Severity: "error",
-			Code:     "invalid_document",
+			Code:     DiagnosticInvalidDocument,
 			Message:  "trust policy must be a YAML object",
 		}}}
 	}
@@ -113,7 +144,7 @@ func validatePolicyContent(content string, declaredGitHubIssuers []string) Polic
 	if err != nil {
 		diagnostics = append(diagnostics, PolicyDiagnostic{
 			Severity: "error",
-			Code:     "policy_validation_error",
+			Code:     DiagnosticPolicyValidationError,
 			Message:  err.Error(),
 		})
 	}
@@ -171,7 +202,7 @@ func lintPolicyShape(doc *yaml.Node) []PolicyDiagnostic {
 		if !known[name] {
 			diagnostics = append(diagnostics, PolicyDiagnostic{
 				Severity: "error",
-				Code:     "unknown_field",
+				Code:     DiagnosticUnknownField,
 				Message:  fmt.Sprintf("unknown trust policy field %q", name),
 				Path:     "$.",
 				Line:     key.Line,
@@ -184,7 +215,7 @@ func lintPolicyShape(doc *yaml.Node) []PolicyDiagnostic {
 		if key := seen["subject_pattern"]; key != nil {
 			diagnostics = append(diagnostics, PolicyDiagnostic{
 				Severity: "error",
-				Code:     "subject_conflict",
+				Code:     DiagnosticSubjectConflict,
 				Message:  "subject and subject_pattern are mutually exclusive",
 				Path:     "$.subject_pattern",
 				Line:     key.Line,
@@ -195,7 +226,7 @@ func lintPolicyShape(doc *yaml.Node) []PolicyDiagnostic {
 	if repos := seen["repositories"]; repos != nil {
 		diagnostics = append(diagnostics, PolicyDiagnostic{
 			Severity: "error",
-			Code:     "repositories_unsupported",
+			Code:     DiagnosticRepositoriesUnsupported,
 			Message:  "repositories is unsupported while organization-level scopes are disabled; use an exact repository scope and github.target binding",
 			Path:     "$.repositories",
 			Line:     repos.Line,
