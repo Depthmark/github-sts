@@ -8,7 +8,7 @@
 # runner. GOARCH below cross-compiles the target binary, which avoids running
 # the whole toolchain under QEMU emulation on the non-native platform.
 # ─────────────────────────────────────────────────────────────────────────────
-FROM --platform=$BUILDPLATFORM cgr.dev/chainguard/go:latest@sha256:163bd5500337364ac58a4c321836e748104dbb4e6951fb2e14b3949b6dca6a5f AS builder
+FROM --platform=$BUILDPLATFORM cgr.dev/chainguard/go:latest@sha256:0a7699f811a5f730a1cbaf14affbf6c13894119e8976910dcf7b861516430e62 AS builder
 
 WORKDIR /build
 
@@ -40,7 +40,7 @@ RUN --mount=type=cache,target=/cache/mod,sharing=locked \
 # nonroot uid 65532 by default. Pinned by multi-arch index digest.
 # Refresh with: docker buildx imagetools inspect cgr.dev/chainguard/static:latest
 # ─────────────────────────────────────────────────────────────────────────────
-FROM cgr.dev/chainguard/static:latest@sha256:fc42af33e643f20d08baf03cddcc1c02ba57052dfb02edb0d79f3fc47bcea8d9
+FROM cgr.dev/chainguard/static:latest@sha256:599c3cd7597b84aa149c4282beecc8c6d4e1cb5c95dc8d982e70cd0a2a9147a2
 
 # ── OCI image metadata ───────────────────────────────────────────────────────
 # org.opencontainers.image.created is required by Artifact Hub but is NOT set
