@@ -64,6 +64,7 @@ func NewPolicyValidationHandler(declaredGitHubIssuers ...string) *PolicyValidati
 
 func (h *PolicyValidationHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
 		writeError(w, r, http.StatusMethodNotAllowed, ErrorResponse{Error: "method not allowed", Code: CodeMethodNotAllowed})
 		return
 	}

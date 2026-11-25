@@ -129,7 +129,7 @@ Les réponses d'erreur partagent cette forme :
 | `403` | `trust_policy_invalid` | La politique chargée est malformée, n'a pas de sélecteur de charge de travail ni la liaison d'identifiants GitHub requise, ou enfreint autrement le contrat de politique. Corrigez la politique cible ; les détails figurent dans le journal d'audit. |
 | `403` | `policy_denied` | La politique existe mais l'évaluation a échoué (subject, claim_pattern). Consultez la ligne de journal d'audit au `trace_id` pour l'écart précis. |
 | `403` | `org_policy_denied` | La politique d'entreprise a été évaluée et a refusé l'échange après que la politique YAML l'a autorisé. Consultez `bundle_decisions` dans l'audit pour le bundle, le package, la règle, l'exception et la raison. |
-| `405` | `method_not_allowed` | Utilisez `GET` ou `POST`. |
+| `405` | `method_not_allowed` | Le point de terminaison n'accepte pas cette méthode. L'en-tête `Allow` nomme celles qu'il accepte : `GET, POST` pour `/sts/exchange`, `POST` pour `/sts/v1/trust-policy/validate`, et `GET, HEAD` pour `/sts/v1/trust-policy.json`. |
 | `409` | `replay_detected` | JTI déjà consommé ; obtenez un nouveau jeton OIDC. |
 | `503` | `oidc_unavailable` | Le serveur n'a pas pu récupérer les clés de l'émetteur du jeton, et n'a donc jamais évalué le jeton. Réessayez après `Retry-After` secondes avec le même jeton. Si l'erreur persiste, vérifiez l'accès du serveur aux points de terminaison de découverte et `jwks_uri` de l'émetteur. |
 | `503` | `bundle_stale` | Un bundle configuré est plus ancien que `max_staleness` et refuse les échanges dans ce cas (`fail_mode: closed`). Rétablissez la récupération ou la vérification du bundle, ou relevez `max_staleness` en connaissance de cause. |
@@ -234,7 +234,7 @@ Les niveaux de diagnostic sont `error` ou `warning`. Les erreurs comprennent les
 
 ### `GET /sts/v1/trust-policy.json`
 
-Renvoyer le fichier de schéma JSON contenu dans le bundle chargé, à l'emplacement `/data/sts/v1/trust-policy.json`. Le broker republie ces octets sans les interpréter : ce point de terminaison reflète donc le schéma fourni par le bundle Rego de l'opérateur. Il dépend d'un bundle activé qui embarque le document de schéma et renvoie `503` si l'intégration des bundles est désactivée ou si le fichier de schéma est absent.
+Renvoyer le fichier de schéma JSON contenu dans le bundle chargé, à l'emplacement `/data/sts/v1/trust-policy.json`. Le broker republie ces octets sans les interpréter : ce point de terminaison reflète donc le schéma fourni par le bundle Rego de l'opérateur. Il dépend d'un bundle activé qui embarque le document de schéma et renvoie `503` si l'intégration des bundles est désactivée ou si le fichier de schéma est absent. `HEAD` renvoie le même statut et les mêmes en-têtes sans le corps, ce qui permet à un éditeur de vérifier l'`ETag` sans télécharger le schéma.
 
 La plupart des utilisateurs n'ont pas besoin de ce point de terminaison. Le schéma de politique de confiance du projet est publié sous forme de fichier statique, sans broker ni authentification : consultez [Schéma des politiques de confiance]({{< relref "/reference/policy-schema" >}}). Utilisez ce point de terminaison lorsqu'un déploiement a personnalisé le schéma dans son bundle et que les éditeurs doivent suivre cette version personnalisée.
 

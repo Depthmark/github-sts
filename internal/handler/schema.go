@@ -62,6 +62,7 @@ func NewSchemaHandler(mgr bundle.Manager) *SchemaHandler {
 // reload — Phase 2).
 func (h *SchemaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
 		writeJSON(w, http.StatusMethodNotAllowed, ErrorResponse{Error: "method not allowed", Code: CodeMethodNotAllowed})
 		return
 	}

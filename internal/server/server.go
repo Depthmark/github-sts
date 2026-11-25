@@ -358,16 +358,16 @@ func newServer(cfg *config.Settings, slogger *slog.Logger, openKey keyOpener) (*
 		exchangeH = rateLimitMiddleware(exchangeH, s.ipRateLimiter, cfg.Server.TrustForwardedHeaders)
 	}
 
-	// Register routes.
+	// Register routes. The API routes carry no method on purpose: each
+	// handler refuses the methods it does not serve with the documented
+	// JSON 405 and an Allow header, and a method pattern would let the mux
+	// answer first with plain text.
 	mux := http.NewServeMux()
-	mux.Handle("GET /sts/exchange", exchangeH)
-	mux.Handle("POST /sts/exchange", exchangeH)
+	mux.Handle("/sts/exchange", exchangeH)
 	// Trust-policy schema, served from the loaded bundle. 503 when
 	// bundle integration is disabled; see SchemaHandler for codes.
-	schemaHandler := handler.NewSchemaHandler(bundleMgr)
-	mux.Handle("GET /sts/v1/trust-policy.json", schemaHandler)
-	mux.Handle("HEAD /sts/v1/trust-policy.json", schemaHandler)
-	mux.Handle("POST /sts/v1/trust-policy/validate", handler.NewPolicyValidationHandler(githubIssuerURLs...))
+	mux.Handle("/sts/v1/trust-policy.json", handler.NewSchemaHandler(bundleMgr))
+	mux.Handle("/sts/v1/trust-policy/validate", handler.NewPolicyValidationHandler(githubIssuerURLs...))
 	// /health includes bundle status when the integration is enabled.
 	// liveBundleMgr is nil when bundle.enabled=false; HealthHandler
 	// degrades gracefully in that case (just returns status: ok).
